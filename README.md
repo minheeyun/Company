@@ -50,6 +50,55 @@ out/
 참고: GitLab은 아주 큰 diff를 `too_large`/`collapsed`로 비워서 내려줄 수 있으며, 이 경우 해당 파일 페이지에 안내 문구가 표시됩니다.
 GitLab이 하위 경로(예: `https://host/gitlab/...`)에 설치된 경우 `--mr-url` 대신 `--gitlab-url https://host/gitlab --project ... --mr ...`를 사용하세요.
 
+## 검증 리뷰 (diff_review.py)
+
+추출한 HTML을 읽어 Claude API로 **AUTOSAR Classic SW 검증 담당자 관점의 리뷰**를 만듭니다.
+검토 기준은 [`prompts/autosar_verifier.md`](prompts/autosar_verifier.md)에 그대로 들어 있으며, 이 파일을 고치면 리뷰 기준이 바뀝니다 (`--prompt`로 다른 파일 지정 가능).
+
+```bash
+pip install -r requirements.txt
+export ANTHROPIC_API_KEY=sk-ant-...
+
+# 1) diff 추출
+python3 gitlab_diff_export.py --mr-url https://gitlab.example.com/ecu/bsw/-/merge_requests/42 -o mr42
+
+# 2) 리뷰 (입력 자료는 텍스트 또는 파일 경로, 여러 번 지정 가능, 사양은 PDF도 가능)
+python3 diff_review.py mr42 \
+  -t "ECU-1234" \
+  -d "S3 타이머 만료 판정이 한 주기 늦는 문제 수정" \
+  --spec docs/Dcm_SWS.pdf \
+  --reference "Dem_CheckTimeout() 의 >= 비교 패턴 참고" \
+  --test-result logs/ECU-1234_retest.txt \
+  --include "*.c" --include "*.h"
+```
+
+| 옵션 | 프롬프트 [입력] 항목 |
+|---|---|
+| `-d/--description` | 개선 설명(개발자 작성) |
+| `-t/--ticket` | 결함 티켓 번호 |
+| `--spec` | 관련 사양 |
+| `--reference` | 참고한 기존 패턴 |
+| `--test-result` | 테스트 결과 |
+
+넘기지 않은 항목은 "제공되지 않음"으로 표시되어, 모델이 추측하지 않고 "확인 필요"로 적도록 합니다.
+코드 diff는 파일명, hunk 헤더(함수명), 이전/이후 라인 번호를 포함해 전달됩니다.
+
+결과물 (`mr42/review/`, `-o`로 변경 가능):
+
+| 파일 | 내용 |
+|---|---|
+| `review_record.md` | 1. 변경 배경 + 2. 리뷰 결과 (리뷰 기록에 붙여넣기용) |
+| `verifier_memo.md` | 3. 검증자 메모 (테스트 케이스 표, 회귀 대상, A~I 해당 항목, 제안) |
+| `review.md` | 응답 전체 |
+| `review.html` | 위 내용을 렌더링한 페이지 (메모는 점선 박스로 구분) |
+
+기타 옵션:
+- `--dry-run`: API를 호출하지 않고 보낼 프롬프트(`prompt_system.md`, `prompt_user.md`)만 저장합니다. 사내 승인된 다른 LLM 창구에 붙여넣거나 내용을 미리 점검할 때 씁니다.
+- `--model` (기본 `claude-opus-5-5`), `--effort` (기본 `high`)
+- `--no-fallback`: 기본으로 켜져 있는 서버 측 거절 대체(fallbacks)를 끕니다. Bedrock/Vertex 등 이를 지원하지 않는 경로에서 사용하세요.
+
+> ⚠ 리뷰 시 소스 코드 diff와 첨부 자료가 Anthropic API로 전송됩니다. 사내 보안 정책상 외부 전송이 허용되는지 먼저 확인하세요.
+
 ## 테스트
 
 ```bash

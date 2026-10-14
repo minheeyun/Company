@@ -1,0 +1,12 @@
+[
+  {
+    "old_path": "src/BswM/Dcm_Callout.c", "new_path": "src/BswM/Dcm_Callout.c", "a_mode": "100644", "b_mode": "100644",
+    "new_file": false, "renamed_file": false, "deleted_file": false,
+    "diff": "@@ -142,9 +142,12 @@ static void Dcm_CheckSessionTimeout(void)\n {\n-    if (Dcm_S3Timer > DCM_S3_TIMEOUT_MS)\n+    if (Dcm_S3Timer >= DCM_S3_TIMEOUT_MS)\n     {\n         Dcm_SessionCtrl = DCM_DEFAULT_SESSION;\n-        Dcm_S3Timer = 0u;\n     }\n+    else if (Dcm_S3Timer < DCM_S3_TIMEOUT_MS)\n+    {\n+        Dcm_S3Timer += DCM_TASK_PERIOD_MS;\n+    }\n }\n"
+  },
+  {
+    "old_path": "src/NvM/NvM_Cfg_App.h", "new_path": "src/NvM/NvM_Cfg_App.h", "a_mode": "100644", "b_mode": "100644",
+    "new_file": false, "renamed_file": false, "deleted_file": false,
+    "diff": "@@ -20,3 +20,3 @@\n-#define DCM_S3_TIMEOUT_MS    (5000u)\n+#define DCM_S3_TIMEOUT_MS    (5010u)\n #define DCM_TASK_PERIOD_MS   (10u)\n"
+  }
+]

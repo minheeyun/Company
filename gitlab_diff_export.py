@@ -135,6 +135,7 @@ class FileDiff:
     a_mode: str | None = None
     b_mode: str | None = None
     note: str | None = None  # 바이너리/너무 큼 등
+    raw: str = ""  # GitLab이 준 원본 diff 텍스트
 
     @property
     def path(self) -> str:
@@ -236,6 +237,7 @@ def to_file_diff(item: dict) -> FileDiff:
         a_mode=a_mode,
         b_mode=b_mode,
         note=note,
+        raw=diff,
     )
 
 
@@ -381,7 +383,26 @@ def render_file_page(fd: FileDiff, view: str, source: str, index_href: str) -> s
         f'<div class="nav"><a href="{E(index_href)}">← 전체 목록</a> · <span class="sub">{E(source)}</span></div>'
         f'<div class="file"><div class="fhdr">{_title_html(fd)}</div>{content}</div>'
     )
-    return _page(fd.path, body)
+    return _page(fd.path, body + _data_script(fd, source))
+
+
+DATA_SCRIPT_ID = "gitlab-diff-data"
+
+
+def _data_script(fd: FileDiff, source: str) -> str:
+    """리뷰 도구 등이 HTML을 다시 읽을 수 있도록 원본 diff를 JSON으로 함께 넣는다."""
+    data = {
+        "source": source,
+        "old_path": fd.old_path,
+        "new_path": fd.new_path,
+        "status": fd.status,
+        "a_mode": fd.a_mode,
+        "b_mode": fd.b_mode,
+        "note": fd.note,
+        "diff": fd.raw,
+    }
+    payload = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
+    return f'<script type="application/json" id="{DATA_SCRIPT_ID}">{payload}</script>'
 
 
 def render_index(files: list[tuple[FileDiff, str]], source: str) -> str:
