@@ -1,0 +1,26 @@
+[
+  {
+    "old_path": "src/app.py", "new_path": "src/app.py", "a_mode": "100644", "b_mode": "100644",
+    "new_file": false, "renamed_file": false, "deleted_file": false,
+    "diff": "@@ -1,5 +1,6 @@\n import os\n-def hello(name):\n-    print(\"Hello \" + name)\n+def hello(name: str) -> None:\n+    print(f\"Hello, {name}!\")\n+\n \n if __name__ == \"__main__\":\n@@ -20,3 +21,3 @@ def main():\n     run()\n-    return 0\n+    return 1\n\\ No newline at end of file\n"
+  },
+  {
+    "old_path": "docs/README.md", "new_path": "docs/README.md", "a_mode": "0", "b_mode": "100644",
+    "new_file": true, "renamed_file": false, "deleted_file": false,
+    "diff": "@@ -0,0 +1,2 @@\n+# 프로젝트\n+<b>설명</b> & 소개\n"
+  },
+  {
+    "old_path": "old/name.txt", "new_path": "new/name.txt", "a_mode": "100644", "b_mode": "100644",
+    "new_file": false, "renamed_file": true, "deleted_file": false, "diff": ""
+  },
+  {
+    "old_path": "legacy.js", "new_path": "legacy.js", "a_mode": "100644", "b_mode": "0",
+    "new_file": false, "renamed_file": false, "deleted_file": true,
+    "diff": "@@ -1,2 +0,0 @@\n-var a = 1;\n-var b = 2;\n"
+  },
+  {
+    "old_path": "assets/logo.png", "new_path": "assets/logo.png", "a_mode": "100644", "b_mode": "100644",
+    "new_file": false, "renamed_file": false, "deleted_file": false,
+    "diff": "Binary files a/assets/logo.png and b/assets/logo.png differ\n"
+  }
+]
