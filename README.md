@@ -99,6 +99,24 @@ python3 diff_review.py mr42 \
 
 > ⚠ 리뷰 시 소스 코드 diff와 첨부 자료가 Anthropic API로 전송됩니다. 사내 보안 정책상 외부 전송이 허용되는지 먼저 확인하세요.
 
+## Embedded C 변경 영향성 분석 (c_impact)
+
+변경 전/후 C 코드(디렉터리, Git 커밋/작업 트리, 패치)를 libclang AST·CFG·Call Graph·Def-Use 로 분석해
+변경이 전파되는 함수·변수·조건·출력과 근거 경로, 잠재 결함, 회귀 테스트 후보를 JSON/CSV/HTML/Graphviz 로 만듭니다.
+자세한 내용은 [docs/impact_analyzer.md](docs/impact_analyzer.md) 를 보세요.
+
+```bash
+pip install -r requirements-impact.txt
+python3 -m c_impact analyze \
+  --base-dir examples/impact_demo/baseline --curr-dir examples/impact_demo/current \
+  --compdb examples/impact_demo/compile_commands.json --compdb-root examples/impact_demo/baseline \
+  --config examples/impact_demo/analysis_config.json -o impact_out
+# → impact_out/impact_report.html, impact_result.json, impact_table.csv ...
+
+python3 -m c_impact analyze --repo path/to/repo --base-rev HEAD --working-tree -o out   # 작업 트리 변경
+python3 -m unittest discover -s tests -p "test_impact*.py"
+```
+
 ## 테스트
 
 ```bash

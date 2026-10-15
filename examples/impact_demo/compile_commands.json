@@ -1,0 +1,11 @@
+[
+  {"directory": "baseline", "file": "src/util.c",    "arguments": ["arm-none-eabi-gcc", "-std=c99", "-Iinclude", "-DECU_VARIANT=1", "-c", "src/util.c", "-o", "build/util.o"]},
+  {"directory": "baseline", "file": "src/sensor.c",  "arguments": ["arm-none-eabi-gcc", "-std=c99", "-Iinclude", "-DECU_VARIANT=1", "-c", "src/sensor.c", "-o", "build/sensor.o"]},
+  {"directory": "baseline", "file": "src/fault.c",   "arguments": ["arm-none-eabi-gcc", "-std=c99", "-Iinclude", "-DECU_VARIANT=1", "-c", "src/fault.c", "-o", "build/fault.o"]},
+  {"directory": "baseline", "file": "src/heater.c",  "arguments": ["arm-none-eabi-gcc", "-std=c99", "-Iinclude", "-DECU_VARIANT=1", "-c", "src/heater.c", "-o", "build/heater.o"]},
+  {"directory": "baseline", "file": "src/control.c", "arguments": ["arm-none-eabi-gcc", "-std=c99", "-Iinclude", "-DECU_VARIANT=1", "-c", "src/control.c", "-o", "build/control.o"]},
+  {"directory": "baseline", "file": "src/output.c",  "arguments": ["arm-none-eabi-gcc", "-std=c99", "-Iinclude", "-DECU_VARIANT=1", "-c", "src/output.c", "-o", "build/output.o"]},
+  {"directory": "baseline", "file": "src/diag.c",    "arguments": ["arm-none-eabi-gcc", "-std=c99", "-Iinclude", "-DECU_VARIANT=1", "-c", "src/diag.c", "-o", "build/diag.o"]},
+  {"directory": "baseline", "file": "src/event.c",   "arguments": ["arm-none-eabi-gcc", "-std=c99", "-Iinclude", "-DECU_VARIANT=1", "-c", "src/event.c", "-o", "build/event.o"]},
+  {"directory": "baseline", "file": "src/main.c",    "arguments": ["arm-none-eabi-gcc", "-std=c99", "-Iinclude", "-DECU_VARIANT=1", "-c", "src/main.c", "-o", "build/main.o"]}
+]

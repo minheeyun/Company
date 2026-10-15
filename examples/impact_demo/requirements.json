@@ -1,0 +1,9 @@
+{
+  "REQ-HTR-010": {"title": "과열 시 히터 차단", "functions": ["Ctrl_CheckOverheat", "Heater_Off"],
+                  "expected": "온도가 TEMP_HIGH_LIMIT(100℃) 이상이면 히터 출력을 즉시 차단한다"},
+  "REQ-FLT-020": {"title": "과열 고장 확정", "functions": ["Fault_Monitor"],
+                  "expected": "100℃ 초과가 300회(3초) 연속되면 과열 고장을 확정한다"},
+  "REQ-LMP-030": {"title": "경고등 점등", "functions": ["Output_Update"]},
+  "REQ-CTL-040": {"title": "고장 해제 후 복귀", "functions": ["Ctrl_Main10ms"]},
+  "REQ-BZR-050": {"title": "센서 고장 부저", "functions": ["Evt_OnSensorFail", "Output_SetBuzzer"]}
+}

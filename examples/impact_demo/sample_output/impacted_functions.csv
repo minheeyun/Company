@@ -1,0 +1,27 @@
+﻿함수,파일,영향 수준,우선순위,전파 간선,관련 변경,역할,근거(첫 경로)
+Ctrl_CheckOverheat,src/control.c,DIRECT,High,"호출 조건/호출 여부, 제어 의존, 변경","C001, C002",,Ctrl_CheckOverheat:L15[변경]
+Ctrl_Main10ms,src/control.c,DIRECT,High,"제어 의존, 데이터(def-use), 공유(전역) 변수, 변경","C002, C006, C008","FAULT, STATE",Ctrl_Main10ms:L45[변경]
+Diag_Trace,src/diag.c,DIRECT,High,"인자 전달, 변경","C002, C004, C010",,Diag_Trace:L10[변경]
+Evt_OnSensorFail,src/event.c,DIRECT,High,변경,C005,OUTPUT,Evt_OnSensorFail:L24[변경]
+Fault_Init,src/fault.c,DIRECT,High,전역 정의 변경,C008,TIMER_COUNTER,Fault_Init:L9[전역 정의 변경]
+Fault_Monitor,src/fault.c,DIRECT,High,"제어 의존, 데이터(def-use), 전역 정의 변경, 인자 전달","C006, C008","FAULT, TIMER_COUNTER",Fault_Monitor:L17[전역 정의 변경]
+Output_Update,src/output.c,DIRECT,High,"제어 의존, 매크로 사용",C009,"FAULT, OUTPUT",Output_Update:L7[매크로 사용]
+Sensor_Task,src/sensor.c,DIRECT,High,"데이터(def-use), 포인터 인자 출력, 변경","C006, C007",,Sensor_Task:L36[변경]
+Util_ScaleTemp,src/util.c,DIRECT,High,"데이터(def-use), 변경",C007,,Util_ScaleTemp:L7[변경]
+Diag_Task100ms,src/diag.c,INDIRECT,High,"데이터(def-use), 반환값",C007,,Util_ScaleTemp:L7[변경] → Util_ScaleTemp:L8[데이터(def-use)] → Diag_Task100ms:L24[반환값]
+Heater_Off,src/heater.c,INDIRECT,High,"호출 조건/호출 여부, 피호출 함수 효과",C001,OUTPUT,Ctrl_CheckOverheat:L15[변경] → Ctrl_CheckOverheat:L16[제어 의존] → Heater_Off:LNone[호출 조건/호출 여부]
+Heater_On,src/heater.c,INDIRECT,High,"호출 조건/호출 여부, 피호출 함수 효과",C001,OUTPUT,Ctrl_CheckOverheat:L15[변경] → Ctrl_CheckOverheat:L18[제어 의존] → Heater_On:LNone[호출 조건/호출 여부]
+Output_SetBuzzer,src/output.c,INDIRECT,High,"제어 의존, 데이터(def-use), 인자 전달",C005,OUTPUT,Evt_OnSensorFail:L24[변경] → Output_SetBuzzer:LNone[인자 전달]
+Output_UpdateGauge,src/output.c,INDIRECT,High,"데이터(def-use), 공유(전역) 변수",C006,OUTPUT,Sensor_Task:L36[변경] → Output_UpdateGauge:L18[공유(전역) 변수]
+Diag_GetMaxTemp,src/diag.c,INDIRECT,Medium,공유(전역) 변수,C007,,Util_ScaleTemp:L7[변경] → Util_ScaleTemp:L8[데이터(def-use)] → Diag_Task100ms:L24[반환값] → Diag_Task100ms:L26[데이터(def-use)] → Diag_GetMaxTemp:L19[공유(전역) 변수]
+Sensor_ReadTemp,src/sensor.c,INDIRECT,Medium,반환값,C007,,Util_ScaleTemp:L7[변경] → Util_ScaleTemp:L8[데이터(def-use)] → Sensor_ReadTemp:L24[반환값]
+Task_10ms,src/main.c,INDIRECT,Medium,공유(전역) 변수,C006,,Sensor_Task:L36[변경] → Task_10ms:L7[공유(전역) 변수]
+Util_Clamp,src/util.c,INDIRECT,Medium,"제어 의존, 데이터(def-use), 인자 전달",C006,,Sensor_Task:L36[변경] → Output_UpdateGauge:L18[공유(전역) 변수] → Util_Clamp:LNone[인자 전달]
+Task_100ms,src/main.c,INDIRECT,Low,상위 호출,C007,,
+main,src/main.c,INDIRECT,Low,상위 호출,C008,,
+Event_Dispatch,src/event.c,POTENTIAL,Low,상위 호출,C005,,
+Ctrl_Init,src/control.c,NO_IMPACT_CONFIRMED,-,,,,설정된 분석 범위에서 어떤 의존 간선으로도 도달하지 않음
+Evt_OnOverheat,src/event.c,NO_IMPACT_CONFIRMED,-,,,,설정된 분석 범위에서 어떤 의존 간선으로도 도달하지 않음
+Evt_OnRecover,src/event.c,NO_IMPACT_CONFIRMED,-,,,,설정된 분석 범위에서 어떤 의존 간선으로도 도달하지 않음
+Sensor_Init,src/sensor.c,NO_IMPACT_CONFIRMED,-,,,,설정된 분석 범위에서 어떤 의존 간선으로도 도달하지 않음
+ADC_IRQHandler,src/sensor.c,NO_IMPACT_CONFIRMED,-,,,,설정된 분석 범위에서 어떤 의존 간선으로도 도달하지 않음

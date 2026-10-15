@@ -1,0 +1,5 @@
+{
+  "UT-CTRL-001": {"functions": ["Ctrl_CheckOverheat"], "description": "과열 판정 단위 테스트", "type": "unit"},
+  "UT-FLT-003": {"functions": ["Fault_Monitor"], "description": "과열 고장 디바운스 단위 테스트", "type": "unit"},
+  "IT-OUT-010": {"functions": ["Output_Update", "Task_10ms"], "description": "경고등 출력 통합 테스트", "type": "integration"}
+}

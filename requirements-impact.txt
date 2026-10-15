@@ -1,0 +1,2 @@
+# c_impact (AST/CFG 기반 변경 영향성 분석) 의존성
+libclang>=16.0

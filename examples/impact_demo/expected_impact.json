@@ -1,0 +1,265 @@
+{
+  "_설명": "검증용 예제의 시나리오별 기대 영향 범위. tests/test_impact_demo.py 가 실제 분석 결과와 자동 비교한다. change 는 변경점을 찾는 조건(함수/변수/매크로 + 변경 유형)이다.",
+  "scenarios": [
+    {
+      "id": "S1",
+      "title": "A 함수(Ctrl_CheckOverheat)의 조건 변경이 B 함수(Heater_Off) 호출 조건에 영향",
+      "change": {
+        "function": "Ctrl_CheckOverheat",
+        "type": "BOUNDARY_OPERATOR"
+      },
+      "direct": [
+        "Ctrl_CheckOverheat"
+      ],
+      "indirect": [
+        "Heater_Off",
+        "Heater_On"
+      ],
+      "edges": {
+        "Heater_Off": [
+          "CALL_COND"
+        ],
+        "Heater_On": [
+          "CALL_COND"
+        ]
+      },
+      "call_context": [
+        "Ctrl_Main10ms",
+        "Task_10ms"
+      ],
+      "outputs": [
+        "Dio_WriteChannel"
+      ],
+      "not_impacted": [
+        "Output_Update",
+        "Fault_Monitor",
+        "Sensor_Task"
+      ],
+      "defects": [
+        "BOUNDARY_OPERATOR_CHANGE"
+      ],
+      "boundary_values_changed": [
+        100
+      ]
+    },
+    {
+      "id": "S2",
+      "title": "전역변수(g_tempFiltered) 계산식 변경이 직접 호출 관계가 없는 C 함수(Output_UpdateGauge, Output_Update)에 영향",
+      "change": {
+        "function": "Sensor_Task",
+        "type": "ASSIGNMENT_CHANGED"
+      },
+      "direct": [
+        "Sensor_Task"
+      ],
+      "indirect": [
+        "Output_UpdateGauge",
+        "Output_Update",
+        "Fault_Monitor",
+        "Ctrl_Main10ms"
+      ],
+      "edges": {
+        "Output_UpdateGauge": [
+          "GLOBAL"
+        ],
+        "Output_Update": [
+          "GLOBAL"
+        ]
+      },
+      "no_call_relation": [
+        [
+          "Sensor_Task",
+          "Output_UpdateGauge"
+        ],
+        [
+          "Sensor_Task",
+          "Output_Update"
+        ]
+      ],
+      "variables": [
+        "g_tempFiltered"
+      ],
+      "outputs": [
+        "Pwm_SetDutyCycle",
+        "Dio_WriteChannel"
+      ]
+    },
+    {
+      "id": "S3",
+      "title": "임계값 매크로(LAMP_WARN_TEMP 90→85) 변경으로 경고등 출력 동작 변화",
+      "change": {
+        "macro": "LAMP_WARN_TEMP",
+        "type": "MACRO_CHANGED"
+      },
+      "direct": [
+        "Output_Update"
+      ],
+      "edges": {
+        "Output_Update": [
+          "MACRO"
+        ]
+      },
+      "outputs": [
+        "Dio_WriteChannel"
+      ],
+      "not_impacted": [
+        "Ctrl_CheckOverheat",
+        "Fault_Monitor",
+        "Sensor_Task"
+      ],
+      "boundary_values_changed": [
+        85,
+        86,
+        89
+      ]
+    },
+    {
+      "id": "S4",
+      "title": "U8 카운터(s_overTempCnt U16→U8) 변경으로 고장 판정(임계 300) 불가",
+      "change": {
+        "variable": "s_overTempCnt",
+        "type": "GLOBAL_TYPE_CHANGED"
+      },
+      "direct": [
+        "Fault_Monitor",
+        "Fault_Init"
+      ],
+      "indirect": [
+        "Output_Update",
+        "Ctrl_Main10ms"
+      ],
+      "edges": {
+        "Output_Update": [
+          "GLOBAL"
+        ],
+        "Ctrl_Main10ms": [
+          "GLOBAL"
+        ]
+      },
+      "variables": [
+        "g_faultActive"
+      ],
+      "defects_confirmed": [
+        "COUNTER_THRESHOLD_UNREACHABLE",
+        "CONSTANT_OUT_OF_TYPE_RANGE"
+      ],
+      "defects": [
+        "TYPE_NARROWED"
+      ]
+    },
+    {
+      "id": "S5",
+      "title": "여러 상위 함수에서 호출되는 Util_ScaleTemp 변경",
+      "change": {
+        "function": "Util_ScaleTemp",
+        "type": "CONSTANT_CHANGED"
+      },
+      "direct": [
+        "Util_ScaleTemp"
+      ],
+      "indirect": [
+        "Sensor_ReadTemp",
+        "Diag_Task100ms",
+        "Sensor_Task",
+        "Diag_GetMaxTemp"
+      ],
+      "edges": {
+        "Sensor_ReadTemp": [
+          "RETURN"
+        ],
+        "Diag_Task100ms": [
+          "RETURN"
+        ],
+        "Sensor_Task": [
+          "OUT_PARAM"
+        ]
+      },
+      "min_callers": 2,
+      "entry_points": [
+        "Task_10ms",
+        "Task_100ms"
+      ]
+    },
+    {
+      "id": "S6",
+      "title": "변경은 있으나 영향 전파가 제한적(쓰기 전용 트레이스 버퍼)",
+      "change": {
+        "function": "Diag_Trace",
+        "type": "ASSIGNMENT_CHANGED"
+      },
+      "direct": [
+        "Diag_Trace"
+      ],
+      "exact": true,
+      "not_impacted": [
+        "Ctrl_Main10ms",
+        "Task_10ms"
+      ]
+    },
+    {
+      "id": "S7",
+      "title": "함수 포인터 테이블로 호출되는 핸들러 변경 — 상위 호출 범위 불확실",
+      "change": {
+        "function": "Evt_OnSensorFail",
+        "type": "CALL_ARGS_CHANGED"
+      },
+      "direct": [
+        "Evt_OnSensorFail"
+      ],
+      "indirect": [
+        "Output_SetBuzzer"
+      ],
+      "potential": [
+        "Event_Dispatch"
+      ],
+      "edges": {
+        "Output_SetBuzzer": [
+          "PARAM"
+        ]
+      },
+      "not_impacted": [
+        "Evt_OnOverheat",
+        "Evt_OnRecover"
+      ]
+    },
+    {
+      "id": "S8",
+      "title": "상태 전이 변경(CTRL_FAULT 복귀 상태 NORMAL→DEGRADED)",
+      "change": {
+        "function": "Ctrl_Main10ms",
+        "type": "STATE_TRANSITION_CHANGED"
+      },
+      "direct": [
+        "Ctrl_Main10ms"
+      ],
+      "transitions_removed": [
+        [
+          "CTRL_FAULT",
+          "CTRL_NORMAL"
+        ]
+      ],
+      "transitions_added": [
+        [
+          "CTRL_FAULT",
+          "CTRL_DEGRADED"
+        ]
+      ],
+      "defects": [
+        "STATE_TRANSITION_REMOVED"
+      ]
+    }
+  ],
+  "format_only": [
+    "Heater_Off"
+  ],
+  "inactive_code_file": "src/diag.c",
+  "no_impact_confirmed": [
+    "ADC_IRQHandler",
+    "Sensor_Init",
+    "Ctrl_Init"
+  ],
+  "concurrency_shared": [
+    "g_adcRaw",
+    "g_tempFiltered"
+  ]
+}

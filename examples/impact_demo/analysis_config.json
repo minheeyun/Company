@@ -1,0 +1,15 @@
+{
+  "_comment": "예제 ECU: 16bit MCU, 8bit 단위 원자 접근. 태스크/ISR, 요구사항/기존 테스트 매핑 포함",
+  "platform": {"name": "demo-16bit-mcu", "int_bits": 16, "pointer_bits": 16, "atomic_access_bits": 8},
+  "tasks": [
+    {"name": "Task_10ms", "kind": "task", "priority": 2, "period_ms": 10},
+    {"name": "Task_100ms", "kind": "task", "priority": 1, "period_ms": 100},
+    {"name": "ADC_IRQHandler", "kind": "isr", "priority": 10}
+  ],
+  "requirements": "requirements.json",
+  "existing_tests": "existing_tests.json",
+  "build_config_name": "release",
+  "max_depth": 8,
+  "max_paths": 200,
+  "loop_unroll": 1
+}
