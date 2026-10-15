@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 diff_html/
 out/
+specverify_out/
+examples/specverify/sample_llm/*.prompt.md

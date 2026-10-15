@@ -1,0 +1,259 @@
+{
+ "requirement_results": [
+  {
+   "req_id": "SWR-BLV-007",
+   "verdict": "INCONSISTENT",
+   "summary": "uint8 유예 카운터가 300과 비교되어(L116) 유예가 끝나지 않는다. 초기화 값도 300→44로 잘린다(L83).",
+   "finding_ids": [
+    "y1"
+   ]
+  },
+  {
+   "req_id": "SWR-BLV-008",
+   "verdict": "PARTIALLY_CONSISTENT",
+   "summary": "raw==0xFFFF만 무효로 처리(L129). 무효값 정의가 사양에 없어 나머지는 판단 불가(G 참조).",
+   "finding_ids": []
+  },
+  {
+   "req_id": "SWR-BLV-009",
+   "verdict": "INCONSISTENT",
+   "summary": "Init에서 정상 카운터(s_u16HealCnt) 초기화 누락.",
+   "finding_ids": [
+    "y2"
+   ]
+  },
+  {
+   "req_id": "SWR-BLV-010",
+   "verdict": "INCONSISTENT",
+   "summary": "START 분기에서 경고등을 무조건 0으로 설정(L106).",
+   "finding_ids": [
+    "y3"
+   ]
+  }
+ ],
+ "findings": [
+  {
+   "id": "y1",
+   "category": "TIMER_COUNTER_MISMATCH",
+   "subcategory": "",
+   "verdict": "CONFIRMED_DEFECT",
+   "severity": "HIGH",
+   "title": "시동 후 3초 유예가 끝나지 않아 저전압 진단이 영구 정지",
+   "req_ids": [
+    "SWR-BLV-007"
+   ],
+   "req_quote": "IgnSts가 START에서 ON으로 전환된 후 3초 동안은 진단 판정을 유예한다.",
+   "code_refs": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 116,
+     "symbol": "BLV_START_MASK_CNT",
+     "role": "유예 판정"
+    },
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 118,
+     "symbol": "s_u8StartMaskCnt",
+     "role": "유예 카운터 증가"
+    },
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_Init",
+     "line": 83,
+     "symbol": "BLV_START_MASK_CNT",
+     "role": "초기화 시 300 대입"
+    },
+    {
+     "file": "Blv_Cfg.h",
+     "function": "-",
+     "line": 13,
+     "symbol": "BLV_START_MASK_CNT",
+     "role": "300U 정의"
+    }
+   ],
+   "spec_says": "S42: START→ON 후 3초 유예, 이후 진단",
+   "code_does": "s_u8StartMaskCnt(uint8, 0..255) < 300U는 항상 참 → 매 주기 증가 후 반환, 255→0 순환",
+   "comparison": "유예 종료 조건이 자료형상 성립 불가",
+   "trigger_condition": "IgnSts=ON 진입 후 모든 주기 (전원 투입 직후 포함: Init에서 300→44 저장)",
+   "execution_path": [
+    "Blv_Diag.c:83 Init: s_u8StartMaskCnt = 44 (300 잘림)",
+    "Blv_Diag.c:116 44 < 300 참",
+    "Blv_Diag.c:118 증가 … 255 → 0",
+    "Blv_Diag.c:119 반환 (L122 이후 미실행)"
+   ],
+   "expected_behavior": "3초(300주기) 후 진단 재개",
+   "inferred_behavior": "진단(L122~L181)이 한 번도 실행되지 않음 → 저전압 DTC·경고등 기능 상실",
+   "basis": [
+    {
+     "kind": "FACT",
+     "statement": "uint8 변수와 300U 비교는 항상 참 (정적 계산 CERTAIN, gcc -Wtype-limits 경고)",
+     "evidence": "SC-008"
+    },
+    {
+     "kind": "FACT",
+     "statement": "Init에서 300 대입 시 44로 저장 (CERTAIN, gcc -Woverflow)",
+     "evidence": "SC-007"
+    },
+    {
+     "kind": "FACT",
+     "statement": "L119에서 반환하므로 L122 이후가 실행되지 않는다",
+     "evidence": "Blv_Diag.c:116-120"
+    }
+   ],
+   "uncertainty": "없음. 3초=300주기 환산은 10ms 주기 전제(S56).",
+   "recommendation": "s_u8StartMaskCnt를 uint16으로 변경하거나 마스크 단위를 조정한다. 초기화 값 의미(유예 없음)를 명확히 한다.",
+   "additional_checks": [],
+   "test_cases": [
+    {
+     "title": "시동 후 진단 재개",
+     "technique": "TIMING",
+     "preconditions": "IgnSts=START",
+     "steps": "ON 전환 후 BattVolt 8500mV 6초 유지",
+     "expected": "3초 유예 후 2초 경과 시점(5초)에 FAILED",
+     "observation": "Dem 이벤트 상태, s_u8StartMaskCnt"
+    },
+    {
+     "title": "전원 투입 후 진단",
+     "technique": "REQUIREMENT_BASED",
+     "preconditions": "Init 직후 IgnSts=ON (START 없음)",
+     "steps": "BattVolt 8500mV 3초",
+     "expected": "2초 시점 FAILED (유예 적용 여부는 사양 확인)",
+     "observation": "Dem 이벤트 상태"
+    }
+   ],
+   "static_candidates": [
+    "SC-007",
+    "SC-008",
+    "SC-009"
+   ],
+   "gap_kind": "NONE",
+   "spec_question": "",
+   "risk_scenario": ""
+  },
+  {
+   "id": "y2",
+   "category": "INIT_RECOVERY_MISMATCH",
+   "subcategory": "",
+   "verdict": "PROBABLE_DEFECT",
+   "severity": "MEDIUM",
+   "title": "초기화 시 정상(해제) 카운터 s_u16HealCnt 미초기화",
+   "req_ids": [
+    "SWR-BLV-009"
+   ],
+   "req_quote": "제어기 초기화 시 고장 카운터, 정상 카운터, 진단 상태는 초기값으로 설정하고",
+   "code_refs": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_Init",
+     "line": 82,
+     "symbol": "s_u8FaultCnt",
+     "role": "고장 카운터만 초기화"
+    }
+   ],
+   "spec_says": "S48: 고장·정상 카운터, 진단 상태 초기화",
+   "code_does": "BlvDiag_Init(L78-89)에 s_u16HealCnt 대입 없음",
+   "comparison": "정상 카운터 초기화 누락",
+   "trigger_condition": "Wake-up 등으로 Init이 재호출되고 직전 해제 카운터가 남아 있는 경우",
+   "execution_path": [
+    "EcuM → BlvDiag_Init (s_u16HealCnt 이전 값 유지)",
+    "Blv_Diag.c:170 해제 판정에 이전 누적 사용"
+   ],
+   "expected_behavior": "초기화 후 해제 카운터 0부터 계수",
+   "inferred_behavior": "재초기화 시 이전 누적값이 남아 해제가 앞당겨질 수 있음",
+   "basis": [
+    {
+     "kind": "FACT",
+     "statement": "Init에 s_u16HealCnt 대입이 없다",
+     "evidence": "Blv_Diag.c:78-89"
+    },
+    {
+     "kind": "INFERENCE",
+     "statement": "최초 전원 투입은 정적 0 초기화로 문제없고 재호출 시에만 영향",
+     "evidence": "C 정적 저장기간"
+    },
+    {
+     "kind": "HYPOTHESIS",
+     "statement": "Init이 운전 중 재호출된다",
+     "evidence": "env.json notes: Wake-up 시 재호출"
+    }
+   ],
+   "uncertainty": "Init 재호출 시나리오의 실제 존재 여부",
+   "recommendation": "Init에 `s_u16HealCnt = 0U;` 추가",
+   "additional_checks": [
+    "EcuM Wake-up 시 BlvDiag_Init 호출 여부"
+   ],
+   "test_cases": [
+    {
+     "title": "재초기화 후 해제",
+     "technique": "STATE_TRANSITION",
+     "preconditions": "고장 확정 후 11000mV 4초 누적",
+     "steps": "BlvDiag_Init 호출(Wake-up 모사) → 저전압 재확정 → 11000mV 1.5초",
+     "expected": "해제되지 않음(5초 필요)",
+     "observation": "s_u16HealCnt, s_eBlvState"
+    }
+   ],
+   "static_candidates": [],
+   "gap_kind": "NONE",
+   "spec_question": "",
+   "risk_scenario": ""
+  },
+  {
+   "id": "y3",
+   "category": "PRIORITY_MISMATCH",
+   "subcategory": "",
+   "verdict": "CONFIRMED_DEFECT",
+   "severity": "HIGH",
+   "title": "START 중 확정 고장의 경고등을 소등 (우선순위 역전)",
+   "req_ids": [
+    "SWR-BLV-010"
+   ],
+   "req_quote": "진단 중단 조건(IgnSts = START)에서도 고장 확정 상태라면 경고등 점등을 유지한다.",
+   "code_refs": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 106,
+     "symbol": "BlvWarnLamp",
+     "role": "START 분기 경고등 0"
+    }
+   ],
+   "spec_says": "S52: START에서도 확정 상태면 점등 유지",
+   "code_does": "L106 BlvWarnLamp = 0U (상태 확인 없음)",
+   "comparison": "진단 중단 처리가 경고 유지 요구보다 우선함",
+   "trigger_condition": "고장 확정(점등) 상태에서 IgnSts=START",
+   "execution_path": [
+    "Blv_Diag.c:100 START",
+    "Blv_Diag.c:106 경고등 0",
+    "Blv_Diag.c:107 반환"
+   ],
+   "expected_behavior": "점등 유지",
+   "inferred_behavior": "크랭킹 동안 소등",
+   "basis": [
+    {
+     "kind": "FACT",
+     "statement": "START 분기는 상태와 무관하게 경고등에 0을 대입한다",
+     "evidence": "Blv_Diag.c:106"
+    }
+   ],
+   "uncertainty": "없음",
+   "recommendation": "START 분기에서 경고등 대입을 제거하거나 `s_eBlvState == BLV_STATE_FAULT`이면 1을 유지한다.",
+   "additional_checks": [],
+   "test_cases": [
+    {
+     "title": "확정 고장 중 크랭킹",
+     "technique": "STATE_TRANSITION",
+     "preconditions": "고장 확정, 경고등 점등",
+     "steps": "IgnSts=START 2초",
+     "expected": "경고등 점등 유지",
+     "observation": "BlvWarnLamp"
+    }
+   ],
+   "static_candidates": [],
+   "gap_kind": "NONE",
+   "spec_question": "",
+   "risk_scenario": ""
+  }
+ ]
+}

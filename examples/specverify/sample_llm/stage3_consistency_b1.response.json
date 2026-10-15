@@ -1,0 +1,489 @@
+{
+ "requirement_results": [
+  {
+   "req_id": "SWR-BLV-001",
+   "verdict": "INCONSISTENT",
+   "summary": "OFF만 제외(L110)하여 ACC에서도 진단하며, START 중 카운터를 0으로 초기화(L103-104)한다.",
+   "finding_ids": [
+    "x1",
+    "x2"
+   ]
+  },
+  {
+   "req_id": "SWR-BLV-002",
+   "verdict": "INCONSISTENT",
+   "summary": "임계 비교가 '<'(L137)로 9000mV 정확히는 저전압이 아니다.",
+   "finding_ids": [
+    "x3"
+   ]
+  },
+  {
+   "req_id": "SWR-BLV-003",
+   "verdict": "PARTIALLY_CONSISTENT",
+   "summary": "BLV_CONFIRM_CNT=200(10ms×200=2s, L157)과 FAILED 보고(L165)는 일치. 연속성 해석은 모호(x6), 카운터 순환은 단계 5에서 검토.",
+   "finding_ids": [
+    "x6"
+   ]
+  },
+  {
+   "req_id": "SWR-BLV-004",
+   "verdict": "INCONSISTENT",
+   "summary": "경고등이 확정 상태(s_eBlvState)가 아니라 순간 검출 플래그(s_bFaultDetected)를 따른다(L181).",
+   "finding_ids": [
+    "x4"
+   ]
+  },
+  {
+   "req_id": "SWR-BLV-005",
+   "verdict": "PARTIALLY_CONSISTENT",
+   "summary": "10500mV 이상(>=, L144)·500회(L170)·PASSED 보고(L173)는 일치하나 히스테리시스 구간에서 해제 카운터가 유지되어 '연속' 요구와 다르다.",
+   "finding_ids": [
+    "x5"
+   ]
+  },
+  {
+   "req_id": "SWR-BLV-006",
+   "verdict": "CONSISTENT",
+   "summary": "9000<V<10500 구간에서 카운터·상태를 바꾸지 않는다(L152-155). 단, 유지 대상의 해석은 모호(x6).",
+   "finding_ids": []
+  }
+ ],
+ "findings": [
+  {
+   "id": "x1",
+   "category": "CONDITION_MISMATCH",
+   "subcategory": "",
+   "verdict": "PROBABLE_DEFECT",
+   "severity": "MEDIUM",
+   "title": "IgnSts=ACC에서도 진단 수행",
+   "req_ids": [
+    "SWR-BLV-001"
+   ],
+   "req_quote": "진단은 IgnSts가 ON일 때 수행한다.",
+   "code_refs": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 110,
+     "symbol": "IGN_OFF",
+     "role": "실행 조건"
+    }
+   ],
+   "spec_says": "S22: IgnSts가 ON일 때 진단 수행",
+   "code_does": "L100 START, L110 OFF만 반환하고 ACC(=1)는 L116 이후 진단 경로로 진행",
+   "comparison": "사양은 ON만 허용, 코드는 ON과 ACC를 허용",
+   "trigger_condition": "IgnSts=ACC 상태에서 BattVolt ≤ 9000mV가 2초 이상 지속",
+   "execution_path": [
+    "Blv_Diag.c:98 IgnSts=ACC 획득",
+    "Blv_Diag.c:100 START 아님",
+    "Blv_Diag.c:110 OFF 아님 → 계속",
+    "Blv_Diag.c:137 저전압 판정",
+    "Blv_Diag.c:164 FAULT, FAILED 보고"
+   ],
+   "expected_behavior": "ACC에서는 진단하지 않음 (DTC·경고등 변화 없음)",
+   "inferred_behavior": "ACC에서도 저전압 판정·DTC FAILED 보고·경고등 점등이 일어남. ※ 현재 코드는 C-007(유예 타이머 무한 반복) 때문에 L116 이후가 실행되지 않으므로, 이 불일치는 C-007 수정 후 드러나는 잠복 결함이다.",
+   "basis": [
+    {
+     "kind": "FACT",
+     "statement": "L110의 조건은 eIgn == IGN_OFF 뿐이다",
+     "evidence": "Blv_Diag.c:110"
+    },
+    {
+     "kind": "FACT",
+     "statement": "IGN_ACC=1은 L100, L110 어느 조건에도 해당하지 않는다",
+     "evidence": "Blv_Diag.h enum"
+    },
+    {
+     "kind": "INFERENCE",
+     "statement": "ACC 상태에서도 L137 이후 판정이 수행된다",
+     "evidence": "조기 반환 조건 분석"
+    }
+   ],
+   "uncertainty": "사양 문장이 'ON일 때만'으로 명시하지 않아 ACC 제외가 의도인지 확인 필요 (단계 1 AMBIGUOUS).",
+   "recommendation": "실행 조건을 `if (eIgn != IGN_ON) { return; }` 형태로 명시하고 START 처리와 분리한다.",
+   "additional_checks": [
+    "ACC에서 진단 제외가 사양 의도인지 사양 작성자 확인"
+   ],
+   "test_cases": [
+    {
+     "title": "ACC 저전압 3초",
+     "technique": "REQUIREMENT_BASED",
+     "preconditions": "IgnSts=ACC, 고장 이력 없음",
+     "steps": "BattVolt 8500mV를 3초 인가",
+     "expected": "DTC B1A00 미보고, BlvWarnLamp=0",
+     "observation": "Dem 이벤트 상태, BlvWarnLamp"
+    }
+   ],
+   "static_candidates": [],
+   "gap_kind": "NONE",
+   "spec_question": "",
+   "risk_scenario": ""
+  },
+  {
+   "id": "x2",
+   "category": "TIMER_COUNTER_MISMATCH",
+   "subcategory": "",
+   "verdict": "CONFIRMED_DEFECT",
+   "severity": "MEDIUM",
+   "title": "START 중 고장·정상 카운터를 유지하지 않고 0으로 초기화",
+   "req_ids": [
+    "SWR-BLV-001"
+   ],
+   "req_quote": "이때 고장 카운터와 정상 카운터는 현재 값을 유지한다.",
+   "code_refs": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 103,
+     "symbol": "s_u8FaultCnt",
+     "role": "고장 카운터 초기화"
+    },
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 104,
+     "symbol": "s_u16HealCnt",
+     "role": "정상 카운터 초기화"
+    }
+   ],
+   "spec_says": "S23: START 동안 고장/정상 카운터 현재 값 유지",
+   "code_does": "L103 s_u8FaultCnt = 0U, L104 s_u16HealCnt = 0U",
+   "comparison": "유지 요구 대비 초기화",
+   "trigger_condition": "저전압 누적(예: 1.5초) 또는 해제 누적(예: 4초) 중 IgnSts=START 진입",
+   "execution_path": [
+    "Blv_Diag.c:100 START",
+    "Blv_Diag.c:103 고장 카운터 0",
+    "Blv_Diag.c:104 정상 카운터 0",
+    "Blv_Diag.c:107 반환"
+   ],
+   "expected_behavior": "START 종료 후 누적값에서 이어서 카운트",
+   "inferred_behavior": "START 후 처음부터 다시 카운트 → 고장 확정/해제 지연",
+   "basis": [
+    {
+     "kind": "FACT",
+     "statement": "START 분기에서 두 카운터에 0을 대입한다",
+     "evidence": "Blv_Diag.c:103-104"
+    },
+    {
+     "kind": "FACT",
+     "statement": "사양은 현재 값 유지를 요구한다",
+     "evidence": "S23"
+    }
+   ],
+   "uncertainty": "'정상 카운터'가 s_u16HealCnt를 뜻한다는 해석에 의존 (단계 1 AMBIGUOUS).",
+   "recommendation": "START 분기에서 카운터 대입을 제거한다. 유예(SWR-BLV-007)와의 관계를 함께 정리한다.",
+   "additional_checks": [
+    "'정상 카운터' 용어 정의 확인"
+   ],
+   "test_cases": [
+    {
+     "title": "저전압 누적 중 크랭킹",
+     "technique": "STATE_TRANSITION",
+     "preconditions": "IgnSts=ON, BattVolt 8500mV 1.5초 유지",
+     "steps": "IgnSts=START 0.5초 → ON 복귀, 8500mV 유지",
+     "expected": "유예 3초 후 누적 1.5초에서 이어서 0.5초 뒤 FAILED",
+     "observation": "s_u8FaultCnt, Dem 이벤트 상태"
+    }
+   ],
+   "static_candidates": [],
+   "gap_kind": "NONE",
+   "spec_question": "",
+   "risk_scenario": ""
+  },
+  {
+   "id": "x3",
+   "category": "THRESHOLD_BOUNDARY_MISMATCH",
+   "subcategory": "",
+   "verdict": "CONFIRMED_DEFECT",
+   "severity": "MEDIUM",
+   "title": "저전압 경계 9000mV 포함 여부 불일치 ('이하' vs '<')",
+   "req_ids": [
+    "SWR-BLV-002"
+   ],
+   "req_quote": "배터리 전압이 9000mV 이하이면 저전압 조건으로 판단한다.",
+   "code_refs": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 137,
+     "symbol": "BLV_LOW_MV",
+     "role": "임계 비교"
+    },
+    {
+     "file": "Blv_Cfg.h",
+     "function": "-",
+     "line": 7,
+     "symbol": "BLV_LOW_MV",
+     "role": "임계값 정의"
+    }
+   ],
+   "spec_says": "S26: 9000mV 이하 → 저전압 (경계 포함)",
+   "code_does": "L137: u16Volt < BLV_LOW_MV(9000U) → 9000mV는 정상",
+   "comparison": "경계값 9000mV에서 판정이 반대",
+   "trigger_condition": "필터 후 u16Volt가 정확히 9000mV",
+   "execution_path": [
+    "Blv_Diag.c:134-135 변환·필터",
+    "Blv_Diag.c:137 9000 < 9000 거짓 → bLow=FALSE",
+    "Blv_Diag.c:152 히스테리시스 분기"
+   ],
+   "expected_behavior": "9000mV에서 저전압으로 판정",
+   "inferred_behavior": "9000mV에서 정상(히스테리시스 구간)으로 처리",
+   "basis": [
+    {
+     "kind": "FACT",
+     "statement": "비교 연산자가 '<'이다",
+     "evidence": "Blv_Diag.c:137"
+    },
+    {
+     "kind": "FACT",
+     "statement": "BLV_LOW_MV = 9000U",
+     "evidence": "Blv_Cfg.h:7"
+    },
+    {
+     "kind": "FACT",
+     "statement": "사양 표현은 '이하'",
+     "evidence": "S26"
+    }
+   ],
+   "uncertainty": "ADC 분해능(약 19.5mV/LSB)과 4점 평균 때문에 정확히 9000mV가 산출되는 입력이 존재하는지는 확인 필요.",
+   "recommendation": "`u16Volt <= BLV_LOW_MV`로 수정한다.",
+   "additional_checks": [
+    "변환식에서 9000mV가 산출되는 raw 조합 확인"
+   ],
+   "test_cases": [
+    {
+     "title": "경계값 9000mV",
+     "technique": "BOUNDARY_VALUE",
+     "preconditions": "IgnSts=ON, 유예 종료",
+     "steps": "u16Volt가 8999/9000/9001mV가 되도록 입력(또는 변수 강제) 각 2.5초",
+     "expected": "8999·9000: FAILED, 9001: 미보고",
+     "observation": "bLow, s_u8FaultCnt, Dem"
+    }
+   ],
+   "static_candidates": [],
+   "gap_kind": "NONE",
+   "spec_question": "",
+   "risk_scenario": ""
+  },
+  {
+   "id": "x4",
+   "category": "CONDITION_MISMATCH",
+   "subcategory": "",
+   "verdict": "CONFIRMED_DEFECT",
+   "severity": "HIGH",
+   "title": "경고등이 '확정 상태'가 아니라 순간 검출 플래그를 따름",
+   "req_ids": [
+    "SWR-BLV-004"
+   ],
+   "req_quote": "고장이 확정된 상태에서는 경고등을 점등한다. 고장이 해제되면 경고등을 소등한다.",
+   "code_refs": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 181,
+     "symbol": "s_bFaultDetected",
+     "role": "경고등 출력"
+    },
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 146,
+     "symbol": "s_u8FaultCnt",
+     "role": "회복 시작 시 카운터 0"
+    },
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 157,
+     "symbol": "s_bFaultDetected",
+     "role": "검출 플래그 재계산"
+    }
+   ],
+   "spec_says": "S32: 확정 상태 동안 점등, 해제 시 소등",
+   "code_does": "L181 BlvWarnLamp = s_bFaultDetected; s_bFaultDetected는 매 주기 s_u8FaultCnt >= 200으로 재계산(L157)",
+   "comparison": "확정 상태(s_eBlvState==FAULT)와 경고등이 분리됨",
+   "trigger_condition": "고장 확정 후 BattVolt ≥ 10500mV로 회복 시작 (해제 조건 5초 미충족)",
+   "execution_path": [
+    "Blv_Diag.c:144 10500mV 이상",
+    "Blv_Diag.c:146 s_u8FaultCnt=0",
+    "Blv_Diag.c:157 s_bFaultDetected=FALSE",
+    "Blv_Diag.c:170 해제 조건 미충족 → FAULT 유지",
+    "Blv_Diag.c:181 경고등 소등"
+   ],
+   "expected_behavior": "해제(5초) 전까지 점등 유지",
+   "inferred_behavior": "회복 시작 즉시 소등, 상태는 5초간 FAULT 유지 → 상태와 표시 불일치. 카운터 순환 시에도 소등(D-001). ※ 현재 코드는 C-007(유예 타이머 무한 반복) 때문에 L116 이후가 실행되지 않으므로, 이 불일치는 C-007 수정 후 드러나는 잠복 결함이다.",
+   "basis": [
+    {
+     "kind": "FACT",
+     "statement": "경고등은 s_bFaultDetected를 그대로 출력한다",
+     "evidence": "Blv_Diag.c:181"
+    },
+    {
+     "kind": "FACT",
+     "statement": "10500mV 이상에서 고장 카운터를 즉시 0으로 만든다",
+     "evidence": "Blv_Diag.c:146"
+    },
+    {
+     "kind": "INFERENCE",
+     "statement": "회복 첫 주기에 s_bFaultDetected가 FALSE가 되어 경고등이 꺼진다",
+     "evidence": "Blv_Diag.c:157"
+    }
+   ],
+   "uncertainty": "없음 (코드 경로가 단순)",
+   "recommendation": "`BlvWarnLamp = (s_eBlvState == BLV_STATE_FAULT) ? 1U : 0U;`로 확정 상태를 출력한다.",
+   "additional_checks": [],
+   "test_cases": [
+    {
+     "title": "회복 중 경고등",
+     "technique": "STATE_TRANSITION",
+     "preconditions": "고장 확정(경고등 점등)",
+     "steps": "BattVolt 11000mV 인가 후 0~6초 관찰",
+     "expected": "5초까지 점등, 5초 후 소등·PASSED",
+     "observation": "BlvWarnLamp, s_eBlvState, Dem"
+    }
+   ],
+   "static_candidates": [
+    "SC-012"
+   ],
+   "gap_kind": "NONE",
+   "spec_question": "",
+   "risk_scenario": ""
+  },
+  {
+   "id": "x5",
+   "category": "TIMER_COUNTER_MISMATCH",
+   "subcategory": "",
+   "verdict": "PROBABLE_DEFECT",
+   "severity": "MEDIUM",
+   "title": "해제 카운터가 '연속 5초'를 보장하지 않음 (히스테리시스 구간에서 유지)",
+   "req_ids": [
+    "SWR-BLV-005",
+    "SWR-BLV-006"
+   ],
+   "req_quote": "배터리 전압이 10500mV 이상인 상태가 5초 동안 연속으로 유지되면 고장을 해제하고",
+   "code_refs": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 149,
+     "symbol": "s_u16HealCnt",
+     "role": "해제 카운터 증가"
+    },
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 142,
+     "symbol": "s_u16HealCnt",
+     "role": "저전압에서만 초기화"
+    }
+   ],
+   "spec_says": "S35: 10500mV 이상 연속 5초",
+   "code_does": "s_u16HealCnt는 저전압(L142)에서만 0, 9000~10500mV 구간(L152)에서는 유지",
+   "comparison": "중간에 10500mV 미만으로 내려가도 누적이 이어짐",
+   "trigger_condition": "10500mV 이상 3초 → 10000mV 1초 → 10500mV 이상 2초",
+   "execution_path": [
+    "Blv_Diag.c:149 3초 누적",
+    "Blv_Diag.c:152 구간 유지(초기화 없음)",
+    "Blv_Diag.c:149 2초 누적 → 500",
+    "Blv_Diag.c:170 해제"
+   ],
+   "expected_behavior": "연속 5초가 아니므로 해제하지 않음",
+   "inferred_behavior": "합산 5초로 해제·PASSED 보고",
+   "basis": [
+    {
+     "kind": "FACT",
+     "statement": "해제 카운터 초기화는 L142(저전압)뿐이다",
+     "evidence": "Blv_Diag.c:142"
+    },
+    {
+     "kind": "INFERENCE",
+     "statement": "히스테리시스 구간이 연속성을 끊지 않는다",
+     "evidence": "Blv_Diag.c:152-155"
+    }
+   ],
+   "uncertainty": "SWR-BLV-006 '현재 진단 상태 유지'가 카운터 유지를 의도했다면 사양 간 충돌 (C-006 참조).",
+   "recommendation": "10500mV 미만이면 해제 카운터를 0으로 하거나, 사양에서 연속성 규칙을 명확히 한다.",
+   "additional_checks": [
+    "SWR-BLV-005/006 해석 확인"
+   ],
+   "test_cases": [
+    {
+     "title": "비연속 회복",
+     "technique": "TIMING",
+     "preconditions": "고장 확정",
+     "steps": "11000mV 3초 → 10000mV 1초 → 11000mV 2초",
+     "expected": "해제되지 않음 (연속 5초 미충족)",
+     "observation": "s_u16HealCnt, s_eBlvState, Dem"
+    }
+   ],
+   "static_candidates": [],
+   "gap_kind": "NONE",
+   "spec_question": "",
+   "risk_scenario": ""
+  },
+  {
+   "id": "x6",
+   "category": "AMBIGUOUS",
+   "subcategory": "",
+   "verdict": "SPEC_CLARIFICATION",
+   "severity": "MEDIUM",
+   "title": "히스테리시스 구간에서 고장 카운터 유지 → '연속 2초' 요구와 해석 충돌",
+   "req_ids": [
+    "SWR-BLV-003",
+    "SWR-BLV-006"
+   ],
+   "req_quote": "저전압 조건이 2초 동안 연속으로 유지되면 / 현재 진단 상태를 유지한다.",
+   "code_refs": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 152,
+     "symbol": "else",
+     "role": "카운터 유지"
+    }
+   ],
+   "spec_says": "S29: 저전압 연속 2초 / S39: 구간에서 상태 유지",
+   "code_does": "9000~10500mV 구간에서 s_u8FaultCnt 유지 → 저전압 1.5초, 구간 0.1초, 저전압 0.5초로 확정",
+   "comparison": "'연속' 요구와 '유지' 요구의 우선순위가 정의되지 않음",
+   "trigger_condition": "저전압과 히스테리시스 구간을 오가는 전압",
+   "execution_path": [
+    "Blv_Diag.c:141 누적",
+    "Blv_Diag.c:152 유지",
+    "Blv_Diag.c:141 누적 계속"
+   ],
+   "expected_behavior": "사양 미정의 — 확인 필요",
+   "inferred_behavior": "구간 진입 시에도 누적 유지(비연속 합산으로 확정)",
+   "basis": [
+    {
+     "kind": "FACT",
+     "statement": "구간에서 카운터를 변경하지 않는다",
+     "evidence": "Blv_Diag.c:152-155"
+    },
+    {
+     "kind": "HYPOTHESIS",
+     "statement": "사양 작성자는 '진단 상태'를 FAULT/NORMAL로만 의도했을 수 있다",
+     "evidence": "S39"
+    }
+   ],
+   "uncertainty": "사양 해석에 따라 정상일 수도 결함일 수도 있음",
+   "recommendation": "사양 확정 후 카운터 처리 결정",
+   "additional_checks": [
+    "사양 작성자 확인"
+   ],
+   "test_cases": [
+    {
+     "title": "구간 경유 저전압",
+     "technique": "TIMING",
+     "preconditions": "IgnSts=ON",
+     "steps": "8500mV 1.5초 → 9500mV 0.1초 → 8500mV 0.6초",
+     "expected": "사양 미정의 — 확인 필요 (현재 코드: 2.1초 시점 FAILED)",
+     "observation": "s_u8FaultCnt, Dem"
+    }
+   ],
+   "static_candidates": [],
+   "gap_kind": "NONE",
+   "spec_question": "저전압 누적 중 9000~10500mV 구간에 진입하면 고장 카운터를 유지합니까, 초기화합니까?",
+   "risk_scenario": ""
+  }
+ ]
+}

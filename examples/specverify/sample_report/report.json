@@ -1,0 +1,3232 @@
+{
+ "meta": {
+  "tool": "specverify 0.1.0",
+  "generated_at": "2026-10-15 03:57:41",
+  "spec": "spec_blv.md",
+  "sources": [
+   "examples/specverify/src"
+  ],
+  "llm": "파일 교환 모드 (examples/specverify/sample_llm)",
+  "stages": [
+   "0 정적 분석",
+   "1 사양 분석 (요구사항 구조화)",
+   "2 구현 추적",
+   "3 정합성 분석",
+   "4 사양 공백 분석",
+   "5 코드 결함 분석"
+  ]
+ },
+ "environment": {
+  "source": "examples/specverify/env.json",
+  "summary": "- 대상: 16-bit 차체 제어 MCU (예시)\n- 자료형 크기: char 8bit(unsigned), short 16bit, int 16bit, long 32bit, long long 64bit, pointer 16bit\n- 원자적 접근 폭: 8bit\n- 실행 컨텍스트:\n  - OsTask_10ms (task, 주기 10ms, 우선순위 5, 선점 가능): 진입 함수 BlvDiag_MainFunction\n  - ADC_ConvEnd_ISR (isr, 우선순위 100, 선점 가능): 진입 함수 Adc_ConvEndIsr — ADC 변환 완료 시 약 1ms 주기로 발생\n  - EcuM_Init (init, 선점 가능, 다른 컨텍스트와 동시 실행 안 됨): 진입 함수 BlvDiag_Init — 인터럽트 허용 전 1회 호출, Wake-up 시 재호출\n- 보호 구간 함수: 진입 SuspendAllInterrupts, DisableAllInterrupts, SchM_Enter_* / 해제 ResumeAllInterrupts, EnableAllInterrupts, SchM_Exit_*\n- 참고: ADC는 10bit (0..1023), 기준전압 5000mV, 분압비 1/4\n- 참고: Dem_SetEventStatus는 동일 상태 반복 보고 허용",
+  "assumptions": [
+   "대상: 16-bit 차체 제어 MCU (예시) (int 16bit, long 32bit, char unsigned)"
+  ]
+ },
+ "code": {
+  "root": "examples/specverify/src",
+  "preprocessor": "/usr/bin/gcc -E",
+  "tool_notes": [
+   "gcc (호스트 자료형 기준: 대상 int 16bit와 다를 수 있음); 스텁 헤더로 인한 컴파일 오류 3건 제외"
+  ],
+  "files": [
+   {
+    "path": "Adc_Isr.c",
+    "lines": 13,
+    "preprocessed": true
+   },
+   {
+    "path": "Blv_Cfg.h",
+    "lines": 26,
+    "preprocessed": true
+   },
+   {
+    "path": "Blv_Diag.c",
+    "lines": 182,
+    "preprocessed": true
+   },
+   {
+    "path": "Blv_Diag.h",
+    "lines": 22,
+    "preprocessed": true
+   },
+   {
+    "path": "Std_Types.h",
+    "lines": 16,
+    "preprocessed": true
+   }
+  ],
+  "functions": 5,
+  "issues": []
+ },
+ "candidates": [
+  {
+   "id": "SC-001",
+   "rule": "COUNTER_WRAP",
+   "category": "RUNTIME_ERROR",
+   "title": "카운터/타이머 오버플로·언더플로(순환)",
+   "file": "Adc_Isr.c",
+   "function": "Adc_ConvEndIsr",
+   "line": 12,
+   "certainty": "POSSIBLE",
+   "severity": "HIGH",
+   "message": "`g_u8AdcSampleCnt`(uint8(unsigned 8bit, 0..255))가 포화(상한) 처리 없이 증가한다. 증가 조건이 256회 이상 연속 성립하면 0으로 순환하여, 이 값을 쓰는 판정 결과가 뒤집힐 수 있다.",
+   "evidence": [
+    "가드 없음",
+    "판정에 사용: Blv_Diag.c:122 BlvDiag_MainFunction(): if (g_u8AdcSampleCnt == 0U)"
+   ],
+   "needs": [
+    "증가 조건이 연속 성립할 수 있는 최대 횟수(지속 고장·장시간 운행)",
+    "카운터를 0으로 되돌리는 다른 경로"
+   ],
+   "symbols": [
+    "g_u8AdcSampleCnt"
+   ],
+   "tool_evidence": [],
+   "snippet": "   10  | {\n   11  |     g_u16BattRaw = Adc_ReadResultReg(BLV_ADC_CH);\n   12> |     g_u8AdcSampleCnt++;\n   13  | }"
+  },
+  {
+   "id": "SC-002",
+   "rule": "STATE_NEVER_ENTERED",
+   "category": "LOGIC_ERROR",
+   "title": "진입 전이가 없는 상태 (도달 불가 가능)",
+   "file": "Blv_Diag.c",
+   "function": "-",
+   "line": 10,
+   "certainty": "POSSIBLE",
+   "severity": "MEDIUM",
+   "message": "`s_eBlvState`(Blv_StateType)를 `BLV_STATE_SUSPEND`로 바꾸는 대입이 분석 범위에 없다.",
+   "evidence": [
+    "관측된 전이: *→BLV_STATE_NORMAL, BLV_STATE_FAULT→BLV_STATE_NORMAL, BLV_STATE_NORMAL→BLV_STATE_FAULT"
+   ],
+   "needs": [
+    "포인터·NvM·다른 모듈에서 이 상태로 설정하는지",
+    "사양상 이 상태가 필요한지"
+   ],
+   "symbols": [
+    "s_eBlvState",
+    "BLV_STATE_SUSPEND"
+   ],
+   "tool_evidence": [],
+   "snippet": "    8  | #include \"Blv_Diag.h\"\n    9  | \n   10> | typedef enum\n   11  | {\n   12  |     BLV_STATE_NORMAL = 0,"
+  },
+  {
+   "id": "SC-003",
+   "rule": "MISSING_VOLATILE",
+   "category": "CONCURRENCY",
+   "title": "ISR 공유 변수에 volatile 없음",
+   "file": "Blv_Diag.c",
+   "function": "-",
+   "line": 17,
+   "certainty": "POSSIBLE",
+   "severity": "LOW",
+   "message": "`g_u16BattRaw`는 ISR(ADC_ConvEnd_ISR)과 다른 컨텍스트가 공유하지만 volatile이 아니다. 컴파일러 최적화로 반복 읽기가 캐시될 수 있다.",
+   "evidence": [
+    "접근 컨텍스트: ADC_ConvEnd_ISR, OsTask_10ms"
+   ],
+   "needs": [
+    "컴파일러 최적화 수준, 반복문 내 폴링 여부"
+   ],
+   "symbols": [
+    "g_u16BattRaw"
+   ],
+   "tool_evidence": [],
+   "snippet": "   15  | } Blv_StateType;\n   16  | \n   17> | uint16 g_u16BattRaw;            /* ADC 변환 완료 ISR에서 갱신 */\n   18  | uint8  g_u8AdcSampleCnt;        /* 마지막 진단 이후 ADC 변환 횟수 */\n   19  | uint8  BlvWarnLamp;             /* 출력: 저전압 경고등 요청 */"
+  },
+  {
+   "id": "SC-004",
+   "rule": "MISSING_VOLATILE",
+   "category": "CONCURRENCY",
+   "title": "ISR 공유 변수에 volatile 없음",
+   "file": "Blv_Diag.c",
+   "function": "-",
+   "line": 18,
+   "certainty": "POSSIBLE",
+   "severity": "LOW",
+   "message": "`g_u8AdcSampleCnt`는 ISR(ADC_ConvEnd_ISR)과 다른 컨텍스트가 공유하지만 volatile이 아니다. 컴파일러 최적화로 반복 읽기가 캐시될 수 있다.",
+   "evidence": [
+    "접근 컨텍스트: ADC_ConvEnd_ISR, OsTask_10ms"
+   ],
+   "needs": [
+    "컴파일러 최적화 수준, 반복문 내 폴링 여부"
+   ],
+   "symbols": [
+    "g_u8AdcSampleCnt"
+   ],
+   "tool_evidence": [],
+   "snippet": "   16  | \n   17  | uint16 g_u16BattRaw;            /* ADC 변환 완료 ISR에서 갱신 */\n   18> | uint8  g_u8AdcSampleCnt;        /* 마지막 진단 이후 ADC 변환 횟수 */\n   19  | uint8  BlvWarnLamp;             /* 출력: 저전압 경고등 요청 */\n   20  | "
+  },
+  {
+   "id": "SC-005",
+   "rule": "ARITH_OVERFLOW",
+   "category": "RUNTIME_ERROR",
+   "title": "산술 연산 중간 결과 오버플로 가능",
+   "file": "Blv_Diag.c",
+   "function": "Blv_ConvertToMv",
+   "line": 38,
+   "certainty": "POSSIBLE",
+   "severity": "MEDIUM",
+   "message": "`u16Raw * 5000U`의 연산 자료형은 C 정수 승격 결과 unsigned 16bit(int=16bit 기준)이며 피연산자 자료형 범위상 결과가 0..327675000까지 가능해 0..65535를 넘는다 (부호 없는 연산: 모듈러 순환).",
+   "evidence": [
+    "좌변 범위 0..65535, 우변 범위 5000..5000"
+   ],
+   "needs": [
+    "실제 입력 값 범위(사양/하드웨어, 예: ADC 분해능)가 오버플로 구간에 들어가는지",
+    "대상 컴파일러의 int 크기"
+   ],
+   "symbols": [
+    "u16Raw * 5000U"
+   ],
+   "tool_evidence": [],
+   "snippet": "   36  | \n   37  |     /* ADC raw → 분압 전 전압 [mV] */\n   38> |     u16Mv = (uint16)((u16Raw * BLV_ADC_REF_MV) / BLV_ADC_MAX);\n   39  | \n   40  |     return (uint16)(u16Mv * BLV_DIVIDER_RATIO);"
+  },
+  {
+   "id": "SC-006",
+   "rule": "ARITH_OVERFLOW",
+   "category": "RUNTIME_ERROR",
+   "title": "산술 연산 중간 결과 오버플로 가능",
+   "file": "Blv_Diag.c",
+   "function": "Blv_ConvertToMv",
+   "line": 40,
+   "certainty": "POSSIBLE",
+   "severity": "MEDIUM",
+   "message": "`u16Mv * 4U`의 연산 자료형은 C 정수 승격 결과 unsigned 16bit(int=16bit 기준)이며 피연산자 자료형 범위상 결과가 0..262140까지 가능해 0..65535를 넘는다 (부호 없는 연산: 모듈러 순환).",
+   "evidence": [
+    "좌변 범위 0..65535, 우변 범위 4..4"
+   ],
+   "needs": [
+    "실제 입력 값 범위(사양/하드웨어, 예: ADC 분해능)가 오버플로 구간에 들어가는지",
+    "대상 컴파일러의 int 크기"
+   ],
+   "symbols": [
+    "u16Mv * 4U"
+   ],
+   "tool_evidence": [],
+   "snippet": "   38  |     u16Mv = (uint16)((u16Raw * BLV_ADC_REF_MV) / BLV_ADC_MAX);\n   39  | \n   40> |     return (uint16)(u16Mv * BLV_DIVIDER_RATIO);\n   41  | }\n   42  | "
+  },
+  {
+   "id": "SC-007",
+   "rule": "CONST_TRUNCATION",
+   "category": "RUNTIME_ERROR",
+   "title": "상수 대입/형변환 시 값 손실",
+   "file": "Blv_Diag.c",
+   "function": "BlvDiag_Init",
+   "line": 83,
+   "certainty": "CERTAIN",
+   "severity": "HIGH",
+   "message": "`s_u8StartMaskCnt`(uint8, 0..255)에 상수 300를 대입하면 44로 저장된다.",
+   "evidence": [
+    "대입식: s_u8StartMaskCnt = 300U"
+   ],
+   "needs": [
+    "사양상 의도한 값과 변수 자료형"
+   ],
+   "symbols": [
+    "s_u8StartMaskCnt"
+   ],
+   "tool_evidence": [
+    "gcc: Blv_Diag.c:83: conversion from ‘unsigned int’ to ‘uint8’ {aka ‘unsigned char’} changes value from ‘300’ to ‘44’ [-Woverflow]"
+   ],
+   "snippet": "   81  |     s_bFaultDetected = FALSE;\n   82  |     s_u8FaultCnt = 0U;\n   83> |     s_u8StartMaskCnt = BLV_START_MASK_CNT;\n   84  | #if (BLV_USE_FILTER == STD_ON)\n   85  |     s_u8BufIdx = 0U;"
+  },
+  {
+   "id": "SC-008",
+   "rule": "CONST_COMPARE_RANGE",
+   "category": "LOGIC_ERROR",
+   "title": "자료형 범위 밖 상수와 비교 (항상 참/거짓)",
+   "file": "Blv_Diag.c",
+   "function": "BlvDiag_MainFunction",
+   "line": 116,
+   "certainty": "CERTAIN",
+   "severity": "HIGH",
+   "message": "`s_u8StartMaskCnt < 300U`은(는) `s_u8StartMaskCnt`의 자료형 uint8(unsigned 8bit, 0..255)에서 항상 참이다.",
+   "evidence": [
+    "원본: if (s_u8StartMaskCnt < BLV_START_MASK_CNT)",
+    "상수 300는 자료형 범위 0..255 밖"
+   ],
+   "needs": [
+    "의도한 임계값과 변수 자료형 중 어느 쪽이 사양과 맞는지"
+   ],
+   "symbols": [
+    "s_u8StartMaskCnt",
+    "s_u8StartMaskCnt < 300U"
+   ],
+   "tool_evidence": [
+    "gcc: Blv_Diag.c:116: comparison is always true due to limited range of data type [-Wtype-limits]"
+   ],
+   "snippet": "  114  | \n  115  |     /* START 종료 후 마스킹 */\n  116> |     if (s_u8StartMaskCnt < BLV_START_MASK_CNT)\n  117  |     {\n  118  |         s_u8StartMaskCnt++;"
+  },
+  {
+   "id": "SC-009",
+   "rule": "INEFFECTIVE_GUARD",
+   "category": "LOGIC_ERROR",
+   "title": "가드 상수가 자료형 범위를 넘어 순환 방지 실패",
+   "file": "Blv_Diag.c",
+   "function": "BlvDiag_MainFunction",
+   "line": 118,
+   "certainty": "PROBABLE",
+   "severity": "HIGH",
+   "message": "`s_u8StartMaskCnt` 증가 가드 `s_u8StartMaskCnt < 300U`(L116)는 uint8(unsigned 8bit, 0..255)에서 항상 참이므로 포화 처리가 동작하지 않는다. 255 다음 증가 시 0으로 순환한다.",
+   "evidence": [
+    "가드 상한 299 + 증가량 1 > 자료형 최대 255",
+    "판정에 사용: Blv_Diag.c:116 BlvDiag_MainFunction(): if (s_u8StartMaskCnt < BLV_START_MASK_CNT)"
+   ],
+   "needs": [
+    "증가가 연속으로 몇 주기까지 지속될 수 있는지(사양상 상한)",
+    "매크로 값이 빌드 구성별로 다른지"
+   ],
+   "symbols": [
+    "s_u8StartMaskCnt"
+   ],
+   "tool_evidence": [],
+   "snippet": "  116  |     if (s_u8StartMaskCnt < BLV_START_MASK_CNT)\n  117  |     {\n  118> |         s_u8StartMaskCnt++;\n  119  |         return;\n  120  |     }"
+  },
+  {
+   "id": "SC-010",
+   "rule": "SHARED_RCW",
+   "category": "CONCURRENCY",
+   "title": "공유 변수의 비원자적 읽기-판단-쓰기",
+   "file": "Blv_Diag.c",
+   "function": "BlvDiag_MainFunction",
+   "line": 122,
+   "certainty": "PROBABLE",
+   "severity": "HIGH",
+   "message": "OsTask_10ms가 `g_u8AdcSampleCnt`를 L122에서 읽고 L127에서 쓰는 사이에 ADC_ConvEnd_ISR가 값을 바꾸면, 그 변경이 L127의 쓰기로 덮여 유실된다.",
+   "evidence": [
+    "BlvDiag_MainFunction(): L122 읽기 → L127 쓰기 (보호 구간 없음)",
+    "ADC_ConvEnd_ISR의 쓰기: Adc_ConvEndIsr():L12"
+   ],
+   "needs": [
+    "두 접근 사이에서 인터럽트가 발생 가능한지(실행 시간, 인터럽트 금지 여부)"
+   ],
+   "symbols": [
+    "g_u8AdcSampleCnt"
+   ],
+   "tool_evidence": [],
+   "snippet": "  120  |     }\n  121  | \n  122> |     if (g_u8AdcSampleCnt == 0U)\n  123  |     {\n  124  |         return;     /* 새 샘플 없음 */"
+  },
+  {
+   "id": "SC-011",
+   "rule": "TORN_ACCESS",
+   "category": "CONCURRENCY",
+   "title": "원자적 접근 폭을 넘는 공유 변수 접근",
+   "file": "Blv_Diag.c",
+   "function": "BlvDiag_MainFunction",
+   "line": 126,
+   "certainty": "PROBABLE",
+   "severity": "MEDIUM",
+   "message": "`g_u16BattRaw`(16bit)는 원자적 접근 폭(8bit)보다 커서 OsTask_10ms의 접근(L126) 도중 ADC_ConvEnd_ISR가 끼어들면 상·하위가 다른 시점의 값이 섞일 수 있다.",
+   "evidence": [],
+   "needs": [
+    "대상 MCU의 해당 변수 접근 명령(LDD/LDW 등)이 원자적인지"
+   ],
+   "symbols": [
+    "g_u16BattRaw"
+   ],
+   "tool_evidence": [],
+   "snippet": "  124  |         return;     /* 새 샘플 없음 */\n  125  |     }\n  126> |     u16Raw = g_u16BattRaw;\n  127  |     g_u8AdcSampleCnt = 0U;\n  128  | "
+  },
+  {
+   "id": "SC-012",
+   "rule": "COUNTER_WRAP",
+   "category": "RUNTIME_ERROR",
+   "title": "카운터/타이머 오버플로·언더플로(순환)",
+   "file": "Blv_Diag.c",
+   "function": "BlvDiag_MainFunction",
+   "line": 141,
+   "certainty": "POSSIBLE",
+   "severity": "HIGH",
+   "message": "`s_u8FaultCnt`(uint8(unsigned 8bit, 0..255))가 포화(상한) 처리 없이 증가한다. 증가 조건이 256회 이상 연속 성립하면 0으로 순환하여, 이 값을 쓰는 판정 결과가 뒤집힐 수 있다.",
+   "evidence": [
+    "증가 위치의 가드: L100:!(eIgn == IGN_START) && L110:!(eIgn == IGN_OFF) && L116:!(s_u8StartMaskCnt < 300U) && L122:!(g_u8AdcSampleCnt == 0U) && L129:!(u16Raw == 0xFFFFU) && L139:bLow == 1U",
+    "판정에 사용: Blv_Diag.c:157 BlvDiag_MainFunction(): s_bFaultDetected = (s_u8FaultCnt >= BLV_CONFIRM_CNT) ? TRUE : FALSE;"
+   ],
+   "needs": [
+    "증가 조건이 연속 성립할 수 있는 최대 횟수(지속 고장·장시간 운행)",
+    "카운터를 0으로 되돌리는 다른 경로"
+   ],
+   "symbols": [
+    "s_u8FaultCnt"
+   ],
+   "tool_evidence": [],
+   "snippet": "  139  |     if (bLow == TRUE)\n  140  |     {\n  141> |         s_u8FaultCnt++;\n  142  |         s_u16HealCnt = 0U;\n  143  |     }"
+  },
+  {
+   "id": "SC-013",
+   "rule": "TOOL_WARNING",
+   "category": "LOGIC_ERROR",
+   "title": "외부 정적 분석 도구 경고",
+   "file": "Blv_Diag.c",
+   "function": "-",
+   "line": 159,
+   "certainty": "POSSIBLE",
+   "severity": "LOW",
+   "message": "enumeration value ‘BLV_STATE_SUSPEND’ not handled in switch",
+   "evidence": [],
+   "needs": [],
+   "symbols": [],
+   "tool_evidence": [
+    "gcc: Blv_Diag.c:159: enumeration value ‘BLV_STATE_SUSPEND’ not handled in switch [-Wswitch-enum]"
+   ],
+   "snippet": "  157  |     s_bFaultDetected = (s_u8FaultCnt >= BLV_CONFIRM_CNT) ? TRUE : FALSE;\n  158  | \n  159> |     switch (s_eBlvState)\n  160  |     {\n  161  |         case BLV_STATE_NORMAL:"
+  }
+ ],
+ "requirements": {
+  "requirements": [
+   {
+    "id": "SWR-BLV-001",
+    "id_origin": "SPEC",
+    "title": "진단 실행 조건",
+    "source": {
+     "line_start": 22,
+     "line_end": 23,
+     "quote": "진단은 IgnSts가 ON일 때 수행한다. IgnSts가 START인 동안에는 크랭킹에 의한 일시적 전압 강하가 발생하므로 진단을 중단하며, 이때 고장 카운터와 정상 카운터는 현재 값을 유지한다."
+    },
+    "purpose": "진단 수행 구간을 IGN ON으로 한정하고, 크랭킹(START) 중에는 진단을 중단하되 카운터를 보존한다.",
+    "inputs": [
+     {
+      "name": "IgnSts",
+      "detail": "이그니션 상태",
+      "value": "OFF/ACC/ON/START",
+      "unit": "",
+      "status": "DEFINED",
+      "quote": "IgnSts"
+     }
+    ],
+    "outputs": [],
+    "execution_conditions": [
+     {
+      "name": "진단 수행",
+      "detail": "IgnSts == ON",
+      "value": "",
+      "unit": "",
+      "status": "DEFINED",
+      "quote": "진단은 IgnSts가 ON일 때 수행한다."
+     },
+     {
+      "name": "진단 중단",
+      "detail": "IgnSts == START",
+      "value": "",
+      "unit": "",
+      "status": "DEFINED",
+      "quote": "IgnSts가 START인 동안에는 ... 진단을 중단하며"
+     }
+    ],
+    "decision_conditions": [],
+    "states": [],
+    "transitions": [],
+    "timers_counters": [],
+    "thresholds_boundaries": [],
+    "exceptions": [
+     {
+      "name": "START 중 카운터",
+      "detail": "고장 카운터와 정상 카운터는 현재 값 유지",
+      "value": "",
+      "unit": "",
+      "status": "DEFINED",
+      "quote": "이때 고장 카운터와 정상 카운터는 현재 값을 유지한다."
+     }
+    ],
+    "priorities": [],
+    "ambiguities": [
+     {
+      "element": "ACC 상태",
+      "quote": "진단은 IgnSts가 ON일 때 수행한다.",
+      "reason": "ON에서 수행한다고만 되어 있어 ACC/OFF에서 '수행하지 않음'이 명시적이지 않다.",
+      "question": "IgnSts가 ACC일 때 진단을 수행하지 않는 것이 맞습니까? (OFF도 동일)"
+     },
+     {
+      "element": "정상 카운터",
+      "quote": "고장 카운터와 정상 카운터",
+      "reason": "'정상 카운터'가 SWR-BLV-005의 해제 판정용 카운터인지 용어 정의가 없다.",
+      "question": "'정상 카운터'는 고장 해제(10500mV 이상 5초) 판정용 카운터를 의미합니까?"
+     }
+    ],
+    "undefined_items": [
+     {
+      "element": "ON 이외 상태에서의 출력",
+      "description": "진단을 수행하지 않는 IgnSts(OFF/ACC)에서 경고등·진단 상태를 어떻게 유지/초기화할지 정의되지 않음",
+      "question": "IgnSts가 OFF/ACC로 바뀌면 경고등과 진단 상태는 유지합니까, 초기화합니까?"
+     }
+    ],
+    "source_check": {
+     "quote_found": true,
+     "lines": [
+      22,
+      23
+     ]
+    }
+   },
+   {
+    "id": "SWR-BLV-002",
+    "id_origin": "SPEC",
+    "title": "저전압 판정",
+    "source": {
+     "line_start": 26,
+     "line_end": 26,
+     "quote": "배터리 전압이 9000mV 이하이면 저전압 조건으로 판단한다."
+    },
+    "purpose": "저전압 조건을 정의한다.",
+    "inputs": [
+     {
+      "name": "BattVolt",
+      "detail": "배터리 전압 (분압 보정 후)",
+      "value": "0 ~ 20000",
+      "unit": "mV",
+      "status": "DEFINED",
+      "quote": "BattVolt | 입력 | ADC로 측정한 배터리 전압 (분압 보정 후) | 0 ~ 20000 mV"
+     }
+    ],
+    "outputs": [],
+    "execution_conditions": [],
+    "decision_conditions": [
+     {
+      "name": "저전압 조건",
+      "detail": "BattVolt <= 9000mV",
+      "value": "9000",
+      "unit": "mV",
+      "status": "DEFINED",
+      "quote": "배터리 전압이 9000mV 이하이면 저전압 조건으로 판단한다."
+     }
+    ],
+    "states": [],
+    "transitions": [],
+    "timers_counters": [],
+    "thresholds_boundaries": [
+     {
+      "item": "저전압 임계값",
+      "value": "9000",
+      "unit": "mV",
+      "inclusive": "INCLUSIVE",
+      "status": "DEFINED",
+      "quote": "9000mV 이하"
+     }
+    ],
+    "exceptions": [],
+    "priorities": [],
+    "ambiguities": [],
+    "undefined_items": [],
+    "source_check": {
+     "quote_found": true,
+     "lines": [
+      26,
+      26
+     ]
+    }
+   },
+   {
+    "id": "SWR-BLV-003",
+    "id_origin": "SPEC",
+    "title": "고장 확정",
+    "source": {
+     "line_start": 29,
+     "line_end": 29,
+     "quote": "저전압 조건이 2초 동안 연속으로 유지되면 고장으로 확정하고 DTC B1A00을 FAILED로 보고한다."
+    },
+    "purpose": "저전압 지속 시간으로 고장을 확정하고 DTC를 보고한다.",
+    "inputs": [],
+    "outputs": [
+     {
+      "name": "DTC B1A00",
+      "detail": "배터리 저전압 고장",
+      "value": "FAILED / PASSED",
+      "unit": "",
+      "status": "DEFINED",
+      "quote": "DTC B1A00 | 출력 | 배터리 저전압 고장 | Dem 이벤트 상태 FAILED / PASSED"
+     }
+    ],
+    "execution_conditions": [],
+    "decision_conditions": [
+     {
+      "name": "고장 확정",
+      "detail": "저전압 조건 2초 연속",
+      "value": "2",
+      "unit": "s",
+      "status": "DEFINED",
+      "quote": "저전압 조건이 2초 동안 연속으로 유지되면"
+     }
+    ],
+    "states": [
+     {
+      "name": "고장 확정",
+      "detail": "Confirmed",
+      "value": "",
+      "unit": "",
+      "status": "DEFINED",
+      "quote": "고장으로 확정하고"
+     }
+    ],
+    "transitions": [
+     {
+      "from": "정상(미확정)",
+      "to": "고장 확정",
+      "condition": "저전압 조건 2초 연속",
+      "status": "DEFINED",
+      "quote": "저전압 조건이 2초 동안 연속으로 유지되면 고장으로 확정하고"
+     }
+    ],
+    "timers_counters": [
+     {
+      "name": "고장 확정 타이머",
+      "kind": "DEBOUNCE",
+      "value": "2",
+      "unit": "s",
+      "behavior": "저전압 조건 연속 시간. (추론) 10ms 주기 기준 200회",
+      "status": "DEFINED",
+      "quote": "2초 동안 연속으로"
+     }
+    ],
+    "thresholds_boundaries": [],
+    "exceptions": [],
+    "priorities": [],
+    "ambiguities": [
+     {
+      "element": "연속성 판단",
+      "quote": "2초 동안 연속으로 유지되면",
+      "reason": "히스테리시스 구간(SWR-BLV-006) 진입, 무효 샘플(SWR-BLV-008), 진단 중단(START)이 '연속'을 끊는지 정의되지 않음",
+      "question": "저전압 누적 중 히스테리시스 구간 진입·무효 샘플·START가 발생하면 2초 카운트를 초기화합니까, 유지합니까?"
+     }
+    ],
+    "undefined_items": [
+     {
+      "element": "확정 후 카운터",
+      "description": "고장 확정 후 저전압이 계속될 때 카운터의 포화/정지 여부",
+      "question": "고장 확정 이후에도 저전압이 지속되면 고장 카운터는 포화(정지)되어야 합니까?"
+     }
+    ],
+    "source_check": {
+     "quote_found": true,
+     "lines": [
+      29,
+      29
+     ]
+    }
+   },
+   {
+    "id": "SWR-BLV-004",
+    "id_origin": "SPEC",
+    "title": "경고등 출력",
+    "source": {
+     "line_start": 32,
+     "line_end": 32,
+     "quote": "고장이 확정된 상태에서는 경고등을 점등한다. 고장이 해제되면 경고등을 소등한다."
+    },
+    "purpose": "고장 확정 상태를 운전자에게 알린다.",
+    "inputs": [],
+    "outputs": [
+     {
+      "name": "BlvWarnLamp",
+      "detail": "저전압 경고등 요청",
+      "value": "0: 소등, 1: 점등",
+      "unit": "",
+      "status": "DEFINED",
+      "quote": "BlvWarnLamp | 출력 | 저전압 경고등 요청 | 0: 소등, 1: 점등"
+     }
+    ],
+    "execution_conditions": [],
+    "decision_conditions": [
+     {
+      "name": "점등",
+      "detail": "고장 확정 상태",
+      "value": "",
+      "unit": "",
+      "status": "DEFINED",
+      "quote": "고장이 확정된 상태에서는 경고등을 점등한다."
+     },
+     {
+      "name": "소등",
+      "detail": "고장 해제",
+      "value": "",
+      "unit": "",
+      "status": "DEFINED",
+      "quote": "고장이 해제되면 경고등을 소등한다."
+     }
+    ],
+    "states": [],
+    "transitions": [],
+    "timers_counters": [],
+    "thresholds_boundaries": [],
+    "exceptions": [],
+    "priorities": [],
+    "ambiguities": [],
+    "undefined_items": [],
+    "source_check": {
+     "quote_found": true,
+     "lines": [
+      32,
+      32
+     ]
+    }
+   },
+   {
+    "id": "SWR-BLV-005",
+    "id_origin": "SPEC",
+    "title": "고장 해제",
+    "source": {
+     "line_start": 35,
+     "line_end": 36,
+     "quote": "고장 확정 이후 배터리 전압이 10500mV 이상인 상태가 5초 동안 연속으로 유지되면 고장을 해제하고 DTC B1A00을 PASSED로 보고한다. 고장 해제 시 고장 카운터는 0으로 초기화한다."
+    },
+    "purpose": "회복 조건과 회복 시 처리를 정의한다.",
+    "inputs": [
+     {
+      "name": "BattVolt",
+      "detail": "배터리 전압 (분압 보정 후)",
+      "value": "0 ~ 20000",
+      "unit": "mV",
+      "status": "DEFINED",
+      "quote": "BattVolt | 입력 | ADC로 측정한 배터리 전압 (분압 보정 후) | 0 ~ 20000 mV"
+     }
+    ],
+    "outputs": [
+     {
+      "name": "DTC B1A00",
+      "detail": "배터리 저전압 고장",
+      "value": "FAILED / PASSED",
+      "unit": "",
+      "status": "DEFINED",
+      "quote": "DTC B1A00 | 출력 | 배터리 저전압 고장 | Dem 이벤트 상태 FAILED / PASSED"
+     }
+    ],
+    "execution_conditions": [],
+    "decision_conditions": [],
+    "states": [],
+    "transitions": [
+     {
+      "from": "고장 확정",
+      "to": "정상",
+      "condition": "BattVolt >= 10500mV 5초 연속",
+      "status": "DEFINED",
+      "quote": "고장 확정 이후 배터리 전압이 10500mV 이상인 상태가 5초 동안 연속으로 유지되면 고장을 해제하고"
+     }
+    ],
+    "timers_counters": [
+     {
+      "name": "고장 해제 타이머",
+      "kind": "DEBOUNCE",
+      "value": "5",
+      "unit": "s",
+      "behavior": "10500mV 이상 연속 시간. (추론) 10ms 주기 기준 500회",
+      "status": "DEFINED",
+      "quote": "5초 동안 연속으로"
+     }
+    ],
+    "thresholds_boundaries": [
+     {
+      "item": "해제 임계값",
+      "value": "10500",
+      "unit": "mV",
+      "inclusive": "INCLUSIVE",
+      "status": "DEFINED",
+      "quote": "10500mV 이상"
+     }
+    ],
+    "exceptions": [
+     {
+      "name": "해제 시 카운터",
+      "detail": "고장 카운터 0",
+      "value": "0",
+      "unit": "",
+      "status": "DEFINED",
+      "quote": "고장 해제 시 고장 카운터는 0으로 초기화한다."
+     }
+    ],
+    "priorities": [],
+    "ambiguities": [],
+    "undefined_items": [],
+    "source_check": {
+     "quote_found": true,
+     "lines": [
+      35,
+      36
+     ]
+    }
+   },
+   {
+    "id": "SWR-BLV-006",
+    "id_origin": "SPEC",
+    "title": "히스테리시스",
+    "source": {
+     "line_start": 39,
+     "line_end": 39,
+     "quote": "배터리 전압이 9000mV 초과 10500mV 미만인 구간에서는 현재 진단 상태를 유지한다."
+    },
+    "purpose": "판정 채터링 방지.",
+    "inputs": [
+     {
+      "name": "BattVolt",
+      "detail": "배터리 전압 (분압 보정 후)",
+      "value": "0 ~ 20000",
+      "unit": "mV",
+      "status": "DEFINED",
+      "quote": "BattVolt | 입력 | ADC로 측정한 배터리 전압 (분압 보정 후) | 0 ~ 20000 mV"
+     }
+    ],
+    "outputs": [],
+    "execution_conditions": [],
+    "decision_conditions": [],
+    "states": [],
+    "transitions": [],
+    "timers_counters": [],
+    "thresholds_boundaries": [
+     {
+      "item": "히스테리시스 하한",
+      "value": "9000",
+      "unit": "mV",
+      "inclusive": "EXCLUSIVE",
+      "status": "DEFINED",
+      "quote": "9000mV 초과"
+     },
+     {
+      "item": "히스테리시스 상한",
+      "value": "10500",
+      "unit": "mV",
+      "inclusive": "EXCLUSIVE",
+      "status": "DEFINED",
+      "quote": "10500mV 미만"
+     }
+    ],
+    "exceptions": [],
+    "priorities": [],
+    "ambiguities": [
+     {
+      "element": "유지 대상",
+      "quote": "현재 진단 상태를 유지한다.",
+      "reason": "'진단 상태'에 진행 중인 고장/해제 카운터가 포함되는지 불명확 (상태만 유지하고 카운터는 초기화할 수도 있음)",
+      "question": "히스테리시스 구간에서 진행 중이던 고장 카운터·해제 카운터는 유지합니까, 초기화합니까?"
+     }
+    ],
+    "undefined_items": [],
+    "source_check": {
+     "quote_found": true,
+     "lines": [
+      39,
+      39
+     ]
+    }
+   },
+   {
+    "id": "SWR-BLV-007",
+    "id_origin": "SPEC",
+    "title": "시동 후 진단 유예",
+    "source": {
+     "line_start": 42,
+     "line_end": 42,
+     "quote": "IgnSts가 START에서 ON으로 전환된 후 3초 동안은 진단 판정을 유예한다."
+    },
+    "purpose": "크랭킹 직후 전압 회복 구간의 오검출 방지.",
+    "inputs": [
+     {
+      "name": "IgnSts",
+      "detail": "이그니션 상태",
+      "value": "OFF/ACC/ON/START",
+      "unit": "",
+      "status": "DEFINED",
+      "quote": "IgnSts"
+     }
+    ],
+    "outputs": [],
+    "execution_conditions": [],
+    "decision_conditions": [],
+    "states": [],
+    "transitions": [],
+    "timers_counters": [
+     {
+      "name": "시동 후 유예 타이머",
+      "kind": "DELAY",
+      "value": "3",
+      "unit": "s",
+      "behavior": "START→ON 전환 시점부터 계시. (추론) 10ms 주기 기준 300회",
+      "status": "DEFINED",
+      "quote": "3초 동안은 진단 판정을 유예한다."
+     }
+    ],
+    "thresholds_boundaries": [],
+    "exceptions": [],
+    "priorities": [],
+    "ambiguities": [],
+    "undefined_items": [
+     {
+      "element": "유예 중 카운터",
+      "description": "유예 중 고장/해제 카운터를 유지할지 초기화할지",
+      "question": "유예 기간 동안 카운터는 유지합니까?"
+     },
+     {
+      "element": "전원 투입 시 유예",
+      "description": "START를 거치지 않은 ON(예: 리셋 후)에서의 유예 여부",
+      "question": "제어기 초기화 직후에도 3초 유예를 적용합니까?"
+     }
+    ],
+    "source_check": {
+     "quote_found": true,
+     "lines": [
+      42,
+      42
+     ]
+    }
+   },
+   {
+    "id": "SWR-BLV-008",
+    "id_origin": "SPEC",
+    "title": "입력 유효성",
+    "source": {
+     "line_start": 45,
+     "line_end": 45,
+     "quote": "BattVolt 측정값이 무효(ADC 오류 값)인 경우 해당 주기의 판정을 수행하지 않는다."
+    },
+    "purpose": "무효 입력으로 인한 오판정 방지.",
+    "inputs": [
+     {
+      "name": "BattVolt",
+      "detail": "배터리 전압 (분압 보정 후)",
+      "value": "0 ~ 20000",
+      "unit": "mV",
+      "status": "DEFINED",
+      "quote": "BattVolt | 입력 | ADC로 측정한 배터리 전압 (분압 보정 후) | 0 ~ 20000 mV"
+     }
+    ],
+    "outputs": [],
+    "execution_conditions": [],
+    "decision_conditions": [],
+    "states": [],
+    "transitions": [],
+    "timers_counters": [],
+    "thresholds_boundaries": [],
+    "exceptions": [
+     {
+      "name": "무효 입력",
+      "detail": "판정 미수행",
+      "value": "",
+      "unit": "",
+      "status": "AMBIGUOUS",
+      "quote": "무효(ADC 오류 값)인 경우 해당 주기의 판정을 수행하지 않는다."
+     }
+    ],
+    "priorities": [],
+    "ambiguities": [
+     {
+      "element": "무효값 정의",
+      "quote": "무효(ADC 오류 값)",
+      "reason": "어떤 값이 ADC 오류 값인지 정의되지 않음 (특정 코드값? 범위 0~20000 초과?)",
+      "question": "무효로 판단할 값(예: 0xFFFF, 20000mV 초과, ADC 오류 플래그)을 정의해 주십시오."
+     }
+    ],
+    "undefined_items": [],
+    "source_check": {
+     "quote_found": true,
+     "lines": [
+      45,
+      45
+     ]
+    }
+   },
+   {
+    "id": "SWR-BLV-009",
+    "id_origin": "SPEC",
+    "title": "초기화",
+    "source": {
+     "line_start": 48,
+     "line_end": 49,
+     "quote": "제어기 초기화 시 고장 카운터, 정상 카운터, 진단 상태는 초기값으로 설정하고 경고등은 소등한다. 단, 이전 운전 사이클에서 확정된 DTC는 유지한다."
+    },
+    "purpose": "초기화 시 내부 상태 정의.",
+    "inputs": [],
+    "outputs": [
+     {
+      "name": "BlvWarnLamp",
+      "detail": "저전압 경고등 요청",
+      "value": "0: 소등, 1: 점등",
+      "unit": "",
+      "status": "DEFINED",
+      "quote": "BlvWarnLamp | 출력 | 저전압 경고등 요청 | 0: 소등, 1: 점등"
+     },
+     {
+      "name": "DTC B1A00",
+      "detail": "배터리 저전압 고장",
+      "value": "FAILED / PASSED",
+      "unit": "",
+      "status": "DEFINED",
+      "quote": "DTC B1A00 | 출력 | 배터리 저전압 고장 | Dem 이벤트 상태 FAILED / PASSED"
+     }
+    ],
+    "execution_conditions": [],
+    "decision_conditions": [],
+    "states": [],
+    "transitions": [],
+    "timers_counters": [],
+    "thresholds_boundaries": [],
+    "exceptions": [
+     {
+      "name": "확정 DTC",
+      "detail": "이전 사이클 확정 DTC 유지",
+      "value": "",
+      "unit": "",
+      "status": "DEFINED",
+      "quote": "이전 운전 사이클에서 확정된 DTC는 유지한다."
+     }
+    ],
+    "priorities": [],
+    "ambiguities": [],
+    "undefined_items": [
+     {
+      "element": "초기값",
+      "description": "카운터·진단 상태의 '초기값'이 무엇인지 (0, 정상 상태 등) 명시되지 않음",
+      "question": "초기값은 카운터 0, 진단 상태 '정상'이 맞습니까?"
+     },
+     {
+      "element": "이전 확정 DTC의 해제",
+      "description": "이전 사이클에서 확정된 DTC를 이번 사이클에서 어떤 조건으로 PASSED 보고하는지",
+      "question": "이전 사이클 확정 DTC는 이번 사이클에서 정상 전압 5초 확인 시 PASSED로 보고합니까?"
+     }
+    ],
+    "source_check": {
+     "quote_found": true,
+     "lines": [
+      48,
+      49
+     ]
+    }
+   },
+   {
+    "id": "SWR-BLV-010",
+    "id_origin": "SPEC",
+    "title": "경고등 우선순위",
+    "source": {
+     "line_start": 52,
+     "line_end": 52,
+     "quote": "진단 중단 조건(IgnSts = START)에서도 고장 확정 상태라면 경고등 점등을 유지한다."
+    },
+    "purpose": "크랭킹 중에도 확정된 고장 경고를 유지.",
+    "inputs": [
+     {
+      "name": "IgnSts",
+      "detail": "이그니션 상태",
+      "value": "OFF/ACC/ON/START",
+      "unit": "",
+      "status": "DEFINED",
+      "quote": "IgnSts"
+     }
+    ],
+    "outputs": [
+     {
+      "name": "BlvWarnLamp",
+      "detail": "저전압 경고등 요청",
+      "value": "0: 소등, 1: 점등",
+      "unit": "",
+      "status": "DEFINED",
+      "quote": "BlvWarnLamp | 출력 | 저전압 경고등 요청 | 0: 소등, 1: 점등"
+     }
+    ],
+    "execution_conditions": [],
+    "decision_conditions": [],
+    "states": [],
+    "transitions": [],
+    "timers_counters": [],
+    "thresholds_boundaries": [],
+    "exceptions": [],
+    "priorities": [
+     {
+      "name": "경고등 유지",
+      "detail": "고장 확정 상태 > 진단 중단",
+      "value": "",
+      "unit": "",
+      "status": "DEFINED",
+      "quote": "진단 중단 조건(IgnSts = START)에서도 고장 확정 상태라면 경고등 점등을 유지한다."
+     }
+    ],
+    "ambiguities": [],
+    "undefined_items": [],
+    "source_check": {
+     "quote_found": true,
+     "lines": [
+      52,
+      52
+     ]
+    }
+   }
+  ],
+  "glossary": [
+   {
+    "term": "BattVolt",
+    "definition": "ADC로 측정한 배터리 전압 (분압 보정 후), 0~20000mV",
+    "line": 14
+   },
+   {
+    "term": "진단 주기",
+    "definition": "10ms",
+    "line": 56
+   }
+  ],
+  "document_notes": [
+   "비기능 요구사항(S56-S57): 진단 주기 10ms, 경고등 요청 지연 100ms 이내 — 기능 요구사항의 시간 환산 근거로 사용"
+  ]
+ },
+ "traces": {
+  "traces": [
+   {
+    "req_id": "SWR-BLV-001",
+    "status": "TRACED",
+    "confidence": "HIGH",
+    "locations": [
+     {
+      "file": "Blv_Diag.c",
+      "function": "BlvDiag_MainFunction",
+      "line_start": 98,
+      "line_end": 98,
+      "role": "INPUT_READ",
+      "element": "IgnSts",
+      "symbol": "IoHwAb_GetIgnSts",
+      "explanation": "IgnSts 획득",
+      "check": {
+       "verified": true,
+       "note": "확인됨"
+      }
+     },
+     {
+      "file": "Blv_Diag.c",
+      "function": "BlvDiag_MainFunction",
+      "line_start": 100,
+      "line_end": 107,
+      "role": "CONDITION",
+      "element": "START 시 진단 중단",
+      "symbol": "IGN_START",
+      "explanation": "START면 카운터·경고등을 0으로 만들고 반환",
+      "check": {
+       "verified": true,
+       "note": "확인됨"
+      }
+     },
+     {
+      "file": "Blv_Diag.c",
+      "function": "BlvDiag_MainFunction",
+      "line_start": 110,
+      "line_end": 113,
+      "role": "CONDITION",
+      "element": "ON에서만 수행",
+      "symbol": "IGN_OFF",
+      "explanation": "OFF만 반환, ACC는 진단 계속",
+      "check": {
+       "verified": true,
+       "note": "확인됨"
+      }
+     }
+    ],
+    "call_path": [
+     "OsTask_10ms → BlvDiag_MainFunction"
+    ],
+    "unmatched_elements": [],
+    "search_notes": ""
+   },
+   {
+    "req_id": "SWR-BLV-002",
+    "status": "TRACED",
+    "confidence": "HIGH",
+    "locations": [
+     {
+      "file": "Blv_Diag.c",
+      "function": "BlvDiag_MainFunction",
+      "line_start": 137,
+      "line_end": 137,
+      "role": "THRESHOLD",
+      "element": "9000mV 이하",
+      "symbol": "BLV_LOW_MV",
+      "explanation": "bLow = (u16Volt < BLV_LOW_MV)",
+      "check": {
+       "verified": true,
+       "note": "확인됨"
+      }
+     },
+     {
+      "file": "Blv_Cfg.h",
+      "function": "-",
+      "line_start": 7,
+      "line_end": 7,
+      "role": "THRESHOLD",
+      "element": "9000mV",
+      "symbol": "BLV_LOW_MV",
+      "explanation": "임계값 9000U 정의",
+      "check": {
+       "verified": true,
+       "note": "확인됨"
+      }
+     },
+     {
+      "file": "Blv_Diag.c",
+      "function": "Blv_ConvertToMv",
+      "line_start": 38,
+      "line_end": 40,
+      "role": "INPUT_READ",
+      "element": "BattVolt(mV)",
+      "symbol": "u16Mv",
+      "explanation": "ADC raw → mV 변환",
+      "check": {
+       "verified": true,
+       "note": "확인됨"
+      }
+     }
+    ],
+    "call_path": [
+     "BlvDiag_MainFunction → Blv_ConvertToMv → Blv_Filter"
+    ],
+    "unmatched_elements": [],
+    "search_notes": ""
+   },
+   {
+    "req_id": "SWR-BLV-003",
+    "status": "TRACED",
+    "confidence": "HIGH",
+    "locations": [
+     {
+      "file": "Blv_Diag.c",
+      "function": "BlvDiag_MainFunction",
+      "line_start": 139,
+      "line_end": 143,
+      "role": "TIMER_COUNTER",
+      "element": "저전압 지속 카운트",
+      "symbol": "s_u8FaultCnt",
+      "explanation": "저전압이면 고장 카운터 증가",
+      "check": {
+       "verified": true,
+       "note": "확인됨"
+      }
+     },
+     {
+      "file": "Blv_Diag.c",
+      "function": "BlvDiag_MainFunction",
+      "line_start": 157,
+      "line_end": 157,
+      "role": "CONDITION",
+      "element": "2초(200회) 판정",
+      "symbol": "BLV_CONFIRM_CNT",
+      "explanation": "카운터 >= 200이면 s_bFaultDetected",
+      "check": {
+       "verified": true,
+       "note": "확인됨"
+      }
+     },
+     {
+      "file": "Blv_Diag.c",
+      "function": "BlvDiag_MainFunction",
+      "line_start": 162,
+      "line_end": 166,
+      "role": "STATE_TRANSITION",
+      "element": "고장 확정, DTC FAILED",
+      "symbol": "Dem_SetEventStatus",
+      "explanation": "NORMAL→FAULT, FAILED 보고",
+      "check": {
+       "verified": true,
+       "note": "확인됨"
+      }
+     }
+    ],
+    "call_path": [],
+    "unmatched_elements": [],
+    "search_notes": ""
+   },
+   {
+    "req_id": "SWR-BLV-004",
+    "status": "TRACED",
+    "confidence": "HIGH",
+    "locations": [
+     {
+      "file": "Blv_Diag.c",
+      "function": "BlvDiag_MainFunction",
+      "line_start": 181,
+      "line_end": 181,
+      "role": "OUTPUT_WRITE",
+      "element": "경고등",
+      "symbol": "BlvWarnLamp",
+      "explanation": "경고등 = s_bFaultDetected (확정 상태 s_eBlvState가 아님)",
+      "check": {
+       "verified": true,
+       "note": "확인됨"
+      }
+     }
+    ],
+    "call_path": [],
+    "unmatched_elements": [],
+    "search_notes": ""
+   },
+   {
+    "req_id": "SWR-BLV-005",
+    "status": "TRACED",
+    "confidence": "HIGH",
+    "locations": [
+     {
+      "file": "Blv_Diag.c",
+      "function": "BlvDiag_MainFunction",
+      "line_start": 144,
+      "line_end": 151,
+      "role": "TIMER_COUNTER",
+      "element": "10500mV 이상 5초",
+      "symbol": "s_u16HealCnt",
+      "explanation": "10500mV 이상이면 해제 카운터 증가(500 포화), 고장 카운터 0",
+      "check": {
+       "verified": true,
+       "note": "확인됨"
+      }
+     },
+     {
+      "file": "Blv_Diag.c",
+      "function": "BlvDiag_MainFunction",
+      "line_start": 170,
+      "line_end": 174,
+      "role": "STATE_TRANSITION",
+      "element": "고장 해제, DTC PASSED",
+      "symbol": "BLV_HEAL_CNT",
+      "explanation": "FAULT→NORMAL, PASSED 보고",
+      "check": {
+       "verified": true,
+       "note": "확인됨"
+      }
+     }
+    ],
+    "call_path": [],
+    "unmatched_elements": [],
+    "search_notes": ""
+   },
+   {
+    "req_id": "SWR-BLV-006",
+    "status": "TRACED",
+    "confidence": "MEDIUM",
+    "locations": [
+     {
+      "file": "Blv_Diag.c",
+      "function": "BlvDiag_MainFunction",
+      "line_start": 152,
+      "line_end": 155,
+      "role": "CONDITION",
+      "element": "히스테리시스 구간 유지",
+      "symbol": "else",
+      "explanation": "카운터 변경 없음",
+      "check": {
+       "verified": true,
+       "note": "확인됨"
+      }
+     }
+    ],
+    "call_path": [],
+    "unmatched_elements": [],
+    "search_notes": ""
+   },
+   {
+    "req_id": "SWR-BLV-007",
+    "status": "TRACED",
+    "confidence": "HIGH",
+    "locations": [
+     {
+      "file": "Blv_Diag.c",
+      "function": "BlvDiag_MainFunction",
+      "line_start": 105,
+      "line_end": 105,
+      "role": "TIMER_COUNTER",
+      "element": "START에서 유예 타이머 시작",
+      "symbol": "s_u8StartMaskCnt",
+      "explanation": "START 중 0으로 설정",
+      "check": {
+       "verified": true,
+       "note": "확인됨"
+      }
+     },
+     {
+      "file": "Blv_Diag.c",
+      "function": "BlvDiag_MainFunction",
+      "line_start": 116,
+      "line_end": 120,
+      "role": "TIMER_COUNTER",
+      "element": "3초 유예",
+      "symbol": "BLV_START_MASK_CNT",
+      "explanation": "s_u8StartMaskCnt < 300 동안 증가 후 반환",
+      "check": {
+       "verified": true,
+       "note": "확인됨"
+      }
+     },
+     {
+      "file": "Blv_Diag.c",
+      "function": "BlvDiag_Init",
+      "line_start": 83,
+      "line_end": 83,
+      "role": "INIT",
+      "element": "초기화 시 유예 없음 의도",
+      "symbol": "BLV_START_MASK_CNT",
+      "explanation": "300을 uint8에 대입",
+      "check": {
+       "verified": true,
+       "note": "확인됨"
+      }
+     }
+    ],
+    "call_path": [],
+    "unmatched_elements": [],
+    "search_notes": ""
+   },
+   {
+    "req_id": "SWR-BLV-008",
+    "status": "TRACED",
+    "confidence": "MEDIUM",
+    "locations": [
+     {
+      "file": "Blv_Diag.c",
+      "function": "BlvDiag_MainFunction",
+      "line_start": 129,
+      "line_end": 132,
+      "role": "EXCEPTION_HANDLING",
+      "element": "무효값 판정 미수행",
+      "symbol": "BLV_INVALID_RAW",
+      "explanation": "raw == 0xFFFF면 반환",
+      "check": {
+       "verified": true,
+       "note": "확인됨"
+      }
+     }
+    ],
+    "call_path": [],
+    "unmatched_elements": [
+     "무효값(ADC 오류 값)의 정의 — 0xFFFF 이외의 오류 판정 없음"
+    ],
+    "search_notes": ""
+   },
+   {
+    "req_id": "SWR-BLV-009",
+    "status": "PARTIAL",
+    "confidence": "HIGH",
+    "locations": [
+     {
+      "file": "Blv_Diag.c",
+      "function": "BlvDiag_Init",
+      "line_start": 80,
+      "line_end": 88,
+      "role": "INIT",
+      "element": "카운터·상태·경고등 초기화",
+      "symbol": "s_u8FaultCnt",
+      "explanation": "상태 NORMAL, 고장 카운터 0, 경고등 0",
+      "check": {
+       "verified": true,
+       "note": "확인됨"
+      }
+     }
+    ],
+    "call_path": [
+     "EcuM_Init → BlvDiag_Init"
+    ],
+    "unmatched_elements": [
+     "정상 카운터(s_u16HealCnt) 초기화"
+    ],
+    "search_notes": "s_u16HealCnt에 대한 대입을 BlvDiag_Init에서 찾지 못함"
+   },
+   {
+    "req_id": "SWR-BLV-010",
+    "status": "TRACED",
+    "confidence": "HIGH",
+    "locations": [
+     {
+      "file": "Blv_Diag.c",
+      "function": "BlvDiag_MainFunction",
+      "line_start": 106,
+      "line_end": 106,
+      "role": "OUTPUT_WRITE",
+      "element": "START 중 경고등",
+      "symbol": "BlvWarnLamp",
+      "explanation": "START면 경고등 0",
+      "check": {
+       "verified": true,
+       "note": "확인됨"
+      }
+     }
+    ],
+    "call_path": [],
+    "unmatched_elements": [],
+    "search_notes": ""
+   }
+  ]
+ },
+ "requirement_results": [
+  {
+   "req_id": "SWR-BLV-001",
+   "verdict": "INCONSISTENT",
+   "summary": "OFF만 제외(L110)하여 ACC에서도 진단하며, START 중 카운터를 0으로 초기화(L103-104)한다.",
+   "finding_ids": [
+    "C-001",
+    "C-002"
+   ]
+  },
+  {
+   "req_id": "SWR-BLV-002",
+   "verdict": "INCONSISTENT",
+   "summary": "임계 비교가 '<'(L137)로 9000mV 정확히는 저전압이 아니다.",
+   "finding_ids": [
+    "C-003"
+   ]
+  },
+  {
+   "req_id": "SWR-BLV-003",
+   "verdict": "PARTIALLY_CONSISTENT",
+   "summary": "BLV_CONFIRM_CNT=200(10ms×200=2s, L157)과 FAILED 보고(L165)는 일치. 연속성 해석은 모호(x6), 카운터 순환은 단계 5에서 검토.",
+   "finding_ids": [
+    "C-006"
+   ]
+  },
+  {
+   "req_id": "SWR-BLV-004",
+   "verdict": "INCONSISTENT",
+   "summary": "경고등이 확정 상태(s_eBlvState)가 아니라 순간 검출 플래그(s_bFaultDetected)를 따른다(L181).",
+   "finding_ids": [
+    "C-004"
+   ]
+  },
+  {
+   "req_id": "SWR-BLV-005",
+   "verdict": "PARTIALLY_CONSISTENT",
+   "summary": "10500mV 이상(>=, L144)·500회(L170)·PASSED 보고(L173)는 일치하나 히스테리시스 구간에서 해제 카운터가 유지되어 '연속' 요구와 다르다.",
+   "finding_ids": [
+    "C-005"
+   ]
+  },
+  {
+   "req_id": "SWR-BLV-006",
+   "verdict": "CONSISTENT",
+   "summary": "9000<V<10500 구간에서 카운터·상태를 바꾸지 않는다(L152-155). 단, 유지 대상의 해석은 모호(x6).",
+   "finding_ids": []
+  },
+  {
+   "req_id": "SWR-BLV-007",
+   "verdict": "INCONSISTENT",
+   "summary": "uint8 유예 카운터가 300과 비교되어(L116) 유예가 끝나지 않는다. 초기화 값도 300→44로 잘린다(L83).",
+   "finding_ids": [
+    "C-007"
+   ]
+  },
+  {
+   "req_id": "SWR-BLV-008",
+   "verdict": "PARTIALLY_CONSISTENT",
+   "summary": "raw==0xFFFF만 무효로 처리(L129). 무효값 정의가 사양에 없어 나머지는 판단 불가(G 참조).",
+   "finding_ids": []
+  },
+  {
+   "req_id": "SWR-BLV-009",
+   "verdict": "INCONSISTENT",
+   "summary": "Init에서 정상 카운터(s_u16HealCnt) 초기화 누락.",
+   "finding_ids": [
+    "C-008"
+   ]
+  },
+  {
+   "req_id": "SWR-BLV-010",
+   "verdict": "INCONSISTENT",
+   "summary": "START 분기에서 경고등을 무조건 0으로 설정(L106).",
+   "finding_ids": [
+    "C-009"
+   ]
+  }
+ ],
+ "findings": [
+  {
+   "id": "C-001",
+   "category": "CONDITION_MISMATCH",
+   "subcategory": "",
+   "verdict": "PROBABLE_DEFECT",
+   "severity": "MEDIUM",
+   "title": "IgnSts=ACC에서도 진단 수행",
+   "req_ids": [
+    "SWR-BLV-001"
+   ],
+   "req_quote": "진단은 IgnSts가 ON일 때 수행한다.",
+   "code_refs": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 110,
+     "symbol": "IGN_OFF",
+     "role": "실행 조건",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "  108  |     }\n  109  | \n  110> |     if (eIgn == IGN_OFF)\n  111  |     {\n  112  |         return;"
+    }
+   ],
+   "spec_says": "S22: IgnSts가 ON일 때 진단 수행",
+   "code_does": "L100 START, L110 OFF만 반환하고 ACC(=1)는 L116 이후 진단 경로로 진행",
+   "comparison": "사양은 ON만 허용, 코드는 ON과 ACC를 허용",
+   "trigger_condition": "IgnSts=ACC 상태에서 BattVolt ≤ 9000mV가 2초 이상 지속",
+   "execution_path": [
+    "Blv_Diag.c:98 IgnSts=ACC 획득",
+    "Blv_Diag.c:100 START 아님",
+    "Blv_Diag.c:110 OFF 아님 → 계속",
+    "Blv_Diag.c:137 저전압 판정",
+    "Blv_Diag.c:164 FAULT, FAILED 보고"
+   ],
+   "expected_behavior": "ACC에서는 진단하지 않음 (DTC·경고등 변화 없음)",
+   "inferred_behavior": "ACC에서도 저전압 판정·DTC FAILED 보고·경고등 점등이 일어남. ※ 현재 코드는 C-007(유예 타이머 무한 반복) 때문에 L116 이후가 실행되지 않으므로, 이 불일치는 C-007 수정 후 드러나는 잠복 결함이다.",
+   "basis": [
+    {
+     "kind": "FACT",
+     "statement": "L110의 조건은 eIgn == IGN_OFF 뿐이다",
+     "evidence": "Blv_Diag.c:110"
+    },
+    {
+     "kind": "FACT",
+     "statement": "IGN_ACC=1은 L100, L110 어느 조건에도 해당하지 않는다",
+     "evidence": "Blv_Diag.h enum"
+    },
+    {
+     "kind": "INFERENCE",
+     "statement": "ACC 상태에서도 L137 이후 판정이 수행된다",
+     "evidence": "조기 반환 조건 분석"
+    }
+   ],
+   "uncertainty": "사양 문장이 'ON일 때만'으로 명시하지 않아 ACC 제외가 의도인지 확인 필요 (단계 1 AMBIGUOUS).",
+   "recommendation": "실행 조건을 `if (eIgn != IGN_ON) { return; }` 형태로 명시하고 START 처리와 분리한다.",
+   "additional_checks": [
+    "ACC에서 진단 제외가 사양 의도인지 사양 작성자 확인"
+   ],
+   "test_cases": [
+    {
+     "title": "ACC 저전압 3초",
+     "technique": "REQUIREMENT_BASED",
+     "preconditions": "IgnSts=ACC, 고장 이력 없음",
+     "steps": "BattVolt 8500mV를 3초 인가",
+     "expected": "DTC B1A00 미보고, BlvWarnLamp=0",
+     "observation": "Dem 이벤트 상태, BlvWarnLamp"
+    }
+   ],
+   "static_candidates": [],
+   "gap_kind": "NONE",
+   "spec_question": "",
+   "risk_scenario": "",
+   "stage": "3_consistency",
+   "related": []
+  },
+  {
+   "id": "C-002",
+   "category": "TIMER_COUNTER_MISMATCH",
+   "subcategory": "",
+   "verdict": "CONFIRMED_DEFECT",
+   "severity": "MEDIUM",
+   "title": "START 중 고장·정상 카운터를 유지하지 않고 0으로 초기화",
+   "req_ids": [
+    "SWR-BLV-001"
+   ],
+   "req_quote": "이때 고장 카운터와 정상 카운터는 현재 값을 유지한다.",
+   "code_refs": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 103,
+     "symbol": "s_u8FaultCnt",
+     "role": "고장 카운터 초기화",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "  101  |     {\n  102  |         /* 크랭킹 중: 진단 중단 */\n  103> |         s_u8FaultCnt = 0U;\n  104  |         s_u16HealCnt = 0U;\n  105  |         s_u8StartMaskCnt = 0U;"
+    },
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 104,
+     "symbol": "s_u16HealCnt",
+     "role": "정상 카운터 초기화",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "  102  |         /* 크랭킹 중: 진단 중단 */\n  103  |         s_u8FaultCnt = 0U;\n  104> |         s_u16HealCnt = 0U;\n  105  |         s_u8StartMaskCnt = 0U;\n  106  |         BlvWarnLamp = 0U;"
+    }
+   ],
+   "spec_says": "S23: START 동안 고장/정상 카운터 현재 값 유지",
+   "code_does": "L103 s_u8FaultCnt = 0U, L104 s_u16HealCnt = 0U",
+   "comparison": "유지 요구 대비 초기화",
+   "trigger_condition": "저전압 누적(예: 1.5초) 또는 해제 누적(예: 4초) 중 IgnSts=START 진입",
+   "execution_path": [
+    "Blv_Diag.c:100 START",
+    "Blv_Diag.c:103 고장 카운터 0",
+    "Blv_Diag.c:104 정상 카운터 0",
+    "Blv_Diag.c:107 반환"
+   ],
+   "expected_behavior": "START 종료 후 누적값에서 이어서 카운트",
+   "inferred_behavior": "START 후 처음부터 다시 카운트 → 고장 확정/해제 지연",
+   "basis": [
+    {
+     "kind": "FACT",
+     "statement": "START 분기에서 두 카운터에 0을 대입한다",
+     "evidence": "Blv_Diag.c:103-104"
+    },
+    {
+     "kind": "FACT",
+     "statement": "사양은 현재 값 유지를 요구한다",
+     "evidence": "S23"
+    }
+   ],
+   "uncertainty": "'정상 카운터'가 s_u16HealCnt를 뜻한다는 해석에 의존 (단계 1 AMBIGUOUS).",
+   "recommendation": "START 분기에서 카운터 대입을 제거한다. 유예(SWR-BLV-007)와의 관계를 함께 정리한다.",
+   "additional_checks": [
+    "'정상 카운터' 용어 정의 확인"
+   ],
+   "test_cases": [
+    {
+     "title": "저전압 누적 중 크랭킹",
+     "technique": "STATE_TRANSITION",
+     "preconditions": "IgnSts=ON, BattVolt 8500mV 1.5초 유지",
+     "steps": "IgnSts=START 0.5초 → ON 복귀, 8500mV 유지",
+     "expected": "유예 3초 후 누적 1.5초에서 이어서 0.5초 뒤 FAILED",
+     "observation": "s_u8FaultCnt, Dem 이벤트 상태"
+    }
+   ],
+   "static_candidates": [],
+   "gap_kind": "NONE",
+   "spec_question": "",
+   "risk_scenario": "",
+   "stage": "3_consistency",
+   "related": []
+  },
+  {
+   "id": "C-003",
+   "category": "THRESHOLD_BOUNDARY_MISMATCH",
+   "subcategory": "",
+   "verdict": "CONFIRMED_DEFECT",
+   "severity": "MEDIUM",
+   "title": "저전압 경계 9000mV 포함 여부 불일치 ('이하' vs '<')",
+   "req_ids": [
+    "SWR-BLV-002"
+   ],
+   "req_quote": "배터리 전압이 9000mV 이하이면 저전압 조건으로 판단한다.",
+   "code_refs": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 137,
+     "symbol": "BLV_LOW_MV",
+     "role": "임계 비교",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "  135  |     u16Volt = Blv_Filter(u16Volt);\n  136  | \n  137> |     bLow = (u16Volt < BLV_LOW_MV) ? TRUE : FALSE;\n  138  | \n  139  |     if (bLow == TRUE)"
+    },
+    {
+     "file": "Blv_Cfg.h",
+     "function": "-",
+     "line": 7,
+     "symbol": "BLV_LOW_MV",
+     "role": "임계값 정의",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "    5  | \n    6  | /* 판정 전압 [mV] */\n    7> | #define BLV_LOW_MV              (9000U)\n    8  | #define BLV_HEAL_MV             (10500U)\n    9  | "
+    }
+   ],
+   "spec_says": "S26: 9000mV 이하 → 저전압 (경계 포함)",
+   "code_does": "L137: u16Volt < BLV_LOW_MV(9000U) → 9000mV는 정상",
+   "comparison": "경계값 9000mV에서 판정이 반대",
+   "trigger_condition": "필터 후 u16Volt가 정확히 9000mV",
+   "execution_path": [
+    "Blv_Diag.c:134-135 변환·필터",
+    "Blv_Diag.c:137 9000 < 9000 거짓 → bLow=FALSE",
+    "Blv_Diag.c:152 히스테리시스 분기"
+   ],
+   "expected_behavior": "9000mV에서 저전압으로 판정",
+   "inferred_behavior": "9000mV에서 정상(히스테리시스 구간)으로 처리",
+   "basis": [
+    {
+     "kind": "FACT",
+     "statement": "비교 연산자가 '<'이다",
+     "evidence": "Blv_Diag.c:137"
+    },
+    {
+     "kind": "FACT",
+     "statement": "BLV_LOW_MV = 9000U",
+     "evidence": "Blv_Cfg.h:7"
+    },
+    {
+     "kind": "FACT",
+     "statement": "사양 표현은 '이하'",
+     "evidence": "S26"
+    }
+   ],
+   "uncertainty": "ADC 분해능(약 19.5mV/LSB)과 4점 평균 때문에 정확히 9000mV가 산출되는 입력이 존재하는지는 확인 필요.",
+   "recommendation": "`u16Volt <= BLV_LOW_MV`로 수정한다.",
+   "additional_checks": [
+    "변환식에서 9000mV가 산출되는 raw 조합 확인"
+   ],
+   "test_cases": [
+    {
+     "title": "경계값 9000mV",
+     "technique": "BOUNDARY_VALUE",
+     "preconditions": "IgnSts=ON, 유예 종료",
+     "steps": "u16Volt가 8999/9000/9001mV가 되도록 입력(또는 변수 강제) 각 2.5초",
+     "expected": "8999·9000: FAILED, 9001: 미보고",
+     "observation": "bLow, s_u8FaultCnt, Dem"
+    }
+   ],
+   "static_candidates": [],
+   "gap_kind": "NONE",
+   "spec_question": "",
+   "risk_scenario": "",
+   "stage": "3_consistency",
+   "related": []
+  },
+  {
+   "id": "C-004",
+   "category": "CONDITION_MISMATCH",
+   "subcategory": "",
+   "verdict": "CONFIRMED_DEFECT",
+   "severity": "HIGH",
+   "title": "경고등이 '확정 상태'가 아니라 순간 검출 플래그를 따름",
+   "req_ids": [
+    "SWR-BLV-004"
+   ],
+   "req_quote": "고장이 확정된 상태에서는 경고등을 점등한다. 고장이 해제되면 경고등을 소등한다.",
+   "code_refs": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 181,
+     "symbol": "s_bFaultDetected",
+     "role": "경고등 출력",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "  179  |     }\n  180  | \n  181> |     BlvWarnLamp = s_bFaultDetected;\n  182  | }"
+    },
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 146,
+     "symbol": "s_u8FaultCnt",
+     "role": "회복 시작 시 카운터 0",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "  144  |     else if (u16Volt >= BLV_HEAL_MV)\n  145  |     {\n  146> |         s_u8FaultCnt = 0U;\n  147  |         if (s_u16HealCnt < BLV_HEAL_CNT)\n  148  |         {"
+    },
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 157,
+     "symbol": "s_bFaultDetected",
+     "role": "검출 플래그 재계산",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "  155  |     }\n  156  | \n  157> |     s_bFaultDetected = (s_u8FaultCnt >= BLV_CONFIRM_CNT) ? TRUE : FALSE;\n  158  | \n  159  |     switch (s_eBlvState)"
+    }
+   ],
+   "spec_says": "S32: 확정 상태 동안 점등, 해제 시 소등",
+   "code_does": "L181 BlvWarnLamp = s_bFaultDetected; s_bFaultDetected는 매 주기 s_u8FaultCnt >= 200으로 재계산(L157)",
+   "comparison": "확정 상태(s_eBlvState==FAULT)와 경고등이 분리됨",
+   "trigger_condition": "고장 확정 후 BattVolt ≥ 10500mV로 회복 시작 (해제 조건 5초 미충족)",
+   "execution_path": [
+    "Blv_Diag.c:144 10500mV 이상",
+    "Blv_Diag.c:146 s_u8FaultCnt=0",
+    "Blv_Diag.c:157 s_bFaultDetected=FALSE",
+    "Blv_Diag.c:170 해제 조건 미충족 → FAULT 유지",
+    "Blv_Diag.c:181 경고등 소등"
+   ],
+   "expected_behavior": "해제(5초) 전까지 점등 유지",
+   "inferred_behavior": "회복 시작 즉시 소등, 상태는 5초간 FAULT 유지 → 상태와 표시 불일치. 카운터 순환 시에도 소등(D-001). ※ 현재 코드는 C-007(유예 타이머 무한 반복) 때문에 L116 이후가 실행되지 않으므로, 이 불일치는 C-007 수정 후 드러나는 잠복 결함이다.",
+   "basis": [
+    {
+     "kind": "FACT",
+     "statement": "경고등은 s_bFaultDetected를 그대로 출력한다",
+     "evidence": "Blv_Diag.c:181"
+    },
+    {
+     "kind": "FACT",
+     "statement": "10500mV 이상에서 고장 카운터를 즉시 0으로 만든다",
+     "evidence": "Blv_Diag.c:146"
+    },
+    {
+     "kind": "INFERENCE",
+     "statement": "회복 첫 주기에 s_bFaultDetected가 FALSE가 되어 경고등이 꺼진다",
+     "evidence": "Blv_Diag.c:157"
+    }
+   ],
+   "uncertainty": "없음 (코드 경로가 단순)",
+   "recommendation": "`BlvWarnLamp = (s_eBlvState == BLV_STATE_FAULT) ? 1U : 0U;`로 확정 상태를 출력한다.",
+   "additional_checks": [],
+   "test_cases": [
+    {
+     "title": "회복 중 경고등",
+     "technique": "STATE_TRANSITION",
+     "preconditions": "고장 확정(경고등 점등)",
+     "steps": "BattVolt 11000mV 인가 후 0~6초 관찰",
+     "expected": "5초까지 점등, 5초 후 소등·PASSED",
+     "observation": "BlvWarnLamp, s_eBlvState, Dem"
+    }
+   ],
+   "static_candidates": [
+    "SC-012"
+   ],
+   "gap_kind": "NONE",
+   "spec_question": "",
+   "risk_scenario": "",
+   "stage": "3_consistency",
+   "related": [
+    "D-001"
+   ]
+  },
+  {
+   "id": "C-005",
+   "category": "TIMER_COUNTER_MISMATCH",
+   "subcategory": "",
+   "verdict": "PROBABLE_DEFECT",
+   "severity": "MEDIUM",
+   "title": "해제 카운터가 '연속 5초'를 보장하지 않음 (히스테리시스 구간에서 유지)",
+   "req_ids": [
+    "SWR-BLV-005",
+    "SWR-BLV-006"
+   ],
+   "req_quote": "배터리 전압이 10500mV 이상인 상태가 5초 동안 연속으로 유지되면 고장을 해제하고",
+   "code_refs": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 149,
+     "symbol": "s_u16HealCnt",
+     "role": "해제 카운터 증가",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "  147  |         if (s_u16HealCnt < BLV_HEAL_CNT)\n  148  |         {\n  149> |             s_u16HealCnt++;\n  150  |         }\n  151  |     }"
+    },
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 142,
+     "symbol": "s_u16HealCnt",
+     "role": "저전압에서만 초기화",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "  140  |     {\n  141  |         s_u8FaultCnt++;\n  142> |         s_u16HealCnt = 0U;\n  143  |     }\n  144  |     else if (u16Volt >= BLV_HEAL_MV)"
+    }
+   ],
+   "spec_says": "S35: 10500mV 이상 연속 5초",
+   "code_does": "s_u16HealCnt는 저전압(L142)에서만 0, 9000~10500mV 구간(L152)에서는 유지",
+   "comparison": "중간에 10500mV 미만으로 내려가도 누적이 이어짐",
+   "trigger_condition": "10500mV 이상 3초 → 10000mV 1초 → 10500mV 이상 2초",
+   "execution_path": [
+    "Blv_Diag.c:149 3초 누적",
+    "Blv_Diag.c:152 구간 유지(초기화 없음)",
+    "Blv_Diag.c:149 2초 누적 → 500",
+    "Blv_Diag.c:170 해제"
+   ],
+   "expected_behavior": "연속 5초가 아니므로 해제하지 않음",
+   "inferred_behavior": "합산 5초로 해제·PASSED 보고",
+   "basis": [
+    {
+     "kind": "FACT",
+     "statement": "해제 카운터 초기화는 L142(저전압)뿐이다",
+     "evidence": "Blv_Diag.c:142"
+    },
+    {
+     "kind": "INFERENCE",
+     "statement": "히스테리시스 구간이 연속성을 끊지 않는다",
+     "evidence": "Blv_Diag.c:152-155"
+    }
+   ],
+   "uncertainty": "SWR-BLV-006 '현재 진단 상태 유지'가 카운터 유지를 의도했다면 사양 간 충돌 (C-006 참조).",
+   "recommendation": "10500mV 미만이면 해제 카운터를 0으로 하거나, 사양에서 연속성 규칙을 명확히 한다.",
+   "additional_checks": [
+    "SWR-BLV-005/006 해석 확인"
+   ],
+   "test_cases": [
+    {
+     "title": "비연속 회복",
+     "technique": "TIMING",
+     "preconditions": "고장 확정",
+     "steps": "11000mV 3초 → 10000mV 1초 → 11000mV 2초",
+     "expected": "해제되지 않음 (연속 5초 미충족)",
+     "observation": "s_u16HealCnt, s_eBlvState, Dem"
+    }
+   ],
+   "static_candidates": [],
+   "gap_kind": "NONE",
+   "spec_question": "",
+   "risk_scenario": "",
+   "stage": "3_consistency",
+   "related": []
+  },
+  {
+   "id": "C-006",
+   "category": "AMBIGUOUS",
+   "subcategory": "",
+   "verdict": "SPEC_CLARIFICATION",
+   "severity": "MEDIUM",
+   "title": "히스테리시스 구간에서 고장 카운터 유지 → '연속 2초' 요구와 해석 충돌",
+   "req_ids": [
+    "SWR-BLV-003",
+    "SWR-BLV-006"
+   ],
+   "req_quote": "저전압 조건이 2초 동안 연속으로 유지되면 / 현재 진단 상태를 유지한다.",
+   "code_refs": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 152,
+     "symbol": "else",
+     "role": "카운터 유지",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "  150  |         }\n  151  |     }\n  152> |     else\n  153  |     {\n  154  |         /* 히스테리시스 구간: 현재 상태 유지 */"
+    }
+   ],
+   "spec_says": "S29: 저전압 연속 2초 / S39: 구간에서 상태 유지",
+   "code_does": "9000~10500mV 구간에서 s_u8FaultCnt 유지 → 저전압 1.5초, 구간 0.1초, 저전압 0.5초로 확정",
+   "comparison": "'연속' 요구와 '유지' 요구의 우선순위가 정의되지 않음",
+   "trigger_condition": "저전압과 히스테리시스 구간을 오가는 전압",
+   "execution_path": [
+    "Blv_Diag.c:141 누적",
+    "Blv_Diag.c:152 유지",
+    "Blv_Diag.c:141 누적 계속"
+   ],
+   "expected_behavior": "사양 미정의 — 확인 필요",
+   "inferred_behavior": "구간 진입 시에도 누적 유지(비연속 합산으로 확정)",
+   "basis": [
+    {
+     "kind": "FACT",
+     "statement": "구간에서 카운터를 변경하지 않는다",
+     "evidence": "Blv_Diag.c:152-155"
+    },
+    {
+     "kind": "HYPOTHESIS",
+     "statement": "사양 작성자는 '진단 상태'를 FAULT/NORMAL로만 의도했을 수 있다",
+     "evidence": "S39"
+    }
+   ],
+   "uncertainty": "사양 해석에 따라 정상일 수도 결함일 수도 있음",
+   "recommendation": "사양 확정 후 카운터 처리 결정",
+   "additional_checks": [
+    "사양 작성자 확인"
+   ],
+   "test_cases": [
+    {
+     "title": "구간 경유 저전압",
+     "technique": "TIMING",
+     "preconditions": "IgnSts=ON",
+     "steps": "8500mV 1.5초 → 9500mV 0.1초 → 8500mV 0.6초",
+     "expected": "사양 미정의 — 확인 필요 (현재 코드: 2.1초 시점 FAILED)",
+     "observation": "s_u8FaultCnt, Dem"
+    }
+   ],
+   "static_candidates": [],
+   "gap_kind": "NONE",
+   "spec_question": "저전압 누적 중 9000~10500mV 구간에 진입하면 고장 카운터를 유지합니까, 초기화합니까?",
+   "risk_scenario": "",
+   "stage": "3_consistency",
+   "related": []
+  },
+  {
+   "id": "C-007",
+   "category": "TIMER_COUNTER_MISMATCH",
+   "subcategory": "",
+   "verdict": "CONFIRMED_DEFECT",
+   "severity": "HIGH",
+   "title": "시동 후 3초 유예가 끝나지 않아 저전압 진단이 영구 정지",
+   "req_ids": [
+    "SWR-BLV-007"
+   ],
+   "req_quote": "IgnSts가 START에서 ON으로 전환된 후 3초 동안은 진단 판정을 유예한다.",
+   "code_refs": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 116,
+     "symbol": "BLV_START_MASK_CNT",
+     "role": "유예 판정",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "  114  | \n  115  |     /* START 종료 후 마스킹 */\n  116> |     if (s_u8StartMaskCnt < BLV_START_MASK_CNT)\n  117  |     {\n  118  |         s_u8StartMaskCnt++;"
+    },
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 118,
+     "symbol": "s_u8StartMaskCnt",
+     "role": "유예 카운터 증가",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "  116  |     if (s_u8StartMaskCnt < BLV_START_MASK_CNT)\n  117  |     {\n  118> |         s_u8StartMaskCnt++;\n  119  |         return;\n  120  |     }"
+    },
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_Init",
+     "line": 83,
+     "symbol": "BLV_START_MASK_CNT",
+     "role": "초기화 시 300 대입",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "   81  |     s_bFaultDetected = FALSE;\n   82  |     s_u8FaultCnt = 0U;\n   83> |     s_u8StartMaskCnt = BLV_START_MASK_CNT;\n   84  | #if (BLV_USE_FILTER == STD_ON)\n   85  |     s_u8BufIdx = 0U;"
+    },
+    {
+     "file": "Blv_Cfg.h",
+     "function": "-",
+     "line": 13,
+     "symbol": "BLV_START_MASK_CNT",
+     "role": "300U 정의",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "   11  | #define BLV_CONFIRM_CNT         (200U)      /* 2s */\n   12  | #define BLV_HEAL_CNT            (500U)      /* 5s */\n   13> | #define BLV_START_MASK_CNT      (300U)      /* 3s */\n   14  | \n   15  | /* ADC 변환 */"
+    }
+   ],
+   "spec_says": "S42: START→ON 후 3초 유예, 이후 진단",
+   "code_does": "s_u8StartMaskCnt(uint8, 0..255) < 300U는 항상 참 → 매 주기 증가 후 반환, 255→0 순환",
+   "comparison": "유예 종료 조건이 자료형상 성립 불가",
+   "trigger_condition": "IgnSts=ON 진입 후 모든 주기 (전원 투입 직후 포함: Init에서 300→44 저장)",
+   "execution_path": [
+    "Blv_Diag.c:83 Init: s_u8StartMaskCnt = 44 (300 잘림)",
+    "Blv_Diag.c:116 44 < 300 참",
+    "Blv_Diag.c:118 증가 … 255 → 0",
+    "Blv_Diag.c:119 반환 (L122 이후 미실행)"
+   ],
+   "expected_behavior": "3초(300주기) 후 진단 재개",
+   "inferred_behavior": "진단(L122~L181)이 한 번도 실행되지 않음 → 저전압 DTC·경고등 기능 상실",
+   "basis": [
+    {
+     "kind": "FACT",
+     "statement": "uint8 변수와 300U 비교는 항상 참 (정적 계산 CERTAIN, gcc -Wtype-limits 경고)",
+     "evidence": "SC-008"
+    },
+    {
+     "kind": "FACT",
+     "statement": "Init에서 300 대입 시 44로 저장 (CERTAIN, gcc -Woverflow)",
+     "evidence": "SC-007"
+    },
+    {
+     "kind": "FACT",
+     "statement": "L119에서 반환하므로 L122 이후가 실행되지 않는다",
+     "evidence": "Blv_Diag.c:116-120"
+    }
+   ],
+   "uncertainty": "없음. 3초=300주기 환산은 10ms 주기 전제(S56).",
+   "recommendation": "s_u8StartMaskCnt를 uint16으로 변경하거나 마스크 단위를 조정한다. 초기화 값 의미(유예 없음)를 명확히 한다.",
+   "additional_checks": [],
+   "test_cases": [
+    {
+     "title": "시동 후 진단 재개",
+     "technique": "TIMING",
+     "preconditions": "IgnSts=START",
+     "steps": "ON 전환 후 BattVolt 8500mV 6초 유지",
+     "expected": "3초 유예 후 2초 경과 시점(5초)에 FAILED",
+     "observation": "Dem 이벤트 상태, s_u8StartMaskCnt"
+    },
+    {
+     "title": "전원 투입 후 진단",
+     "technique": "REQUIREMENT_BASED",
+     "preconditions": "Init 직후 IgnSts=ON (START 없음)",
+     "steps": "BattVolt 8500mV 3초",
+     "expected": "2초 시점 FAILED (유예 적용 여부는 사양 확인)",
+     "observation": "Dem 이벤트 상태"
+    }
+   ],
+   "static_candidates": [
+    "SC-007",
+    "SC-008",
+    "SC-009"
+   ],
+   "gap_kind": "NONE",
+   "spec_question": "",
+   "risk_scenario": "",
+   "stage": "3_consistency",
+   "related": []
+  },
+  {
+   "id": "C-008",
+   "category": "INIT_RECOVERY_MISMATCH",
+   "subcategory": "",
+   "verdict": "PROBABLE_DEFECT",
+   "severity": "MEDIUM",
+   "title": "초기화 시 정상(해제) 카운터 s_u16HealCnt 미초기화",
+   "req_ids": [
+    "SWR-BLV-009"
+   ],
+   "req_quote": "제어기 초기화 시 고장 카운터, 정상 카운터, 진단 상태는 초기값으로 설정하고",
+   "code_refs": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_Init",
+     "line": 82,
+     "symbol": "s_u8FaultCnt",
+     "role": "고장 카운터만 초기화",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "   80  |     s_eBlvState = BLV_STATE_NORMAL;\n   81  |     s_bFaultDetected = FALSE;\n   82> |     s_u8FaultCnt = 0U;\n   83  |     s_u8StartMaskCnt = BLV_START_MASK_CNT;\n   84  | #if (BLV_USE_FILTER == STD_ON)"
+    }
+   ],
+   "spec_says": "S48: 고장·정상 카운터, 진단 상태 초기화",
+   "code_does": "BlvDiag_Init(L78-89)에 s_u16HealCnt 대입 없음",
+   "comparison": "정상 카운터 초기화 누락",
+   "trigger_condition": "Wake-up 등으로 Init이 재호출되고 직전 해제 카운터가 남아 있는 경우",
+   "execution_path": [
+    "EcuM → BlvDiag_Init (s_u16HealCnt 이전 값 유지)",
+    "Blv_Diag.c:170 해제 판정에 이전 누적 사용"
+   ],
+   "expected_behavior": "초기화 후 해제 카운터 0부터 계수",
+   "inferred_behavior": "재초기화 시 이전 누적값이 남아 해제가 앞당겨질 수 있음",
+   "basis": [
+    {
+     "kind": "FACT",
+     "statement": "Init에 s_u16HealCnt 대입이 없다",
+     "evidence": "Blv_Diag.c:78-89"
+    },
+    {
+     "kind": "INFERENCE",
+     "statement": "최초 전원 투입은 정적 0 초기화로 문제없고 재호출 시에만 영향",
+     "evidence": "C 정적 저장기간"
+    },
+    {
+     "kind": "HYPOTHESIS",
+     "statement": "Init이 운전 중 재호출된다",
+     "evidence": "env.json notes: Wake-up 시 재호출"
+    }
+   ],
+   "uncertainty": "Init 재호출 시나리오의 실제 존재 여부",
+   "recommendation": "Init에 `s_u16HealCnt = 0U;` 추가",
+   "additional_checks": [
+    "EcuM Wake-up 시 BlvDiag_Init 호출 여부"
+   ],
+   "test_cases": [
+    {
+     "title": "재초기화 후 해제",
+     "technique": "STATE_TRANSITION",
+     "preconditions": "고장 확정 후 11000mV 4초 누적",
+     "steps": "BlvDiag_Init 호출(Wake-up 모사) → 저전압 재확정 → 11000mV 1.5초",
+     "expected": "해제되지 않음(5초 필요)",
+     "observation": "s_u16HealCnt, s_eBlvState"
+    }
+   ],
+   "static_candidates": [],
+   "gap_kind": "NONE",
+   "spec_question": "",
+   "risk_scenario": "",
+   "stage": "3_consistency",
+   "related": []
+  },
+  {
+   "id": "C-009",
+   "category": "PRIORITY_MISMATCH",
+   "subcategory": "",
+   "verdict": "CONFIRMED_DEFECT",
+   "severity": "HIGH",
+   "title": "START 중 확정 고장의 경고등을 소등 (우선순위 역전)",
+   "req_ids": [
+    "SWR-BLV-010"
+   ],
+   "req_quote": "진단 중단 조건(IgnSts = START)에서도 고장 확정 상태라면 경고등 점등을 유지한다.",
+   "code_refs": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 106,
+     "symbol": "BlvWarnLamp",
+     "role": "START 분기 경고등 0",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "  104  |         s_u16HealCnt = 0U;\n  105  |         s_u8StartMaskCnt = 0U;\n  106> |         BlvWarnLamp = 0U;\n  107  |         return;\n  108  |     }"
+    }
+   ],
+   "spec_says": "S52: START에서도 확정 상태면 점등 유지",
+   "code_does": "L106 BlvWarnLamp = 0U (상태 확인 없음)",
+   "comparison": "진단 중단 처리가 경고 유지 요구보다 우선함",
+   "trigger_condition": "고장 확정(점등) 상태에서 IgnSts=START",
+   "execution_path": [
+    "Blv_Diag.c:100 START",
+    "Blv_Diag.c:106 경고등 0",
+    "Blv_Diag.c:107 반환"
+   ],
+   "expected_behavior": "점등 유지",
+   "inferred_behavior": "크랭킹 동안 소등",
+   "basis": [
+    {
+     "kind": "FACT",
+     "statement": "START 분기는 상태와 무관하게 경고등에 0을 대입한다",
+     "evidence": "Blv_Diag.c:106"
+    }
+   ],
+   "uncertainty": "없음",
+   "recommendation": "START 분기에서 경고등 대입을 제거하거나 `s_eBlvState == BLV_STATE_FAULT`이면 1을 유지한다.",
+   "additional_checks": [],
+   "test_cases": [
+    {
+     "title": "확정 고장 중 크랭킹",
+     "technique": "STATE_TRANSITION",
+     "preconditions": "고장 확정, 경고등 점등",
+     "steps": "IgnSts=START 2초",
+     "expected": "경고등 점등 유지",
+     "observation": "BlvWarnLamp"
+    }
+   ],
+   "static_candidates": [],
+   "gap_kind": "NONE",
+   "spec_question": "",
+   "risk_scenario": "",
+   "stage": "3_consistency",
+   "related": []
+  },
+  {
+   "id": "G-001",
+   "category": "SPEC_GAP",
+   "subcategory": "",
+   "verdict": "POTENTIAL_RISK",
+   "severity": "HIGH",
+   "title": "고장 확정 후 저전압 지속 시 고장 카운터 상한 미정의 (8bit 순환)",
+   "req_ids": [
+    "SWR-BLV-003",
+    "SWR-BLV-004"
+   ],
+   "req_quote": "저전압 조건이 2초 동안 연속으로 유지되면 고장으로 확정하고",
+   "code_refs": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 141,
+     "symbol": "s_u8FaultCnt",
+     "role": "포화 없는 증가",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "  139  |     if (bLow == TRUE)\n  140  |     {\n  141> |         s_u8FaultCnt++;\n  142  |         s_u16HealCnt = 0U;\n  143  |     }"
+    }
+   ],
+   "spec_says": "확정 이후 카운터 동작 정의 없음",
+   "code_does": "s_u8FaultCnt++ 포화 없음 → 256회째 0으로 순환",
+   "comparison": "사양 공백",
+   "trigger_condition": "저전압이 2.56초 이상 지속 (방전 배터리, 발전기 고장)",
+   "execution_path": [
+    "Blv_Diag.c:141 255→0",
+    "Blv_Diag.c:157 검출 FALSE",
+    "Blv_Diag.c:181 경고등 소등"
+   ],
+   "expected_behavior": "사양 미정의",
+   "inferred_behavior": "2.0초 점등 → 2.56초 소등 → 4.56초 재점등 반복 (D-001)",
+   "basis": [
+    {
+     "kind": "FACT",
+     "statement": "카운터는 uint8이며 증가에 상한 검사가 없다",
+     "evidence": "SC-012"
+    },
+    {
+     "kind": "INFERENCE",
+     "statement": "지속 고장에서 순환이 발생한다",
+     "evidence": "Blv_Diag.c:141"
+    }
+   ],
+   "uncertainty": "사양이 포화를 요구하는지 미정",
+   "recommendation": "확정 후 카운터 포화(또는 증가 정지)를 사양과 코드에 명시",
+   "additional_checks": [
+    "사양 작성자 확인"
+   ],
+   "test_cases": [
+    {
+     "title": "장시간 저전압",
+     "technique": "BOUNDARY_VALUE",
+     "preconditions": "IgnSts=ON",
+     "steps": "8500mV 10초 유지",
+     "expected": "사양 미정의 — 확인 필요 (현재 코드: 경고등 주기적 소등)",
+     "observation": "BlvWarnLamp, s_u8FaultCnt"
+    }
+   ],
+   "static_candidates": [
+    "SC-012"
+   ],
+   "gap_kind": "COUNTER_LIMIT_WRAP",
+   "spec_question": "고장 확정 후에도 저전압이 지속되면 고장 카운터는 포화(정지)되어야 합니까?",
+   "risk_scenario": "방전 배터리로 장시간 저전압 시 경고등이 깜빡이듯 꺼져 운전자가 정상으로 오인",
+   "stage": "4_gaps",
+   "related": [
+    "D-001"
+   ]
+  },
+  {
+   "id": "G-002",
+   "category": "AMBIGUOUS",
+   "subcategory": "",
+   "verdict": "SPEC_CLARIFICATION",
+   "severity": "MEDIUM",
+   "title": "무효값(ADC 오류 값) 및 범위 초과(>20000mV) 처리 미정의",
+   "req_ids": [
+    "SWR-BLV-008"
+   ],
+   "req_quote": "BattVolt 측정값이 무효(ADC 오류 값)인 경우 해당 주기의 판정을 수행하지 않는다.",
+   "code_refs": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 129,
+     "symbol": "BLV_INVALID_RAW",
+     "role": "0xFFFF만 무효",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "  127  |     g_u8AdcSampleCnt = 0U;\n  128  | \n  129> |     if (u16Raw == BLV_INVALID_RAW)\n  130  |     {\n  131  |         return;"
+    },
+    {
+     "file": "Blv_Cfg.h",
+     "function": "-",
+     "line": 20,
+     "symbol": "BLV_INVALID_RAW",
+     "role": "0xFFFFU",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "   18  | #define BLV_ADC_MAX             (1023U)\n   19  | #define BLV_DIVIDER_RATIO       (4U)\n   20> | #define BLV_INVALID_RAW         (0xFFFFU)\n   21  | \n   22  | /* 이동평균 필터 */"
+    }
+   ],
+   "spec_says": "무효의 정의 없음, 범위 0~20000mV",
+   "code_does": "raw==0xFFFF만 무효; 범위 초과 raw는 그대로 변환·판정",
+   "comparison": "무효 판정 기준 불명",
+   "trigger_condition": "ADC 단선/단락으로 raw가 0 또는 1023 고정",
+   "execution_path": [
+    "Blv_Diag.c:129 0xFFFF 아님",
+    "Blv_Diag.c:134 변환",
+    "Blv_Diag.c:137 판정"
+   ],
+   "expected_behavior": "사양 미정의",
+   "inferred_behavior": "raw=0 → 0mV → 저전압으로 FAILED; raw=1023 → 20000mV → 정상",
+   "basis": [
+    {
+     "kind": "FACT",
+     "statement": "무효 검사는 0xFFFF 비교뿐",
+     "evidence": "Blv_Diag.c:129"
+    },
+    {
+     "kind": "HYPOTHESIS",
+     "statement": "ADC 드라이버가 오류 시 0xFFFF를 쓴다",
+     "evidence": "Adc_ReadResultReg 미제공"
+    }
+   ],
+   "uncertainty": "ADC 드라이버의 오류 표현 방식 미확인",
+   "recommendation": "무효 정의를 사양에 추가하고 코드 일치",
+   "additional_checks": [
+    "Adc_ReadResultReg 오류 반환값"
+   ],
+   "test_cases": [
+    {
+     "title": "ADC 단락",
+     "technique": "FAULT_INJECTION",
+     "preconditions": "IgnSts=ON",
+     "steps": "raw=0 3초",
+     "expected": "사양 미정의 — 확인 필요 (현재 코드: FAILED)",
+     "observation": "Dem"
+    }
+   ],
+   "static_candidates": [],
+   "gap_kind": "INVALID_OR_OUT_OF_RANGE_INPUT",
+   "spec_question": "무효로 판단할 값(0xFFFF, raw 0, 20000mV 초과 등)과 그때의 카운터 처리를 정의해 주십시오.",
+   "risk_scenario": "센서 단락을 저전압 고장으로 기록하여 오정비 유발",
+   "stage": "4_gaps",
+   "related": []
+  },
+  {
+   "id": "G-003",
+   "category": "SPEC_GAP",
+   "subcategory": "",
+   "verdict": "SPEC_CLARIFICATION",
+   "severity": "MEDIUM",
+   "title": "IgnSts OFF/ACC 전환 시 경고등·진단 상태 처리 미정의",
+   "req_ids": [
+    "SWR-BLV-001",
+    "SWR-BLV-004"
+   ],
+   "req_quote": "진단은 IgnSts가 ON일 때 수행한다.",
+   "code_refs": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 112,
+     "symbol": "return",
+     "role": "OFF 반환",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "  110  |     if (eIgn == IGN_OFF)\n  111  |     {\n  112> |         return;\n  113  |     }\n  114  | "
+    }
+   ],
+   "spec_says": "OFF/ACC에서 출력 처리 없음",
+   "code_does": "OFF에서는 경고등을 변경하지 않고 반환 → 마지막 값 유지",
+   "comparison": "사양 공백",
+   "trigger_condition": "고장 확정(점등) 중 IgnSts=OFF",
+   "execution_path": [
+    "Blv_Diag.c:110 OFF → 반환 (BlvWarnLamp 유지)"
+   ],
+   "expected_behavior": "사양 미정의",
+   "inferred_behavior": "IG OFF 동안 경고등 요청 1 유지",
+   "basis": [
+    {
+     "kind": "FACT",
+     "statement": "OFF 분기에서 출력 대입이 없다",
+     "evidence": "Blv_Diag.c:110-113"
+    }
+   ],
+   "uncertainty": "다른 모듈이 IG OFF 시 출력을 차단하는지 미확인",
+   "recommendation": "OFF/ACC 진입 시 출력 정책을 사양에 정의",
+   "additional_checks": [
+    "경고등 구동 모듈의 IG OFF 처리"
+   ],
+   "test_cases": [
+    {
+     "title": "고장 중 IG OFF",
+     "technique": "STATE_TRANSITION",
+     "preconditions": "고장 확정·점등",
+     "steps": "IgnSts=OFF",
+     "expected": "사양 미정의 — 확인 필요 (현재 코드: 요청 1 유지)",
+     "observation": "BlvWarnLamp"
+    }
+   ],
+   "static_candidates": [],
+   "gap_kind": "UNEXPECTED_EVENT_DURING_TRANSITION",
+   "spec_question": "IgnSts가 OFF/ACC로 바뀌면 경고등 요청과 진단 상태를 유지합니까, 초기화합니까?",
+   "risk_scenario": "IG OFF 후에도 경고 요청이 유지되어 암전류 증가 또는 다음 시동 시 잘못된 경고",
+   "stage": "4_gaps",
+   "related": []
+  },
+  {
+   "id": "G-004",
+   "category": "SPEC_GAP",
+   "subcategory": "",
+   "verdict": "POTENTIAL_RISK",
+   "severity": "MEDIUM",
+   "title": "이전 사이클 확정 DTC의 해제(PASSED) 경로 미정의",
+   "req_ids": [
+    "SWR-BLV-009",
+    "SWR-BLV-005"
+   ],
+   "req_quote": "단, 이전 운전 사이클에서 확정된 DTC는 유지한다.",
+   "code_refs": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_Init",
+     "line": 80,
+     "symbol": "BLV_STATE_NORMAL",
+     "role": "Init 상태 NORMAL",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "   78  | void BlvDiag_Init(void)\n   79  | {\n   80> |     s_eBlvState = BLV_STATE_NORMAL;\n   81  |     s_bFaultDetected = FALSE;\n   82  |     s_u8FaultCnt = 0U;"
+    },
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 173,
+     "symbol": "DEM_EVENT_STATUS_PASSED",
+     "role": "PASSED는 FAULT→NORMAL에서만",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "  171  |             {\n  172  |                 s_eBlvState = BLV_STATE_NORMAL;\n  173> |                 Dem_SetEventStatus(DemConf_DemEventParameter_B1A00, DEM_EVENT_STATUS_PASSED);\n  174  |             }\n  175  |             break;"
+    }
+   ],
+   "spec_says": "이전 확정 DTC 유지만 정의, 해제 조건 없음",
+   "code_does": "Init 후 상태 NORMAL → 정상 전압이어도 PASSED 보고 경로 없음",
+   "comparison": "사양 공백",
+   "trigger_condition": "이전 사이클에 확정, 이번 사이클은 정상 전압",
+   "execution_path": [
+    "EcuM → BlvDiag_Init: NORMAL",
+    "Blv_Diag.c:161 NORMAL: 고장 미검출 → 보고 없음"
+   ],
+   "expected_behavior": "사양 미정의",
+   "inferred_behavior": "Dem에 PASSED가 보고되지 않아 테스트 미완료/확정 상태가 유지될 수 있음",
+   "basis": [
+    {
+     "kind": "FACT",
+     "statement": "PASSED 보고는 L173(FAULT→NORMAL)뿐",
+     "evidence": "Blv_Diag.c:173"
+    },
+    {
+     "kind": "HYPOTHESIS",
+     "statement": "Dem 설정(에이징/운전 사이클 처리)에 따라 DTC가 남는다",
+     "evidence": "Dem 설정 미제공"
+    }
+   ],
+   "uncertainty": "Dem 설정 미제공",
+   "recommendation": "정상 판정 시 PASSED 보고 정책 정의",
+   "additional_checks": [
+    "Dem 에이징·운전 사이클 설정"
+   ],
+   "test_cases": [
+    {
+     "title": "다음 사이클 정상",
+     "technique": "REQUIREMENT_BASED",
+     "preconditions": "이전 사이클 B1A00 확정",
+     "steps": "재시동, 12V 10초",
+     "expected": "사양 미정의 — 확인 필요 (현재 코드: PASSED 미보고)",
+     "observation": "Dem 상태 바이트"
+    }
+   ],
+   "static_candidates": [],
+   "gap_kind": "RECOVERY_REENTRY",
+   "spec_question": "이전 사이클에 확정된 DTC는 이번 사이클 정상 전압 확인 시 PASSED로 보고합니까?",
+   "risk_scenario": "실제로 회복된 차량에 DTC가 계속 남아 불필요한 정비",
+   "stage": "4_gaps",
+   "related": []
+  },
+  {
+   "id": "G-005",
+   "category": "SPEC_GAP",
+   "subcategory": "",
+   "verdict": "POTENTIAL_RISK",
+   "severity": "MEDIUM",
+   "title": "ADC 샘플 갱신 중단(타임아웃) 시 동작 미정의",
+   "req_ids": [
+    "SWR-BLV-003",
+    "SWR-BLV-008"
+   ],
+   "req_quote": "BattVolt 측정값이 무효(ADC 오류 값)인 경우 해당 주기의 판정을 수행하지 않는다.",
+   "code_refs": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 122,
+     "symbol": "g_u8AdcSampleCnt",
+     "role": "새 샘플 없으면 반환",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "  120  |     }\n  121  | \n  122> |     if (g_u8AdcSampleCnt == 0U)\n  123  |     {\n  124  |         return;     /* 새 샘플 없음 */"
+    }
+   ],
+   "spec_says": "샘플 미갱신 정의 없음",
+   "code_does": "g_u8AdcSampleCnt==0이면 무기한 판정 생략 (진단 정지 감지 없음)",
+   "comparison": "사양 공백",
+   "trigger_condition": "ADC ISR 정지 (ADC 고장, 인터럽트 미발생)",
+   "execution_path": [
+    "Blv_Diag.c:122 0 → 반환 (매 주기)"
+   ],
+   "expected_behavior": "사양 미정의",
+   "inferred_behavior": "진단이 조용히 정지, 경고등·DTC 마지막 상태 유지",
+   "basis": [
+    {
+     "kind": "FACT",
+     "statement": "새 샘플이 없으면 L124에서 반환",
+     "evidence": "Blv_Diag.c:122-125"
+    }
+   ],
+   "uncertainty": "ADC 감시가 다른 모듈에 있는지 미확인",
+   "recommendation": "샘플 미갱신 시간 한계와 처리 정의",
+   "additional_checks": [
+    "ADC 드라이버 감시 기능"
+   ],
+   "test_cases": [
+    {
+     "title": "ADC 정지",
+     "technique": "FAULT_INJECTION",
+     "preconditions": "IgnSts=ON, 저전압 1초 누적",
+     "steps": "ADC ISR 중지 5초",
+     "expected": "사양 미정의 — 확인 필요 (현재 코드: 진단 정지)",
+     "observation": "s_u8FaultCnt, Dem"
+    }
+   ],
+   "static_candidates": [],
+   "gap_kind": "TIMEOUT_TIMER_EXPIRY",
+   "spec_question": "배터리 전압 샘플이 일정 시간 갱신되지 않으면 어떻게 처리합니까?",
+   "risk_scenario": "ADC 고장 시 저전압이 검출되지 않음",
+   "stage": "4_gaps",
+   "related": [
+    "D-003"
+   ]
+  },
+  {
+   "id": "G-006",
+   "category": "SPEC_GAP",
+   "subcategory": "",
+   "verdict": "SPEC_CLARIFICATION",
+   "severity": "LOW",
+   "title": "초기 필터 미충전 구간(4샘플 미만)의 판정 여부 미정의",
+   "req_ids": [
+    "SWR-BLV-002"
+   ],
+   "req_quote": "배터리 전압이 9000mV 이하이면 저전압 조건으로 판단한다.",
+   "code_refs": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "Blv_Filter",
+     "line": 60,
+     "symbol": "s_u8BufNum",
+     "role": "가용 샘플 평균",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "   58  |     }\n   59  | \n   60> |     for (u8I = 0U; u8I < s_u8BufNum; u8I++)\n   61  |     {\n   62  |         u32Sum += s_au16Buf[u8I];"
+    }
+   ],
+   "spec_says": "필터 정의 없음",
+   "code_does": "4개 미만이면 가용 샘플만 평균하여 즉시 판정",
+   "comparison": "사양 공백",
+   "trigger_condition": "초기화 직후 첫 3주기",
+   "execution_path": [
+    "Blv_Diag.c:55 BufNum 증가",
+    "Blv_Diag.c:67 평균"
+   ],
+   "expected_behavior": "사양 미정의",
+   "inferred_behavior": "첫 주기 단일 샘플로 판정",
+   "basis": [
+    {
+     "kind": "FACT",
+     "statement": "s_u8BufNum 기준 평균",
+     "evidence": "Blv_Diag.c:60-68"
+    }
+   ],
+   "uncertainty": "필터 사용이 사양 요구인지 불명",
+   "recommendation": "필터 동작을 사양/설계서에 명시",
+   "additional_checks": [],
+   "test_cases": [
+    {
+     "title": "초기 주기",
+     "technique": "EQUIVALENCE_CLASS",
+     "preconditions": "Init 직후",
+     "steps": "첫 샘플 8500mV, 이후 12000mV",
+     "expected": "사양 미정의 — 확인 필요",
+     "observation": "u16Volt"
+    }
+   ],
+   "static_candidates": [],
+   "gap_kind": "INITIAL_OR_ABNORMAL_STATE",
+   "spec_question": "초기 필터가 채워지기 전에도 판정합니까?",
+   "risk_scenario": "초기 노이즈 샘플로 카운트 시작",
+   "stage": "4_gaps",
+   "related": []
+  },
+  {
+   "id": "D-001",
+   "category": "LOGIC_ERROR",
+   "subcategory": "",
+   "verdict": "PROBABLE_DEFECT",
+   "severity": "HIGH",
+   "title": "8bit 고장 카운터 순환으로 지속 고장 중 경고등이 주기적으로 소등",
+   "req_ids": [
+    "SWR-BLV-003",
+    "SWR-BLV-004"
+   ],
+   "req_quote": "고장이 확정된 상태에서는 경고등을 점등한다.",
+   "code_refs": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 141,
+     "symbol": "s_u8FaultCnt",
+     "role": "포화 없는 증가",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "  139  |     if (bLow == TRUE)\n  140  |     {\n  141> |         s_u8FaultCnt++;\n  142  |         s_u16HealCnt = 0U;\n  143  |     }"
+    },
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 157,
+     "symbol": "BLV_CONFIRM_CNT",
+     "role": "임계 판정",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "  155  |     }\n  156  | \n  157> |     s_bFaultDetected = (s_u8FaultCnt >= BLV_CONFIRM_CNT) ? TRUE : FALSE;\n  158  | \n  159  |     switch (s_eBlvState)"
+    },
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 181,
+     "symbol": "BlvWarnLamp",
+     "role": "출력",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "  179  |     }\n  180  | \n  181> |     BlvWarnLamp = s_bFaultDetected;\n  182  | }"
+    }
+   ],
+   "spec_says": "S32: 확정 상태 동안 점등",
+   "code_does": "uint8 카운터가 256회째 0 → s_bFaultDetected FALSE → 경고등 0 (상태는 FAULT 유지)",
+   "comparison": "지속 고장에서 표시가 해제됨",
+   "trigger_condition": "저전압(≤9000mV)이 2.56초 이상 지속",
+   "execution_path": [
+    "Blv_Diag.c:141 200회(2.0s) 점등",
+    "Blv_Diag.c:141 256회(2.56s) 0으로 순환",
+    "Blv_Diag.c:157 FALSE",
+    "Blv_Diag.c:181 소등",
+    "Blv_Diag.c:141 456회(4.56s) 재점등"
+   ],
+   "expected_behavior": "고장 지속 동안 계속 점등",
+   "inferred_behavior": "2.0s 점등 → 2.56s 소등 → 4.56s 재점등 → 5.12s 소등 … 반복. DTC는 재보고 없음. ※ 현재 코드는 C-007(유예 타이머 무한 반복) 때문에 L116 이후가 실행되지 않으므로, 이 불일치는 C-007 수정 후 드러나는 잠복 결함이다.",
+   "basis": [
+    {
+     "kind": "FACT",
+     "statement": "s_u8FaultCnt는 uint8이고 증가에 상한 검사가 없다",
+     "evidence": "SC-012"
+    },
+    {
+     "kind": "FACT",
+     "statement": "경고등은 카운터 기반 플래그를 출력한다",
+     "evidence": "Blv_Diag.c:181"
+    },
+    {
+     "kind": "INFERENCE",
+     "statement": "256회째 순환 후 200회까지 플래그가 FALSE",
+     "evidence": "Blv_Diag.c:157"
+    }
+   ],
+   "uncertainty": "사양이 확정 후 카운터 동작을 정의하지 않음(G-001). C-004 수정 시 경고등 영향은 사라지나 카운터 순환 자체는 남음.",
+   "recommendation": "`if (s_u8FaultCnt < BLV_CONFIRM_CNT) { s_u8FaultCnt++; }`로 포화하고, 경고등은 확정 상태 기반으로 출력 (C-004).",
+   "additional_checks": [
+    "확정 후 카운터 포화가 사양 의도인지 (G-001)"
+   ],
+   "test_cases": [
+    {
+     "title": "장시간 저전압",
+     "technique": "BOUNDARY_VALUE",
+     "preconditions": "IgnSts=ON, 유예 종료",
+     "steps": "8500mV 6초",
+     "expected": "2초 이후 계속 점등",
+     "observation": "BlvWarnLamp 시계열, s_u8FaultCnt"
+    }
+   ],
+   "static_candidates": [
+    "SC-012"
+   ],
+   "gap_kind": "NONE",
+   "spec_question": "",
+   "risk_scenario": "",
+   "stage": "5_defects",
+   "related": [
+    "C-004",
+    "G-001"
+   ]
+  },
+  {
+   "id": "D-002",
+   "category": "RUNTIME_ERROR",
+   "subcategory": "",
+   "verdict": "PROBABLE_DEFECT",
+   "severity": "HIGH",
+   "title": "16bit int 대상에서 전압 변환 곱셈 오버플로 → 정상 전압을 저전압으로 오판정",
+   "req_ids": [
+    "SWR-BLV-002"
+   ],
+   "req_quote": "배터리 전압이 9000mV 이하이면 저전압 조건으로 판단한다.",
+   "code_refs": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "Blv_ConvertToMv",
+     "line": 38,
+     "symbol": "BLV_ADC_REF_MV",
+     "role": "u16Raw * 5000U",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "   36  | \n   37  |     /* ADC raw → 분압 전 전압 [mV] */\n   38> |     u16Mv = (uint16)((u16Raw * BLV_ADC_REF_MV) / BLV_ADC_MAX);\n   39  | \n   40  |     return (uint16)(u16Mv * BLV_DIVIDER_RATIO);"
+    }
+   ],
+   "spec_says": "S14: BattVolt 0~20000mV",
+   "code_does": "int 16bit에서 u16Raw * 5000U는 unsigned int(16bit) 연산 → raw 613(12V)에서 3,065,000 mod 65536 = 50,344 → /1023 = 49 → ×4 = 196mV",
+   "comparison": "실제 12V가 196mV로 계산",
+   "trigger_condition": "정상 배터리 전압 12V (raw≈613), 대상 int=16bit",
+   "execution_path": [
+    "Blv_Diag.c:134 변환 호출",
+    "Blv_Diag.c:38 곱셈 순환",
+    "Blv_Diag.c:137 196 < 9000 → 저전압",
+    "Blv_Diag.c:164 FAILED"
+   ],
+   "expected_behavior": "12V는 정상",
+   "inferred_behavior": "정상 전압에서도 2초 후 FAILED·경고등 점등 (C-007 수정 후)",
+   "basis": [
+    {
+     "kind": "FACT",
+     "statement": "env.json: int 16bit, ADC 10bit",
+     "evidence": "env.json"
+    },
+    {
+     "kind": "FACT",
+     "statement": "피연산자 범위상 결과가 0..327,675,000으로 16bit를 넘는다",
+     "evidence": "SC-005"
+    },
+    {
+     "kind": "INFERENCE",
+     "statement": "raw ≥ 14에서 순환 발생",
+     "evidence": "14×5000 > 65535"
+    },
+    {
+     "kind": "HYPOTHESIS",
+     "statement": "대상 컴파일러가 int를 16bit로 처리",
+     "evidence": "컴파일러 설정 미제공"
+    }
+   ],
+   "uncertainty": "대상 컴파일러의 int 크기·정수 승격 옵션 미확인 (호스트 gcc는 32bit라 경고 없음).",
+   "recommendation": "`(uint16)(((uint32)u16Raw * BLV_ADC_REF_MV) / BLV_ADC_MAX)`로 32bit 연산을 강제한다.",
+   "additional_checks": [
+    "대상 컴파일러 int 크기",
+    "ADC 결과 범위"
+   ],
+   "test_cases": [
+    {
+     "title": "12V 변환",
+     "technique": "EQUIVALENCE_CLASS",
+     "preconditions": "대상 HW/SIL(int 16bit)",
+     "steps": "raw=613 입력",
+     "expected": "u16Volt ≈ 11980mV",
+     "observation": "u16Volt"
+    },
+    {
+     "title": "최대 raw",
+     "technique": "BOUNDARY_VALUE",
+     "preconditions": "대상 HW/SIL",
+     "steps": "raw=1023",
+     "expected": "u16Volt = 20000mV",
+     "observation": "u16Volt"
+    }
+   ],
+   "static_candidates": [
+    "SC-005",
+    "SC-006"
+   ],
+   "gap_kind": "NONE",
+   "spec_question": "",
+   "risk_scenario": "",
+   "stage": "5_defects",
+   "related": []
+  },
+  {
+   "id": "D-003",
+   "category": "CONCURRENCY",
+   "subcategory": "",
+   "verdict": "POTENTIAL_RISK",
+   "severity": "MEDIUM",
+   "title": "ADC ISR 공유 변수의 비원자적 접근 (샘플 카운트 유실, 16bit 분할 읽기)",
+   "req_ids": [
+    "SWR-BLV-003"
+   ],
+   "req_quote": "저전압 조건이 2초 동안 연속으로 유지되면",
+   "code_refs": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 122,
+     "symbol": "g_u8AdcSampleCnt",
+     "role": "읽기",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "  120  |     }\n  121  | \n  122> |     if (g_u8AdcSampleCnt == 0U)\n  123  |     {\n  124  |         return;     /* 새 샘플 없음 */"
+    },
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 127,
+     "symbol": "g_u8AdcSampleCnt",
+     "role": "쓰기",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "  125  |     }\n  126  |     u16Raw = g_u16BattRaw;\n  127> |     g_u8AdcSampleCnt = 0U;\n  128  | \n  129  |     if (u16Raw == BLV_INVALID_RAW)"
+    },
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 126,
+     "symbol": "g_u16BattRaw",
+     "role": "16bit 읽기",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "  124  |         return;     /* 새 샘플 없음 */\n  125  |     }\n  126> |     u16Raw = g_u16BattRaw;\n  127  |     g_u8AdcSampleCnt = 0U;\n  128  | "
+    },
+    {
+     "file": "Adc_Isr.c",
+     "function": "Adc_ConvEndIsr",
+     "line": 12,
+     "symbol": "g_u8AdcSampleCnt",
+     "role": "ISR 증가",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "   10  | {\n   11  |     g_u16BattRaw = Adc_ReadResultReg(BLV_ADC_CH);\n   12> |     g_u8AdcSampleCnt++;\n   13  | }"
+    }
+   ],
+   "spec_says": "주기 판정의 연속성 전제",
+   "code_does": "L122 읽기~L127 쓰기 사이 ISR 증가분이 0으로 덮임; 16bit g_u16BattRaw를 8bit 접근 MCU에서 보호 없이 읽음",
+   "comparison": "보호 구간 없음",
+   "trigger_condition": "L122~L127 실행 중 ADC 변환 완료 인터럽트",
+   "execution_path": [
+    "Blv_Diag.c:122 읽기",
+    "Adc_Isr.c:12 ISR 증가",
+    "Blv_Diag.c:127 0으로 덮음"
+   ],
+   "expected_behavior": "모든 샘플 반영",
+   "inferred_behavior": "다음 주기 '새 샘플 없음'으로 판정 생략 가능, 분할 읽기 시 순간 오값",
+   "basis": [
+    {
+     "kind": "FACT",
+     "statement": "ISR이 증가, 태스크가 읽고 0을 쓴다",
+     "evidence": "SC-010"
+    },
+    {
+     "kind": "FACT",
+     "statement": "보호 함수 호출이 없다",
+     "evidence": "Blv_Diag.c:91-182"
+    },
+    {
+     "kind": "HYPOTHESIS",
+     "statement": "16bit 로드가 원자적이지 않다",
+     "evidence": "atomic_access_bits=8"
+    }
+   ],
+   "uncertainty": "명령 수준 원자성, 실행 시간 미확인",
+   "recommendation": "SuspendAllInterrupts/ResumeAllInterrupts로 L122~L127을 보호하고 volatile을 선언",
+   "additional_checks": [
+    "대상 MCU의 16bit 로드 원자성",
+    "L122~L127 실행 시간"
+   ],
+   "test_cases": [
+    {
+     "title": "ISR 경합",
+     "technique": "CONCURRENCY",
+     "preconditions": "SIL에서 ISR 주입 가능",
+     "steps": "L126 실행 직후 ISR 강제 발생",
+     "expected": "샘플 유실 없음",
+     "observation": "g_u8AdcSampleCnt 추적"
+    }
+   ],
+   "static_candidates": [
+    "SC-003",
+    "SC-004",
+    "SC-010",
+    "SC-011"
+   ],
+   "gap_kind": "NONE",
+   "spec_question": "",
+   "risk_scenario": "",
+   "stage": "5_defects",
+   "related": [
+    "G-005"
+   ]
+  },
+  {
+   "id": "D-004",
+   "category": "LOGIC_ERROR",
+   "subcategory": "",
+   "verdict": "NEEDS_REVIEW",
+   "severity": "LOW",
+   "title": "BLV_STATE_SUSPEND 상태 미사용 (START 중단 상태 설계 누락 가능)",
+   "req_ids": [
+    "SWR-BLV-001"
+   ],
+   "req_quote": "IgnSts가 START인 동안에는 ... 진단을 중단하며",
+   "code_refs": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line": 159,
+     "symbol": "s_eBlvState",
+     "role": "switch",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "  157  |     s_bFaultDetected = (s_u8FaultCnt >= BLV_CONFIRM_CNT) ? TRUE : FALSE;\n  158  | \n  159> |     switch (s_eBlvState)\n  160  |     {\n  161  |         case BLV_STATE_NORMAL:"
+    },
+    {
+     "file": "Blv_Diag.c",
+     "function": "-",
+     "line": 14,
+     "symbol": "BLV_STATE_SUSPEND",
+     "role": "정의",
+     "check": {
+      "verified": true,
+      "note": "확인됨"
+     },
+     "snippet": "   12  |     BLV_STATE_NORMAL = 0,\n   13  |     BLV_STATE_FAULT,\n   14> |     BLV_STATE_SUSPEND\n   15  | } Blv_StateType;\n   16  | "
+    }
+   ],
+   "spec_says": "START 중 진단 중단",
+   "code_does": "SUSPEND 정의만 있고 전이 없음; START는 조기 반환으로 처리",
+   "comparison": "설계 의도 불명",
+   "trigger_condition": "-",
+   "execution_path": [],
+   "expected_behavior": "-",
+   "inferred_behavior": "SUSPEND 상태 미도달",
+   "basis": [
+    {
+     "kind": "FACT",
+     "statement": "BLV_STATE_SUSPEND로의 대입이 없다",
+     "evidence": "SC-002"
+    },
+    {
+     "kind": "HYPOTHESIS",
+     "statement": "START 처리를 SUSPEND로 하려던 설계 잔재",
+     "evidence": "-"
+    }
+   ],
+   "uncertainty": "설계 문서 미제공",
+   "recommendation": "미사용이면 제거, 필요하면 START 처리 구현",
+   "additional_checks": [
+    "설계 문서의 상태 정의"
+   ],
+   "test_cases": [
+    {
+     "title": "START 중 상태",
+     "technique": "STATE_TRANSITION",
+     "preconditions": "IgnSts=ON",
+     "steps": "START 진입",
+     "expected": "설계 기준 확인",
+     "observation": "s_eBlvState"
+    }
+   ],
+   "static_candidates": [
+    "SC-002",
+    "SC-013"
+   ],
+   "gap_kind": "NONE",
+   "spec_question": "",
+   "risk_scenario": "",
+   "stage": "5_defects",
+   "related": []
+  }
+ ],
+ "candidate_reviews": [
+  {
+   "candidate_id": "SC-001",
+   "assessment": "LIKELY_FALSE_POSITIVE",
+   "reason": "ISR 약 1ms, 태스크 10ms로 주기당 약 10회 증가 후 L127에서 0으로 초기화되므로 256회 누적은 태스크가 2.5초 이상 멈춰야 발생",
+   "finding_id": ""
+  },
+  {
+   "candidate_id": "SC-002",
+   "assessment": "POTENTIAL",
+   "reason": "BLV_STATE_SUSPEND로의 전이가 없어 START 중단 상태 설계가 누락되었을 가능성",
+   "finding_id": "D-004"
+  },
+  {
+   "candidate_id": "SC-003",
+   "assessment": "POTENTIAL",
+   "reason": "반복 폴링은 없으나 ISR 공유 변수 volatile 누락",
+   "finding_id": "D-003"
+  },
+  {
+   "candidate_id": "SC-004",
+   "assessment": "POTENTIAL",
+   "reason": "위와 동일",
+   "finding_id": "D-003"
+  },
+  {
+   "candidate_id": "SC-005",
+   "assessment": "PROBABLE",
+   "reason": "int 16bit 대상에서 raw ≥ 14이면 u16Raw*5000U가 65535를 넘음. 정상 전압(raw≈613)에서도 순환",
+   "finding_id": "D-002"
+  },
+  {
+   "candidate_id": "SC-006",
+   "assessment": "POTENTIAL",
+   "reason": "변환이 정상이면 u16Mv ≤ 5000이라 ×4 ≤ 20000으로 문제없음. SC-005 결과에 종속",
+   "finding_id": "D-002"
+  },
+  {
+   "candidate_id": "SC-007",
+   "assessment": "CONFIRMED",
+   "reason": "상수 300이 uint8에 44로 저장 (gcc -Woverflow 동일)",
+   "finding_id": "C-007"
+  },
+  {
+   "candidate_id": "SC-008",
+   "assessment": "CONFIRMED",
+   "reason": "uint8 < 300 항상 참 (gcc -Wtype-limits 동일)",
+   "finding_id": "C-007"
+  },
+  {
+   "candidate_id": "SC-009",
+   "assessment": "CONFIRMED",
+   "reason": "가드가 무효하여 255→0 순환, 유예 무한 반복",
+   "finding_id": "C-007"
+  },
+  {
+   "candidate_id": "SC-010",
+   "assessment": "PROBABLE",
+   "reason": "L122 읽기와 L127 쓰기 사이 ISR 발생 시 증가분 유실. 영향은 한 주기 판정 생략 수준",
+   "finding_id": "D-003"
+  },
+  {
+   "candidate_id": "SC-011",
+   "assessment": "NEEDS_INFO",
+   "reason": "대상 MCU가 16bit 로드를 단일 명령으로 수행하는지 확인 필요",
+   "finding_id": "D-003"
+  },
+  {
+   "candidate_id": "SC-012",
+   "assessment": "PROBABLE",
+   "reason": "지속 저전압은 실차에서 가능한 조건이며 순환 시 경고등이 꺼짐 (C-004와 결합)",
+   "finding_id": "D-001"
+  },
+  {
+   "candidate_id": "SC-013",
+   "assessment": "POTENTIAL",
+   "reason": "default가 있어 동작상 문제는 없으나 SC-002와 같은 원인",
+   "finding_id": "D-004"
+  }
+ ],
+ "llm_usage": [
+  {
+   "label": "stage1_requirements",
+   "model": "file",
+   "source": "examples/specverify/sample_llm/stage1_requirements.response.json"
+  },
+  {
+   "label": "stage2_traces_b1",
+   "model": "file",
+   "source": "examples/specverify/sample_llm/stage2_traces_b1.response.json"
+  },
+  {
+   "label": "stage3_consistency_b1",
+   "model": "file",
+   "source": "examples/specverify/sample_llm/stage3_consistency_b1.response.json"
+  },
+  {
+   "label": "stage3_consistency_b2",
+   "model": "file",
+   "source": "examples/specverify/sample_llm/stage3_consistency_b2.response.json"
+  },
+  {
+   "label": "stage4_gaps_b1",
+   "model": "file",
+   "source": "examples/specverify/sample_llm/stage4_gaps_b1.response.json"
+  },
+  {
+   "label": "stage5_defects_b1",
+   "model": "file",
+   "source": "examples/specverify/sample_llm/stage5_defects_b1.response.json"
+  }
+ ]
+}

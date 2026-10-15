@@ -1,0 +1,304 @@
+{
+ "traces": [
+  {
+   "req_id": "SWR-BLV-001",
+   "status": "TRACED",
+   "confidence": "HIGH",
+   "locations": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line_start": 98,
+     "line_end": 98,
+     "role": "INPUT_READ",
+     "element": "IgnSts",
+     "symbol": "IoHwAb_GetIgnSts",
+     "explanation": "IgnSts 획득"
+    },
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line_start": 100,
+     "line_end": 107,
+     "role": "CONDITION",
+     "element": "START 시 진단 중단",
+     "symbol": "IGN_START",
+     "explanation": "START면 카운터·경고등을 0으로 만들고 반환"
+    },
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line_start": 110,
+     "line_end": 113,
+     "role": "CONDITION",
+     "element": "ON에서만 수행",
+     "symbol": "IGN_OFF",
+     "explanation": "OFF만 반환, ACC는 진단 계속"
+    }
+   ],
+   "call_path": [
+    "OsTask_10ms → BlvDiag_MainFunction"
+   ],
+   "unmatched_elements": [],
+   "search_notes": ""
+  },
+  {
+   "req_id": "SWR-BLV-002",
+   "status": "TRACED",
+   "confidence": "HIGH",
+   "locations": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line_start": 137,
+     "line_end": 137,
+     "role": "THRESHOLD",
+     "element": "9000mV 이하",
+     "symbol": "BLV_LOW_MV",
+     "explanation": "bLow = (u16Volt < BLV_LOW_MV)"
+    },
+    {
+     "file": "Blv_Cfg.h",
+     "function": "-",
+     "line_start": 7,
+     "line_end": 7,
+     "role": "THRESHOLD",
+     "element": "9000mV",
+     "symbol": "BLV_LOW_MV",
+     "explanation": "임계값 9000U 정의"
+    },
+    {
+     "file": "Blv_Diag.c",
+     "function": "Blv_ConvertToMv",
+     "line_start": 38,
+     "line_end": 40,
+     "role": "INPUT_READ",
+     "element": "BattVolt(mV)",
+     "symbol": "u16Mv",
+     "explanation": "ADC raw → mV 변환"
+    }
+   ],
+   "call_path": [
+    "BlvDiag_MainFunction → Blv_ConvertToMv → Blv_Filter"
+   ],
+   "unmatched_elements": [],
+   "search_notes": ""
+  },
+  {
+   "req_id": "SWR-BLV-003",
+   "status": "TRACED",
+   "confidence": "HIGH",
+   "locations": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line_start": 139,
+     "line_end": 143,
+     "role": "TIMER_COUNTER",
+     "element": "저전압 지속 카운트",
+     "symbol": "s_u8FaultCnt",
+     "explanation": "저전압이면 고장 카운터 증가"
+    },
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line_start": 157,
+     "line_end": 157,
+     "role": "CONDITION",
+     "element": "2초(200회) 판정",
+     "symbol": "BLV_CONFIRM_CNT",
+     "explanation": "카운터 >= 200이면 s_bFaultDetected"
+    },
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line_start": 162,
+     "line_end": 166,
+     "role": "STATE_TRANSITION",
+     "element": "고장 확정, DTC FAILED",
+     "symbol": "Dem_SetEventStatus",
+     "explanation": "NORMAL→FAULT, FAILED 보고"
+    }
+   ],
+   "call_path": [],
+   "unmatched_elements": [],
+   "search_notes": ""
+  },
+  {
+   "req_id": "SWR-BLV-004",
+   "status": "TRACED",
+   "confidence": "HIGH",
+   "locations": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line_start": 181,
+     "line_end": 181,
+     "role": "OUTPUT_WRITE",
+     "element": "경고등",
+     "symbol": "BlvWarnLamp",
+     "explanation": "경고등 = s_bFaultDetected (확정 상태 s_eBlvState가 아님)"
+    }
+   ],
+   "call_path": [],
+   "unmatched_elements": [],
+   "search_notes": ""
+  },
+  {
+   "req_id": "SWR-BLV-005",
+   "status": "TRACED",
+   "confidence": "HIGH",
+   "locations": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line_start": 144,
+     "line_end": 151,
+     "role": "TIMER_COUNTER",
+     "element": "10500mV 이상 5초",
+     "symbol": "s_u16HealCnt",
+     "explanation": "10500mV 이상이면 해제 카운터 증가(500 포화), 고장 카운터 0"
+    },
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line_start": 170,
+     "line_end": 174,
+     "role": "STATE_TRANSITION",
+     "element": "고장 해제, DTC PASSED",
+     "symbol": "BLV_HEAL_CNT",
+     "explanation": "FAULT→NORMAL, PASSED 보고"
+    }
+   ],
+   "call_path": [],
+   "unmatched_elements": [],
+   "search_notes": ""
+  },
+  {
+   "req_id": "SWR-BLV-006",
+   "status": "TRACED",
+   "confidence": "MEDIUM",
+   "locations": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line_start": 152,
+     "line_end": 155,
+     "role": "CONDITION",
+     "element": "히스테리시스 구간 유지",
+     "symbol": "else",
+     "explanation": "카운터 변경 없음"
+    }
+   ],
+   "call_path": [],
+   "unmatched_elements": [],
+   "search_notes": ""
+  },
+  {
+   "req_id": "SWR-BLV-007",
+   "status": "TRACED",
+   "confidence": "HIGH",
+   "locations": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line_start": 105,
+     "line_end": 105,
+     "role": "TIMER_COUNTER",
+     "element": "START에서 유예 타이머 시작",
+     "symbol": "s_u8StartMaskCnt",
+     "explanation": "START 중 0으로 설정"
+    },
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line_start": 116,
+     "line_end": 120,
+     "role": "TIMER_COUNTER",
+     "element": "3초 유예",
+     "symbol": "BLV_START_MASK_CNT",
+     "explanation": "s_u8StartMaskCnt < 300 동안 증가 후 반환"
+    },
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_Init",
+     "line_start": 83,
+     "line_end": 83,
+     "role": "INIT",
+     "element": "초기화 시 유예 없음 의도",
+     "symbol": "BLV_START_MASK_CNT",
+     "explanation": "300을 uint8에 대입"
+    }
+   ],
+   "call_path": [],
+   "unmatched_elements": [],
+   "search_notes": ""
+  },
+  {
+   "req_id": "SWR-BLV-008",
+   "status": "TRACED",
+   "confidence": "MEDIUM",
+   "locations": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line_start": 129,
+     "line_end": 132,
+     "role": "EXCEPTION_HANDLING",
+     "element": "무효값 판정 미수행",
+     "symbol": "BLV_INVALID_RAW",
+     "explanation": "raw == 0xFFFF면 반환"
+    }
+   ],
+   "call_path": [],
+   "unmatched_elements": [
+    "무효값(ADC 오류 값)의 정의 — 0xFFFF 이외의 오류 판정 없음"
+   ],
+   "search_notes": ""
+  },
+  {
+   "req_id": "SWR-BLV-009",
+   "status": "PARTIAL",
+   "confidence": "HIGH",
+   "locations": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_Init",
+     "line_start": 80,
+     "line_end": 88,
+     "role": "INIT",
+     "element": "카운터·상태·경고등 초기화",
+     "symbol": "s_u8FaultCnt",
+     "explanation": "상태 NORMAL, 고장 카운터 0, 경고등 0"
+    }
+   ],
+   "call_path": [
+    "EcuM_Init → BlvDiag_Init"
+   ],
+   "unmatched_elements": [
+    "정상 카운터(s_u16HealCnt) 초기화"
+   ],
+   "search_notes": "s_u16HealCnt에 대한 대입을 BlvDiag_Init에서 찾지 못함"
+  },
+  {
+   "req_id": "SWR-BLV-010",
+   "status": "TRACED",
+   "confidence": "HIGH",
+   "locations": [
+    {
+     "file": "Blv_Diag.c",
+     "function": "BlvDiag_MainFunction",
+     "line_start": 106,
+     "line_end": 106,
+     "role": "OUTPUT_WRITE",
+     "element": "START 중 경고등",
+     "symbol": "BlvWarnLamp",
+     "explanation": "START면 경고등 0"
+    }
+   ],
+   "call_path": [],
+   "unmatched_elements": [],
+   "search_notes": ""
+  }
+ ]
+}

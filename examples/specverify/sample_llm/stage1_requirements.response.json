@@ -1,0 +1,620 @@
+{
+ "requirements": [
+  {
+   "id": "SWR-BLV-001",
+   "id_origin": "SPEC",
+   "title": "진단 실행 조건",
+   "source": {
+    "line_start": 21,
+    "line_end": 23,
+    "quote": "진단은 IgnSts가 ON일 때 수행한다. IgnSts가 START인 동안에는 크랭킹에 의한 일시적 전압 강하가 발생하므로 진단을 중단하며, 이때 고장 카운터와 정상 카운터는 현재 값을 유지한다."
+   },
+   "purpose": "진단 수행 구간을 IGN ON으로 한정하고, 크랭킹(START) 중에는 진단을 중단하되 카운터를 보존한다.",
+   "inputs": [
+    {
+     "name": "IgnSts",
+     "detail": "이그니션 상태",
+     "value": "OFF/ACC/ON/START",
+     "unit": "",
+     "status": "DEFINED",
+     "quote": "IgnSts"
+    }
+   ],
+   "outputs": [],
+   "execution_conditions": [
+    {
+     "name": "진단 수행",
+     "detail": "IgnSts == ON",
+     "value": "",
+     "unit": "",
+     "status": "DEFINED",
+     "quote": "진단은 IgnSts가 ON일 때 수행한다."
+    },
+    {
+     "name": "진단 중단",
+     "detail": "IgnSts == START",
+     "value": "",
+     "unit": "",
+     "status": "DEFINED",
+     "quote": "IgnSts가 START인 동안에는 ... 진단을 중단하며"
+    }
+   ],
+   "decision_conditions": [],
+   "states": [],
+   "transitions": [],
+   "timers_counters": [],
+   "thresholds_boundaries": [],
+   "exceptions": [
+    {
+     "name": "START 중 카운터",
+     "detail": "고장 카운터와 정상 카운터는 현재 값 유지",
+     "value": "",
+     "unit": "",
+     "status": "DEFINED",
+     "quote": "이때 고장 카운터와 정상 카운터는 현재 값을 유지한다."
+    }
+   ],
+   "priorities": [],
+   "ambiguities": [
+    {
+     "element": "ACC 상태",
+     "quote": "진단은 IgnSts가 ON일 때 수행한다.",
+     "reason": "ON에서 수행한다고만 되어 있어 ACC/OFF에서 '수행하지 않음'이 명시적이지 않다.",
+     "question": "IgnSts가 ACC일 때 진단을 수행하지 않는 것이 맞습니까? (OFF도 동일)"
+    },
+    {
+     "element": "정상 카운터",
+     "quote": "고장 카운터와 정상 카운터",
+     "reason": "'정상 카운터'가 SWR-BLV-005의 해제 판정용 카운터인지 용어 정의가 없다.",
+     "question": "'정상 카운터'는 고장 해제(10500mV 이상 5초) 판정용 카운터를 의미합니까?"
+    }
+   ],
+   "undefined_items": [
+    {
+     "element": "ON 이외 상태에서의 출력",
+     "description": "진단을 수행하지 않는 IgnSts(OFF/ACC)에서 경고등·진단 상태를 어떻게 유지/초기화할지 정의되지 않음",
+     "question": "IgnSts가 OFF/ACC로 바뀌면 경고등과 진단 상태는 유지합니까, 초기화합니까?"
+    }
+   ]
+  },
+  {
+   "id": "SWR-BLV-002",
+   "id_origin": "SPEC",
+   "title": "저전압 판정",
+   "source": {
+    "line_start": 25,
+    "line_end": 26,
+    "quote": "배터리 전압이 9000mV 이하이면 저전압 조건으로 판단한다."
+   },
+   "purpose": "저전압 조건을 정의한다.",
+   "inputs": [
+    {
+     "name": "BattVolt",
+     "detail": "배터리 전압 (분압 보정 후)",
+     "value": "0 ~ 20000",
+     "unit": "mV",
+     "status": "DEFINED",
+     "quote": "BattVolt | 입력 | ADC로 측정한 배터리 전압 (분압 보정 후) | 0 ~ 20000 mV"
+    }
+   ],
+   "outputs": [],
+   "execution_conditions": [],
+   "decision_conditions": [
+    {
+     "name": "저전압 조건",
+     "detail": "BattVolt <= 9000mV",
+     "value": "9000",
+     "unit": "mV",
+     "status": "DEFINED",
+     "quote": "배터리 전압이 9000mV 이하이면 저전압 조건으로 판단한다."
+    }
+   ],
+   "states": [],
+   "transitions": [],
+   "timers_counters": [],
+   "thresholds_boundaries": [
+    {
+     "item": "저전압 임계값",
+     "value": "9000",
+     "unit": "mV",
+     "inclusive": "INCLUSIVE",
+     "status": "DEFINED",
+     "quote": "9000mV 이하"
+    }
+   ],
+   "exceptions": [],
+   "priorities": [],
+   "ambiguities": [],
+   "undefined_items": []
+  },
+  {
+   "id": "SWR-BLV-003",
+   "id_origin": "SPEC",
+   "title": "고장 확정",
+   "source": {
+    "line_start": 28,
+    "line_end": 29,
+    "quote": "저전압 조건이 2초 동안 연속으로 유지되면 고장으로 확정하고 DTC B1A00을 FAILED로 보고한다."
+   },
+   "purpose": "저전압 지속 시간으로 고장을 확정하고 DTC를 보고한다.",
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "DTC B1A00",
+     "detail": "배터리 저전압 고장",
+     "value": "FAILED / PASSED",
+     "unit": "",
+     "status": "DEFINED",
+     "quote": "DTC B1A00 | 출력 | 배터리 저전압 고장 | Dem 이벤트 상태 FAILED / PASSED"
+    }
+   ],
+   "execution_conditions": [],
+   "decision_conditions": [
+    {
+     "name": "고장 확정",
+     "detail": "저전압 조건 2초 연속",
+     "value": "2",
+     "unit": "s",
+     "status": "DEFINED",
+     "quote": "저전압 조건이 2초 동안 연속으로 유지되면"
+    }
+   ],
+   "states": [
+    {
+     "name": "고장 확정",
+     "detail": "Confirmed",
+     "value": "",
+     "unit": "",
+     "status": "DEFINED",
+     "quote": "고장으로 확정하고"
+    }
+   ],
+   "transitions": [
+    {
+     "from": "정상(미확정)",
+     "to": "고장 확정",
+     "condition": "저전압 조건 2초 연속",
+     "status": "DEFINED",
+     "quote": "저전압 조건이 2초 동안 연속으로 유지되면 고장으로 확정하고"
+    }
+   ],
+   "timers_counters": [
+    {
+     "name": "고장 확정 타이머",
+     "kind": "DEBOUNCE",
+     "value": "2",
+     "unit": "s",
+     "behavior": "저전압 조건 연속 시간. (추론) 10ms 주기 기준 200회",
+     "status": "DEFINED",
+     "quote": "2초 동안 연속으로"
+    }
+   ],
+   "thresholds_boundaries": [],
+   "exceptions": [],
+   "priorities": [],
+   "ambiguities": [
+    {
+     "element": "연속성 판단",
+     "quote": "2초 동안 연속으로 유지되면",
+     "reason": "히스테리시스 구간(SWR-BLV-006) 진입, 무효 샘플(SWR-BLV-008), 진단 중단(START)이 '연속'을 끊는지 정의되지 않음",
+     "question": "저전압 누적 중 히스테리시스 구간 진입·무효 샘플·START가 발생하면 2초 카운트를 초기화합니까, 유지합니까?"
+    }
+   ],
+   "undefined_items": [
+    {
+     "element": "확정 후 카운터",
+     "description": "고장 확정 후 저전압이 계속될 때 카운터의 포화/정지 여부",
+     "question": "고장 확정 이후에도 저전압이 지속되면 고장 카운터는 포화(정지)되어야 합니까?"
+    }
+   ]
+  },
+  {
+   "id": "SWR-BLV-004",
+   "id_origin": "SPEC",
+   "title": "경고등 출력",
+   "source": {
+    "line_start": 31,
+    "line_end": 32,
+    "quote": "고장이 확정된 상태에서는 경고등을 점등한다. 고장이 해제되면 경고등을 소등한다."
+   },
+   "purpose": "고장 확정 상태를 운전자에게 알린다.",
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "BlvWarnLamp",
+     "detail": "저전압 경고등 요청",
+     "value": "0: 소등, 1: 점등",
+     "unit": "",
+     "status": "DEFINED",
+     "quote": "BlvWarnLamp | 출력 | 저전압 경고등 요청 | 0: 소등, 1: 점등"
+    }
+   ],
+   "execution_conditions": [],
+   "decision_conditions": [
+    {
+     "name": "점등",
+     "detail": "고장 확정 상태",
+     "value": "",
+     "unit": "",
+     "status": "DEFINED",
+     "quote": "고장이 확정된 상태에서는 경고등을 점등한다."
+    },
+    {
+     "name": "소등",
+     "detail": "고장 해제",
+     "value": "",
+     "unit": "",
+     "status": "DEFINED",
+     "quote": "고장이 해제되면 경고등을 소등한다."
+    }
+   ],
+   "states": [],
+   "transitions": [],
+   "timers_counters": [],
+   "thresholds_boundaries": [],
+   "exceptions": [],
+   "priorities": [],
+   "ambiguities": [],
+   "undefined_items": []
+  },
+  {
+   "id": "SWR-BLV-005",
+   "id_origin": "SPEC",
+   "title": "고장 해제",
+   "source": {
+    "line_start": 34,
+    "line_end": 36,
+    "quote": "고장 확정 이후 배터리 전압이 10500mV 이상인 상태가 5초 동안 연속으로 유지되면 고장을 해제하고 DTC B1A00을 PASSED로 보고한다. 고장 해제 시 고장 카운터는 0으로 초기화한다."
+   },
+   "purpose": "회복 조건과 회복 시 처리를 정의한다.",
+   "inputs": [
+    {
+     "name": "BattVolt",
+     "detail": "배터리 전압 (분압 보정 후)",
+     "value": "0 ~ 20000",
+     "unit": "mV",
+     "status": "DEFINED",
+     "quote": "BattVolt | 입력 | ADC로 측정한 배터리 전압 (분압 보정 후) | 0 ~ 20000 mV"
+    }
+   ],
+   "outputs": [
+    {
+     "name": "DTC B1A00",
+     "detail": "배터리 저전압 고장",
+     "value": "FAILED / PASSED",
+     "unit": "",
+     "status": "DEFINED",
+     "quote": "DTC B1A00 | 출력 | 배터리 저전압 고장 | Dem 이벤트 상태 FAILED / PASSED"
+    }
+   ],
+   "execution_conditions": [],
+   "decision_conditions": [],
+   "states": [],
+   "transitions": [
+    {
+     "from": "고장 확정",
+     "to": "정상",
+     "condition": "BattVolt >= 10500mV 5초 연속",
+     "status": "DEFINED",
+     "quote": "고장 확정 이후 배터리 전압이 10500mV 이상인 상태가 5초 동안 연속으로 유지되면 고장을 해제하고"
+    }
+   ],
+   "timers_counters": [
+    {
+     "name": "고장 해제 타이머",
+     "kind": "DEBOUNCE",
+     "value": "5",
+     "unit": "s",
+     "behavior": "10500mV 이상 연속 시간. (추론) 10ms 주기 기준 500회",
+     "status": "DEFINED",
+     "quote": "5초 동안 연속으로"
+    }
+   ],
+   "thresholds_boundaries": [
+    {
+     "item": "해제 임계값",
+     "value": "10500",
+     "unit": "mV",
+     "inclusive": "INCLUSIVE",
+     "status": "DEFINED",
+     "quote": "10500mV 이상"
+    }
+   ],
+   "exceptions": [
+    {
+     "name": "해제 시 카운터",
+     "detail": "고장 카운터 0",
+     "value": "0",
+     "unit": "",
+     "status": "DEFINED",
+     "quote": "고장 해제 시 고장 카운터는 0으로 초기화한다."
+    }
+   ],
+   "priorities": [],
+   "ambiguities": [],
+   "undefined_items": []
+  },
+  {
+   "id": "SWR-BLV-006",
+   "id_origin": "SPEC",
+   "title": "히스테리시스",
+   "source": {
+    "line_start": 38,
+    "line_end": 39,
+    "quote": "배터리 전압이 9000mV 초과 10500mV 미만인 구간에서는 현재 진단 상태를 유지한다."
+   },
+   "purpose": "판정 채터링 방지.",
+   "inputs": [
+    {
+     "name": "BattVolt",
+     "detail": "배터리 전압 (분압 보정 후)",
+     "value": "0 ~ 20000",
+     "unit": "mV",
+     "status": "DEFINED",
+     "quote": "BattVolt | 입력 | ADC로 측정한 배터리 전압 (분압 보정 후) | 0 ~ 20000 mV"
+    }
+   ],
+   "outputs": [],
+   "execution_conditions": [],
+   "decision_conditions": [],
+   "states": [],
+   "transitions": [],
+   "timers_counters": [],
+   "thresholds_boundaries": [
+    {
+     "item": "히스테리시스 하한",
+     "value": "9000",
+     "unit": "mV",
+     "inclusive": "EXCLUSIVE",
+     "status": "DEFINED",
+     "quote": "9000mV 초과"
+    },
+    {
+     "item": "히스테리시스 상한",
+     "value": "10500",
+     "unit": "mV",
+     "inclusive": "EXCLUSIVE",
+     "status": "DEFINED",
+     "quote": "10500mV 미만"
+    }
+   ],
+   "exceptions": [],
+   "priorities": [],
+   "ambiguities": [
+    {
+     "element": "유지 대상",
+     "quote": "현재 진단 상태를 유지한다.",
+     "reason": "'진단 상태'에 진행 중인 고장/해제 카운터가 포함되는지 불명확 (상태만 유지하고 카운터는 초기화할 수도 있음)",
+     "question": "히스테리시스 구간에서 진행 중이던 고장 카운터·해제 카운터는 유지합니까, 초기화합니까?"
+    }
+   ],
+   "undefined_items": []
+  },
+  {
+   "id": "SWR-BLV-007",
+   "id_origin": "SPEC",
+   "title": "시동 후 진단 유예",
+   "source": {
+    "line_start": 41,
+    "line_end": 42,
+    "quote": "IgnSts가 START에서 ON으로 전환된 후 3초 동안은 진단 판정을 유예한다."
+   },
+   "purpose": "크랭킹 직후 전압 회복 구간의 오검출 방지.",
+   "inputs": [
+    {
+     "name": "IgnSts",
+     "detail": "이그니션 상태",
+     "value": "OFF/ACC/ON/START",
+     "unit": "",
+     "status": "DEFINED",
+     "quote": "IgnSts"
+    }
+   ],
+   "outputs": [],
+   "execution_conditions": [],
+   "decision_conditions": [],
+   "states": [],
+   "transitions": [],
+   "timers_counters": [
+    {
+     "name": "시동 후 유예 타이머",
+     "kind": "DELAY",
+     "value": "3",
+     "unit": "s",
+     "behavior": "START→ON 전환 시점부터 계시. (추론) 10ms 주기 기준 300회",
+     "status": "DEFINED",
+     "quote": "3초 동안은 진단 판정을 유예한다."
+    }
+   ],
+   "thresholds_boundaries": [],
+   "exceptions": [],
+   "priorities": [],
+   "ambiguities": [],
+   "undefined_items": [
+    {
+     "element": "유예 중 카운터",
+     "description": "유예 중 고장/해제 카운터를 유지할지 초기화할지",
+     "question": "유예 기간 동안 카운터는 유지합니까?"
+    },
+    {
+     "element": "전원 투입 시 유예",
+     "description": "START를 거치지 않은 ON(예: 리셋 후)에서의 유예 여부",
+     "question": "제어기 초기화 직후에도 3초 유예를 적용합니까?"
+    }
+   ]
+  },
+  {
+   "id": "SWR-BLV-008",
+   "id_origin": "SPEC",
+   "title": "입력 유효성",
+   "source": {
+    "line_start": 44,
+    "line_end": 45,
+    "quote": "BattVolt 측정값이 무효(ADC 오류 값)인 경우 해당 주기의 판정을 수행하지 않는다."
+   },
+   "purpose": "무효 입력으로 인한 오판정 방지.",
+   "inputs": [
+    {
+     "name": "BattVolt",
+     "detail": "배터리 전압 (분압 보정 후)",
+     "value": "0 ~ 20000",
+     "unit": "mV",
+     "status": "DEFINED",
+     "quote": "BattVolt | 입력 | ADC로 측정한 배터리 전압 (분압 보정 후) | 0 ~ 20000 mV"
+    }
+   ],
+   "outputs": [],
+   "execution_conditions": [],
+   "decision_conditions": [],
+   "states": [],
+   "transitions": [],
+   "timers_counters": [],
+   "thresholds_boundaries": [],
+   "exceptions": [
+    {
+     "name": "무효 입력",
+     "detail": "판정 미수행",
+     "value": "",
+     "unit": "",
+     "status": "AMBIGUOUS",
+     "quote": "무효(ADC 오류 값)인 경우 해당 주기의 판정을 수행하지 않는다."
+    }
+   ],
+   "priorities": [],
+   "ambiguities": [
+    {
+     "element": "무효값 정의",
+     "quote": "무효(ADC 오류 값)",
+     "reason": "어떤 값이 ADC 오류 값인지 정의되지 않음 (특정 코드값? 범위 0~20000 초과?)",
+     "question": "무효로 판단할 값(예: 0xFFFF, 20000mV 초과, ADC 오류 플래그)을 정의해 주십시오."
+    }
+   ],
+   "undefined_items": []
+  },
+  {
+   "id": "SWR-BLV-009",
+   "id_origin": "SPEC",
+   "title": "초기화",
+   "source": {
+    "line_start": 47,
+    "line_end": 49,
+    "quote": "제어기 초기화 시 고장 카운터, 정상 카운터, 진단 상태는 초기값으로 설정하고 경고등은 소등한다. 단, 이전 운전 사이클에서 확정된 DTC는 유지한다."
+   },
+   "purpose": "초기화 시 내부 상태 정의.",
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "BlvWarnLamp",
+     "detail": "저전압 경고등 요청",
+     "value": "0: 소등, 1: 점등",
+     "unit": "",
+     "status": "DEFINED",
+     "quote": "BlvWarnLamp | 출력 | 저전압 경고등 요청 | 0: 소등, 1: 점등"
+    },
+    {
+     "name": "DTC B1A00",
+     "detail": "배터리 저전압 고장",
+     "value": "FAILED / PASSED",
+     "unit": "",
+     "status": "DEFINED",
+     "quote": "DTC B1A00 | 출력 | 배터리 저전압 고장 | Dem 이벤트 상태 FAILED / PASSED"
+    }
+   ],
+   "execution_conditions": [],
+   "decision_conditions": [],
+   "states": [],
+   "transitions": [],
+   "timers_counters": [],
+   "thresholds_boundaries": [],
+   "exceptions": [
+    {
+     "name": "확정 DTC",
+     "detail": "이전 사이클 확정 DTC 유지",
+     "value": "",
+     "unit": "",
+     "status": "DEFINED",
+     "quote": "이전 운전 사이클에서 확정된 DTC는 유지한다."
+    }
+   ],
+   "priorities": [],
+   "ambiguities": [],
+   "undefined_items": [
+    {
+     "element": "초기값",
+     "description": "카운터·진단 상태의 '초기값'이 무엇인지 (0, 정상 상태 등) 명시되지 않음",
+     "question": "초기값은 카운터 0, 진단 상태 '정상'이 맞습니까?"
+    },
+    {
+     "element": "이전 확정 DTC의 해제",
+     "description": "이전 사이클에서 확정된 DTC를 이번 사이클에서 어떤 조건으로 PASSED 보고하는지",
+     "question": "이전 사이클 확정 DTC는 이번 사이클에서 정상 전압 5초 확인 시 PASSED로 보고합니까?"
+    }
+   ]
+  },
+  {
+   "id": "SWR-BLV-010",
+   "id_origin": "SPEC",
+   "title": "경고등 우선순위",
+   "source": {
+    "line_start": 51,
+    "line_end": 52,
+    "quote": "진단 중단 조건(IgnSts = START)에서도 고장 확정 상태라면 경고등 점등을 유지한다."
+   },
+   "purpose": "크랭킹 중에도 확정된 고장 경고를 유지.",
+   "inputs": [
+    {
+     "name": "IgnSts",
+     "detail": "이그니션 상태",
+     "value": "OFF/ACC/ON/START",
+     "unit": "",
+     "status": "DEFINED",
+     "quote": "IgnSts"
+    }
+   ],
+   "outputs": [
+    {
+     "name": "BlvWarnLamp",
+     "detail": "저전압 경고등 요청",
+     "value": "0: 소등, 1: 점등",
+     "unit": "",
+     "status": "DEFINED",
+     "quote": "BlvWarnLamp | 출력 | 저전압 경고등 요청 | 0: 소등, 1: 점등"
+    }
+   ],
+   "execution_conditions": [],
+   "decision_conditions": [],
+   "states": [],
+   "transitions": [],
+   "timers_counters": [],
+   "thresholds_boundaries": [],
+   "exceptions": [],
+   "priorities": [
+    {
+     "name": "경고등 유지",
+     "detail": "고장 확정 상태 > 진단 중단",
+     "value": "",
+     "unit": "",
+     "status": "DEFINED",
+     "quote": "진단 중단 조건(IgnSts = START)에서도 고장 확정 상태라면 경고등 점등을 유지한다."
+    }
+   ],
+   "ambiguities": [],
+   "undefined_items": []
+  }
+ ],
+ "glossary": [
+  {
+   "term": "BattVolt",
+   "definition": "ADC로 측정한 배터리 전압 (분압 보정 후), 0~20000mV",
+   "line": 14
+  },
+  {
+   "term": "진단 주기",
+   "definition": "10ms",
+   "line": 56
+  }
+ ],
+ "document_notes": [
+  "비기능 요구사항(S56-S57): 진단 주기 10ms, 경고등 요청 지연 100ms 이내 — 기능 요구사항의 시간 환산 근거로 사용"
+ ]
+}

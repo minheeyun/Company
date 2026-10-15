@@ -1,0 +1,22 @@
+﻿tc_id,finding,req_ids,title,technique,preconditions,steps,expected,observation
+TC-C-004-1,C-004,SWR-BLV-004,회복 중 경고등,STATE_TRANSITION,고장 확정(경고등 점등),BattVolt 11000mV 인가 후 0~6초 관찰,"5초까지 점등, 5초 후 소등·PASSED","BlvWarnLamp, s_eBlvState, Dem"
+TC-C-007-1,C-007,SWR-BLV-007,시동 후 진단 재개,TIMING,IgnSts=START,ON 전환 후 BattVolt 8500mV 6초 유지,3초 유예 후 2초 경과 시점(5초)에 FAILED,"Dem 이벤트 상태, s_u8StartMaskCnt"
+TC-C-007-2,C-007,SWR-BLV-007,전원 투입 후 진단,REQUIREMENT_BASED,Init 직후 IgnSts=ON (START 없음),BattVolt 8500mV 3초,2초 시점 FAILED (유예 적용 여부는 사양 확인),Dem 이벤트 상태
+TC-C-009-1,C-009,SWR-BLV-010,확정 고장 중 크랭킹,STATE_TRANSITION,"고장 확정, 경고등 점등",IgnSts=START 2초,경고등 점등 유지,BlvWarnLamp
+TC-D-001-1,D-001,"SWR-BLV-003, SWR-BLV-004",장시간 저전압,BOUNDARY_VALUE,"IgnSts=ON, 유예 종료",8500mV 6초,2초 이후 계속 점등,"BlvWarnLamp 시계열, s_u8FaultCnt"
+TC-D-002-1,D-002,SWR-BLV-002,12V 변환,EQUIVALENCE_CLASS,대상 HW/SIL(int 16bit),raw=613 입력,u16Volt ≈ 11980mV,u16Volt
+TC-D-002-2,D-002,SWR-BLV-002,최대 raw,BOUNDARY_VALUE,대상 HW/SIL,raw=1023,u16Volt = 20000mV,u16Volt
+TC-G-001-1,G-001,"SWR-BLV-003, SWR-BLV-004",장시간 저전압,BOUNDARY_VALUE,IgnSts=ON,8500mV 10초 유지,사양 미정의 — 확인 필요 (현재 코드: 경고등 주기적 소등),"BlvWarnLamp, s_u8FaultCnt"
+TC-C-002-1,C-002,SWR-BLV-001,저전압 누적 중 크랭킹,STATE_TRANSITION,"IgnSts=ON, BattVolt 8500mV 1.5초 유지","IgnSts=START 0.5초 → ON 복귀, 8500mV 유지",유예 3초 후 누적 1.5초에서 이어서 0.5초 뒤 FAILED,"s_u8FaultCnt, Dem 이벤트 상태"
+TC-C-003-1,C-003,SWR-BLV-002,경계값 9000mV,BOUNDARY_VALUE,"IgnSts=ON, 유예 종료",u16Volt가 8999/9000/9001mV가 되도록 입력(또는 변수 강제) 각 2.5초,"8999·9000: FAILED, 9001: 미보고","bLow, s_u8FaultCnt, Dem"
+TC-C-001-1,C-001,SWR-BLV-001,ACC 저전압 3초,REQUIREMENT_BASED,"IgnSts=ACC, 고장 이력 없음",BattVolt 8500mV를 3초 인가,"DTC B1A00 미보고, BlvWarnLamp=0","Dem 이벤트 상태, BlvWarnLamp"
+TC-C-005-1,C-005,"SWR-BLV-005, SWR-BLV-006",비연속 회복,TIMING,고장 확정,11000mV 3초 → 10000mV 1초 → 11000mV 2초,해제되지 않음 (연속 5초 미충족),"s_u16HealCnt, s_eBlvState, Dem"
+TC-C-008-1,C-008,SWR-BLV-009,재초기화 후 해제,STATE_TRANSITION,고장 확정 후 11000mV 4초 누적,BlvDiag_Init 호출(Wake-up 모사) → 저전압 재확정 → 11000mV 1.5초,해제되지 않음(5초 필요),"s_u16HealCnt, s_eBlvState"
+TC-D-003-1,D-003,SWR-BLV-003,ISR 경합,CONCURRENCY,SIL에서 ISR 주입 가능,L126 실행 직후 ISR 강제 발생,샘플 유실 없음,g_u8AdcSampleCnt 추적
+TC-G-004-1,G-004,"SWR-BLV-009, SWR-BLV-005",다음 사이클 정상,REQUIREMENT_BASED,이전 사이클 B1A00 확정,"재시동, 12V 10초",사양 미정의 — 확인 필요 (현재 코드: PASSED 미보고),Dem 상태 바이트
+TC-G-005-1,G-005,"SWR-BLV-003, SWR-BLV-008",ADC 정지,FAULT_INJECTION,"IgnSts=ON, 저전압 1초 누적",ADC ISR 중지 5초,사양 미정의 — 확인 필요 (현재 코드: 진단 정지),"s_u8FaultCnt, Dem"
+TC-D-004-1,D-004,SWR-BLV-001,START 중 상태,STATE_TRANSITION,IgnSts=ON,START 진입,설계 기준 확인,s_eBlvState
+TC-C-006-1,C-006,"SWR-BLV-003, SWR-BLV-006",구간 경유 저전압,TIMING,IgnSts=ON,8500mV 1.5초 → 9500mV 0.1초 → 8500mV 0.6초,사양 미정의 — 확인 필요 (현재 코드: 2.1초 시점 FAILED),"s_u8FaultCnt, Dem"
+TC-G-002-1,G-002,SWR-BLV-008,ADC 단락,FAULT_INJECTION,IgnSts=ON,raw=0 3초,사양 미정의 — 확인 필요 (현재 코드: FAILED),Dem
+TC-G-003-1,G-003,"SWR-BLV-001, SWR-BLV-004",고장 중 IG OFF,STATE_TRANSITION,고장 확정·점등,IgnSts=OFF,사양 미정의 — 확인 필요 (현재 코드: 요청 1 유지),BlvWarnLamp
+TC-G-006-1,G-006,SWR-BLV-002,초기 주기,EQUIVALENCE_CLASS,Init 직후,"첫 샘플 8500mV, 이후 12000mV",사양 미정의 — 확인 필요,u16Volt
