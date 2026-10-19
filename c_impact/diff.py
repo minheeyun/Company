@@ -1,0 +1,326 @@
+"""변경 전후 프로그램 비교 → 변경 지점(슬라이싱 시작점) 추출.
+
+비교는 전처리 후 AST 를 정규화한 문장 서명으로 한다. 그래서
+  - 헤더의 #define 값 변경, typedef·구조체 정의 변경, 전역 초기값 변경도 드러나고
+  - 줄 번호 이동, 정수 상수 표기(100U ↔ 0x64) 차이는 변경으로 보지 않는다.
+삭제된 문장은 변경 전 프로그램에서, 추가·수정된 문장은 변경 후 프로그램에서 시작점이 된다
+(수정된 문장은 양쪽 모두에서 시작점).
+
+단일 변수 비교식(예: tick >= 100U → tick >= 200U)은 두 판정이 달라지는 입력 구간을 계산한다.
+"""
+
+from __future__ import annotations
+
+import difflib
+from dataclasses import dataclass, field
+
+from pycparser import c_ast
+
+from .cexpr import const_eval, norm
+from .program import Node, Program
+
+INF = float("inf")
+
+
+@dataclass
+class Change:
+    version: str  # old | new
+    kind: str  # changed | added | removed | func_added | func_removed | global_changed | global_added | global_removed | type_changed
+    node: int
+    func: str
+    file: str
+    line: int
+    text: str
+    other_text: str = ""  # 짝이 되는 반대 버전 문장
+    other_node: int | None = None
+    detail: str = ""
+    interval: dict | None = None
+
+
+@dataclass
+class ChangeSet:
+    changes: list[Change] = field(default_factory=list)
+    seeds_old: set[int] = field(default_factory=set)
+    seeds_new: set[int] = field(default_factory=set)
+    changed_funcs: set[str] = field(default_factory=set)
+
+    def add(self, ch: Change):
+        self.changes.append(ch)
+        (self.seeds_old if ch.version == "old" else self.seeds_new).add(ch.node)
+        if ch.func:
+            self.changed_funcs.add(ch.func)
+
+
+def _seq(prog: Program, fkey: str) -> list[Node]:
+    return [prog.nodes[i] for i in prog.funcs[fkey].nodes if prog.nodes[i].visible]
+
+
+def _sig(n: Node) -> str:
+    return n.sig + ("|dead" if n.dead else "")
+
+
+def compute_changes(old: Program, new: Program) -> ChangeSet:
+    cs = ChangeSet()
+    for fkey in sorted(set(old.funcs) | set(new.funcs)):
+        if fkey not in new.funcs:
+            f = old.funcs[fkey]
+            cs.add(Change("old", "func_removed", f.entry, fkey, f.file, f.line, f"{f.name}() 삭제"))
+            cs.seeds_old.update(i for i in f.nodes if not old.nodes[i].dead)
+            continue
+        if fkey not in old.funcs:
+            f = new.funcs[fkey]
+            cs.add(Change("new", "func_added", f.entry, fkey, f.file, f.line, f"{f.name}() 추가"))
+            cs.seeds_new.update(i for i in f.nodes if not new.nodes[i].dead)
+            continue
+        a, b = _seq(old, fkey), _seq(new, fkey)
+        sm = difflib.SequenceMatcher(None, [_sig(n) for n in a], [_sig(n) for n in b], autojunk=False)
+        for tag, i1, i2, j1, j2 in sm.get_opcodes():
+            if tag == "equal":
+                continue
+            olds, news = a[i1:i2], b[j1:j2]
+            pairs, used = [], set()
+            for o in olds:
+                match = next((n for n in news if n.id not in used and n.kind == o.kind), None)
+                if match is not None:
+                    used.add(match.id)
+                pairs.append((o, match))
+            for o, n in pairs:
+                if n is None:
+                    _add_node_change(cs, "old", "removed", old, o)
+                else:
+                    det, iv = describe_change(old, o, new, n)
+                    cs.add(Change("old", "changed", o.id, fkey, o.file, o.line, o.text, n.text, n.id, det, iv))
+                    cs.add(Change("new", "changed", n.id, fkey, n.file, n.line, n.text, o.text, o.id, det, iv))
+            for n in news:
+                if n.id not in used:
+                    _add_node_change(cs, "new", "added", new, n)
+    _global_changes(cs, old, new)
+    _type_changes(cs, old, new)
+    return cs
+
+
+def _add_node_change(cs: ChangeSet, version: str, kind: str, prog: Program, n: Node):
+    cs.add(Change(version, kind, n.id, n.func, n.file, n.line, n.text,
+                  detail="삭제된 문장" if kind == "removed" else "추가된 문장"))
+
+
+def _ginits(prog: Program) -> dict[str, Node]:
+    return {n.var: n for n in prog.nodes if n.kind == "ginit"}
+
+
+def _global_changes(cs: ChangeSet, old: Program, new: Program):
+    go, gn = _ginits(old), _ginits(new)
+    for key in sorted(set(go) | set(gn)):
+        o, n = go.get(key), gn.get(key)
+        if o is None:
+            cs.add(Change("new", "global_added", n.id, n.func, n.file, n.line, n.text, detail="새 전역/정적 변수"))
+        elif n is None:
+            cs.add(Change("old", "global_removed", o.id, o.func, o.file, o.line, o.text, detail="삭제된 전역/정적 변수"))
+        elif o.sig != n.sig:
+            det = "초기값 또는 자료형 변경"
+            vo, vn = const_eval(o.ast) if o.ast is not None else 0, const_eval(n.ast) if n.ast is not None else 0
+            if vo is not None and vn is not None and vo != vn:
+                det = f"초기값 {vo} → {vn}"
+            cs.add(Change("old", "global_changed", o.id, o.func, o.file, o.line, o.text, n.text, n.id, det))
+            cs.add(Change("new", "global_changed", n.id, n.func, n.file, n.line, n.text, o.text, o.id, det))
+
+
+def _type_sigs(prog: Program) -> dict[str, str]:
+    return {k: v.env.signature(v.type) for k, v in prog.vars.items()
+            if v.env is not None and v.type is not None and v.kind not in ("sym", "hw", "temp")}
+
+
+def _type_changes(cs: ChangeSet, old: Program, new: Program):
+    """자료형이 바뀐 변수: 그 변수를 쓰거나 읽는 모든 문장이 영향(절단·부호·오버플로 동작 변화)."""
+    to, tn = _type_sigs(old), _type_sigs(new)
+    for key in sorted(set(to) & set(tn)):
+        if to[key] == tn[key]:
+            continue
+        vn = new.vars[key]
+        det = f"자료형 변경: {to[key]} → {tn[key]}"
+        cs.add(Change("new", "type_changed", _first_node(new, key), vn.func or "", vn.file, vn.line,
+                      f"{vn.name} 자료형", detail=det))
+        for prog, seeds in ((old, cs.seeds_old), (new, cs.seeds_new)):
+            for n in prog.nodes:
+                if not n.dead and any(p[0] == key for p in n.defs | n.uses):
+                    seeds.add(n.id)
+
+
+def _first_node(prog: Program, key: str) -> int:
+    for n in prog.nodes:
+        if any(p[0] == key for p in n.defs | n.uses):
+            return n.id
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# 변경 설명: 값 변화, 조건 차이 구간
+# ---------------------------------------------------------------------------
+
+
+def _expr_of(n: Node):
+    e = n.ast
+    if n.kind == "stmt":
+        if isinstance(e, c_ast.Decl):
+            return e.init
+        if isinstance(e, c_ast.Assignment) and e.op == "=":
+            return e.rvalue
+        return None
+    if n.kind in ("cond", "return", "actual_in"):
+        return e
+    return None
+
+
+def describe_change(old: Program, o: Node, new: Program, n: Node) -> tuple[str, dict | None]:
+    eo, en = _expr_of(o), _expr_of(n)
+    if eo is None or en is None:
+        return "", None
+    co, cn = const_eval(eo), const_eval(en)
+    if co is not None and cn is not None:
+        return (f"값 {co} → {cn}" if co != cn else ""), None
+    po, pn = predicate(eo, old), predicate(en, new)
+    if po and pn and po[0] == pn[0]:
+        var, so, dom = po
+        _, sn, dom2 = pn
+        dom = _intersect([dom], [dom2]) or [dom]
+        diff = _union(_intersect(so, _complement(sn, dom[0])), _intersect(sn, _complement(so, dom[0])))
+        if not diff:
+            return f"판정이 같은 식으로 정리됨 ({var})", None
+        tests = boundary_values(diff, dom[0])
+        text = ", ".join(fmt_interval(var, iv) for iv in diff)
+        info = {
+            "var": var,
+            "old": fmt_set(var, so), "new": fmt_set(var, sn),
+            "diff": [[_j(lo), _j(hi)] for lo, hi in diff],
+            "domain": [_j(dom[0][0]), _j(dom[0][1])],
+            "tests": tests,
+        }
+        return f"판정 차이 구간: {text}", info
+    return "", None
+
+
+def _j(x):
+    return None if x in (INF, -INF) else int(x)
+
+
+def predicate(e, prog: Program):
+    """e 가 단일 변수 비교식이면 (변수 표기, 참이 되는 구간 집합, 변수 범위)를 돌려준다."""
+    r = _pred(e)
+    if r is None:
+        return None
+    var_text, var_expr, s = r
+    dom = (-INF, INF)
+    try:
+        for l in prog.lvals(var_expr):
+            t, env = prog.path_type(l)
+            if env is not None:
+                rng = env.int_range(t)
+                if rng:
+                    dom = rng
+                break
+    except Exception:
+        pass
+    s = _intersect(s, [dom])
+    return var_text, s, dom
+
+
+def _strip(e):
+    while isinstance(e, c_ast.Cast):
+        e = e.expr
+    return e
+
+
+_FLIP = {"<": ">", "<=": ">=", ">": "<", ">=": "<=", "==": "==", "!=": "!="}
+
+
+def _pred(e):
+    e = _strip(e)
+    if isinstance(e, c_ast.BinaryOp) and e.op in _FLIP:
+        lc, rc = const_eval(e.left), const_eval(e.right)
+        if rc is not None and lc is None:
+            var, op, c = _strip(e.left), e.op, rc
+        elif lc is not None and rc is None:
+            var, op, c = _strip(e.right), _FLIP[e.op], lc
+        else:
+            return None
+        if not isinstance(var, (c_ast.ID, c_ast.StructRef, c_ast.ArrayRef, c_ast.UnaryOp)):
+            return None
+        s = {
+            "<": [(-INF, c - 1)], "<=": [(-INF, c)], ">": [(c + 1, INF)], ">=": [(c, INF)],
+            "==": [(c, c)], "!=": [(-INF, c - 1), (c + 1, INF)],
+        }[op]
+        return norm(var), var, s
+    if isinstance(e, c_ast.BinaryOp) and e.op in ("&&", "||"):
+        a, b = _pred(e.left), _pred(e.right)
+        if a and b and a[0] == b[0]:
+            return a[0], a[1], (_intersect(a[2], b[2]) if e.op == "&&" else _union(a[2], b[2]))
+        return None
+    if isinstance(e, c_ast.UnaryOp) and e.op == "!":
+        a = _pred(e.expr)
+        return (a[0], a[1], _complement(a[2], (-INF, INF))) if a else None
+    if isinstance(e, (c_ast.ID, c_ast.StructRef, c_ast.ArrayRef)):
+        return norm(e), e, [(-INF, -1), (1, INF)]
+    return None
+
+
+def _union(a, b):
+    xs = sorted(a + b)
+    out = []
+    for lo, hi in xs:
+        if out and lo <= out[-1][1] + 1:
+            out[-1] = (out[-1][0], max(out[-1][1], hi))
+        else:
+            out.append((lo, hi))
+    return out
+
+
+def _intersect(a, b):
+    out = []
+    for lo1, hi1 in a:
+        for lo2, hi2 in b:
+            lo, hi = max(lo1, lo2), min(hi1, hi2)
+            if lo <= hi:
+                out.append((lo, hi))
+    return _union(out, [])
+
+
+def _complement(a, dom):
+    out = []
+    cur = dom[0]
+    for lo, hi in sorted(a):
+        if lo > cur:
+            out.append((cur, min(lo - 1, dom[1])))
+        if hi >= dom[1]:
+            return out
+        cur = max(cur, hi + 1)
+    if cur <= dom[1]:
+        out.append((cur, dom[1]))
+    return out
+
+
+def fmt_interval(var: str, iv) -> str:
+    lo, hi = iv
+    if lo == hi:
+        return f"{var} = {int(lo)}"
+    if lo == -INF and hi == INF:
+        return f"모든 {var}"
+    if lo == -INF:
+        return f"{var} ≤ {int(hi)}"
+    if hi == INF:
+        return f"{var} ≥ {int(lo)}"
+    return f"{int(lo)} ≤ {var} ≤ {int(hi)}"
+
+
+def fmt_set(var: str, s) -> str:
+    return " 또는 ".join(fmt_interval(var, iv) for iv in s) if s else "항상 거짓"
+
+
+def boundary_values(diff, dom) -> list[int]:
+    vals = set()
+    for lo, hi in diff:
+        for v in (lo - 1, lo, hi, hi + 1):
+            if v not in (INF, -INF) and abs(v) != INF and dom[0] <= v <= dom[1]:
+                vals.add(int(v))
+        if lo != -INF and hi != INF and 2 < hi - lo <= 10000:
+            vals.add(int((lo + hi) // 2))
+    return sorted(vals)

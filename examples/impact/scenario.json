@@ -1,0 +1,19 @@
+{
+  "_comment": "예제 시나리오: 10ms 주기 스케줄을 흉내 내어 센서 처리 → 타임아웃 판정 → ISR(진단·보고) 순으로 6주기 실행한다. raw 는 주기별 입력 시퀀스.",
+  "sources": ["sched.c", "sensor.c", "timeout.c"],
+  "include_dirs": ["."],
+  "observe": ["g_sensor.counter", "g_sensor.valid", "g_sensorFault", "g_timeout", "g_faultLatched"],
+  "params": {
+    "tick": [99, 100, 199, 200],
+    "raw": [[1001, 1001, 1001, 0, 1001, 1001], [0, 0, 0, 0, 0, 0]]
+  },
+  "init": {"g_faultLatched": 0},
+  "steps": [
+    {"repeat": 6, "steps": [
+      {"call": "Sensor_MainFunction", "args": ["${raw}"]},
+      {"call": "UpdateTimeout", "args": ["${tick}"]},
+      {"call": "Os_Tick_ISR"}
+    ]},
+    {"call": "ReadStatus", "record": true}
+  ]
+}

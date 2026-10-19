@@ -1,0 +1,7 @@
+{
+  "_comment": "본문 없는 외부 함수의 효과. writes_args/reads_args: 가리키는 메모리를 쓰고/읽는 포인터 인자 번호(0부터), writes/reads: 읽고 쓰는 전역 변수, pure: 메모리 효과 없음",
+  "Dem_SetEventStatus": {"pure": true},
+  "Rte_Read_Speed": {"writes_args": [0], "reads_args": []},
+  "NvM_WriteBlock": {"reads_args": [1], "writes_args": []},
+  "SchM_Enter_Exclusive": {"pure": true}
+}

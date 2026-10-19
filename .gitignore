@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 diff_html/
 out/
+impact_out/
