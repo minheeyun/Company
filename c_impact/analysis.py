@@ -556,3 +556,151 @@ def _graph(prog: Program, hits: dict[int, Hit], ver: str) -> list[dict]:
             "edge": " / ".join(f"{k}:{l}" if l else k for k, l in reversed(labels[-2:])) if labels else "",
         })
     return edges
+
+
+# ---------------------------------------------------------------------------
+# 단일 버전 슬라이스: "이 조건식(줄·변수)을 바꾸면 어디까지 확인해야 하나"
+# ---------------------------------------------------------------------------
+
+
+def _var_match(name: str, q: str) -> bool:
+    return name == q or name.startswith(q + ".") or name.startswith(q + "[") or name.endswith("::" + q)
+
+
+def _node_var_names(prog: Program, paths) -> set[str]:
+    out = set()
+    for p in paths:
+        v = prog.vars.get(p[0])
+        if v is not None and v.kind != "temp":
+            out.add(display_path(prog, p))
+    return out
+
+
+def _file_match(prog: Program, node_file: str, spec: str) -> bool:
+    if not node_file:
+        return False
+    try:
+        if Path(node_file).resolve() == (prog.root / spec).resolve():
+            return True
+    except OSError:
+        pass
+    nf = Path(node_file).as_posix()
+    return nf.endswith("/" + spec.lstrip("./")) or Path(nf).name == spec
+
+
+def select_seeds(prog: Program, at: list[str], var: str | None = None) -> tuple[set[int], list[str]]:
+    """--at 파일:줄 (여러 개) 과 --var 로 시작 노드를 고른다. 찾지 못하면 가까운 줄을 안내한다."""
+    seeds: set[int] = set()
+    errors: list[str] = []
+    cand = [n for n in prog.nodes if n.visible and not n.dead]
+    for spec in at:
+        if ":" not in spec or not spec.rsplit(":", 1)[1].isdigit():
+            errors.append(f"'{spec}': 파일:줄 형식이 아닙니다 (예: timeout.c:9)")
+            continue
+        fname, line = spec.rsplit(":", 1)
+        line = int(line)
+        in_file = [n for n in cand if _file_match(prog, n.file, fname)]
+        if not in_file:
+            errors.append(f"'{fname}': 분석된 파일에서 찾지 못했습니다.")
+            continue
+        hit = [n for n in in_file if n.line == line]
+        if var:
+            hit = [n for n in hit if any(_var_match(x, var) for x in _node_var_names(prog, n.defs | n.uses))]
+        main = [n for n in hit if n.kind not in ("call", "actual_out")]
+        hit = main or hit
+        if not hit:
+            near = sorted({n.line for n in in_file if n.kind not in ("entry", "formal_in")}, key=lambda x: abs(x - line))[:5]
+            errors.append(f"'{spec}': 분석 대상 문장이 없습니다{' (변수 ' + var + ' 포함)' if var else ''}. "
+                          f"가까운 줄: {', '.join(map(str, sorted(near)))}")
+            continue
+        seeds.update(n.id for n in hit)
+    if var and not at:
+        for n in cand:
+            if any(_var_match(x, var) for x in _node_var_names(prog, n.defs)):
+                seeds.add(n.id)
+        if not seeds:
+            errors.append(f"변수 '{var}' 에 값을 쓰는 문장을 찾지 못했습니다.")
+    return seeds, errors
+
+
+def parse_expr(text: str):
+    from pycparser import c_parser
+    try:
+        ast = c_parser.CParser().parse(f"void __cia_whatif(void) {{ ({text}); }}")
+    except Exception as e:  # pycparser.ParseError
+        raise ValueError(f"가정한 식을 해석하지 못했습니다: {text} ({e})") from None
+    return ast.ext[0].body.block_items[0]
+
+
+def run_slice(prog: Program, cfg: BuildConfig, *, at: list[str], var: str | None = None, what_if: str | None = None,
+              k: int = 2, entries: list[str] | None = None, isr: list[str] | None = None) -> dict:
+    from .diff import Change, compare_exprs, expr_of
+
+    entries = entries or []
+    isr = isr or []
+    seeds, errors = select_seeds(prog, at, var)
+    if errors and not seeds:
+        raise ValueError("\n".join(errors))
+    lines = SourceLines()
+    cs = ChangeSet()
+    what = None
+    if what_if:
+        targets = [prog.nodes[s] for s in sorted(seeds) if expr_of(prog.nodes[s]) is not None]
+        if len(targets) != 1:
+            raise ValueError("--what-if 는 조건식·대입·return 이 하나인 줄에만 쓸 수 있습니다 "
+                             f"(대상 {len(targets)}개).")
+        n = targets[0]
+        cur = expr_of(n)
+        new_e = parse_expr(what_if)
+        detail, info = compare_exprs(cur, prog, new_e, prog)
+        what = {"node": n.id, "current": gen_text(cur), "assumed": what_if, "detail": detail, "interval": info}
+        cs.changes.append(Change("new", "what_if", n.id, n.func, n.file, n.line, n.text, what_if, None,
+                                 detail or f"`{gen_text(cur)}` → `{what_if}`", info))
+    hits = forward_slice(prog, seeds, k)
+    items = _merge_items(_items_for(_Ctx(prog, hits, cs, "new", lines)), [])
+    entry_rows, shared = _entry_view(prog, items, entries, isr)
+    tests = []
+    for s in sorted(seeds):
+        n = prog.nodes[s]
+        e = expr_of(n)
+        pr = predicate(e, prog) if e is not None else None
+        if pr:
+            v, st, dom = pr
+            from .diff import fmt_set
+            tests.append({"func": prog.func_display(n.func), "line": n.line, "var": v, "true_when": fmt_set(v, st, dom),
+                          "values": boundary_values(st, dom)})
+    if what and what["interval"]:
+        tests.insert(0, {"func": prog.func_display(prog.nodes[what["node"]].func), "line": prog.nodes[what["node"]].line,
+                         "var": what["interval"]["var"], "true_when": f"현재 {what['interval']['old']} / 가정 {what['interval']['new']}",
+                         "values": what["interval"]["tests"]})
+    affected = sorted({prog.func_display(prog.nodes[h].func) for h in hits if prog.nodes[h].func and prog.nodes[h].visible})
+    return {
+        "tool": f"c_impact {__version__}",
+        "root": str(prog.root),
+        "build": cfg.describe(),
+        "options": {"at": at, "var": var, "what_if": what_if, "context_depth": k},
+        "warnings": errors,
+        "seeds": [{
+            "func": prog.func_display(prog.nodes[s].func), "file": _rel(prog, prog.nodes[s].file),
+            "line": prog.nodes[s].line, "kind": prog.nodes[s].kind, "text": prog.nodes[s].text,
+            "src": lines.get(prog.nodes[s].file, prog.nodes[s].line),
+        } for s in sorted(seeds)],
+        "what_if": what,
+        "affected_functions": affected,
+        "items": items,
+        "entries": entry_rows,
+        "shared": shared,
+        "tests": tests,
+        "graph": _graph(prog, hits, "new"),
+    }
+
+
+def gen_text(e) -> str:
+    from .cexpr import gen
+    return gen(e)
+
+
+def load_program(root: Path, cfg: BuildConfig, include=None, exclude=None, extern_model: str | None = None,
+                 jobs: int = 1) -> Program:
+    files = discover_sources(Path(root), include, exclude)
+    return Program(Path(root).resolve(), load_version(Path(root), files, cfg, jobs), load_extern_model(extern_model), "new")

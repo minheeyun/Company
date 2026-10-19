@@ -87,6 +87,7 @@ class Node:
     uses: set = field(default_factory=set)
     strong: set = field(default_factory=set)
     dead: bool = False
+    cases: list | None = None  # switch 조건: case 라벨 상수값
 
     @property
     def visible(self) -> bool:
@@ -1283,6 +1284,9 @@ class _FuncBuilder:
         preds = self.calls(s.cond, preds)
         c = self.node("cond", s.cond, preds, text=f"switch ({gen(s.cond)})",
                       sig=f"switch|{self.depth}|{norm(s.cond)}|{','.join(labels)}")
+        enums = self.p.enums[self.rel]
+        self.p.nodes[c].cases = [v for v in (const_eval(it.expr, enums) for it in items if isinstance(it, c_ast.Case))
+                                 if v is not None]
         self.breaks.append([])
         self.depth += 1
         self.scopes.append({})

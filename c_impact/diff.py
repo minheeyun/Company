@@ -175,6 +175,11 @@ def describe_change(old: Program, o: Node, new: Program, n: Node) -> tuple[str, 
     eo, en = _expr_of(o), _expr_of(n)
     if eo is None or en is None:
         return "", None
+    return compare_exprs(eo, old, en, new)
+
+
+def compare_exprs(eo, old: Program, en, new: Program) -> tuple[str, dict | None]:
+    """두 식(변경 전/후 또는 현재/가정)의 차이 설명과, 단일 변수 비교식이면 판정이 달라지는 구간."""
     co, cn = const_eval(eo), const_eval(en)
     if co is not None and cn is not None:
         return (f"값 {co} → {cn}" if co != cn else ""), None
@@ -183,6 +188,7 @@ def describe_change(old: Program, o: Node, new: Program, n: Node) -> tuple[str, 
         var, so, dom = po
         _, sn, dom2 = pn
         dom = _intersect([dom], [dom2]) or [dom]
+        so, sn = _intersect(so, dom), _intersect(sn, dom)
         diff = _union(_intersect(so, _complement(sn, dom[0])), _intersect(sn, _complement(so, dom[0])))
         if not diff:
             return f"판정이 같은 식으로 정리됨 ({var})", None
@@ -190,13 +196,18 @@ def describe_change(old: Program, o: Node, new: Program, n: Node) -> tuple[str, 
         text = ", ".join(fmt_interval(var, iv) for iv in diff)
         info = {
             "var": var,
-            "old": fmt_set(var, so), "new": fmt_set(var, sn),
+            "old": fmt_set(var, so, dom[0]), "new": fmt_set(var, sn, dom[0]),
             "diff": [[_j(lo), _j(hi)] for lo, hi in diff],
             "domain": [_j(dom[0][0]), _j(dom[0][1])],
             "tests": tests,
         }
         return f"판정 차이 구간: {text}", info
     return "", None
+
+
+def expr_of(n: Node):
+    """노드에서 값·판정을 결정하는 식 (조건식, 대입의 오른쪽, 초기값, return 식, 인자)."""
+    return _expr_of(n)
 
 
 def _j(x):
@@ -243,7 +254,7 @@ def _pred(e):
             var, op, c = _strip(e.right), _FLIP[e.op], lc
         else:
             return None
-        if not isinstance(var, (c_ast.ID, c_ast.StructRef, c_ast.ArrayRef, c_ast.UnaryOp)):
+        if not isinstance(var, (c_ast.ID, c_ast.StructRef, c_ast.ArrayRef, c_ast.UnaryOp, c_ast.FuncCall)):
             return None
         s = {
             "<": [(-INF, c - 1)], "<=": [(-INF, c)], ">": [(c + 1, INF)], ">=": [(c, INF)],
@@ -311,8 +322,13 @@ def fmt_interval(var: str, iv) -> str:
     return f"{int(lo)} ≤ {var} ≤ {int(hi)}"
 
 
-def fmt_set(var: str, s) -> str:
-    return " 또는 ".join(fmt_interval(var, iv) for iv in s) if s else "항상 거짓"
+def fmt_set(var: str, s, dom=None) -> str:
+    """자료형 범위 끝까지 이어지는 구간은 한쪽 비교로 표기한다 (예: 100 ≤ t ≤ 65535 → t ≥ 100)."""
+    if not s:
+        return "항상 거짓"
+    lo_d, hi_d = dom if dom else (-INF, INF)
+    shown = [((-INF if lo <= lo_d else lo), (INF if hi >= hi_d else hi)) for lo, hi in s]
+    return " 또는 ".join(fmt_interval(var, iv) for iv in shown)
 
 
 def boundary_values(diff, dom) -> list[int]:

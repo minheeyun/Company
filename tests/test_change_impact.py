@@ -13,7 +13,9 @@ sys.path.insert(0, str(ROOT))
 
 import change_impact as cli  # noqa: E402
 from c_impact import diff as d  # noqa: E402
-from c_impact.analysis import load_programs, run_analysis  # noqa: E402
+from c_impact import deps as deps_mod  # noqa: E402
+from c_impact.analysis import load_program, load_programs, run_analysis, run_slice  # noqa: E402
+from c_impact.explore import explore  # noqa: E402
 from c_impact.frontend import BuildConfig, load_compile_commands  # noqa: E402
 from c_impact.sil import expand_cases, run_sil  # noqa: E402
 from pycparser import c_parser  # noqa: E402
@@ -275,6 +277,88 @@ class SilTests(unittest.TestCase):
             self.assertEqual([c["status"] for c in s["cases"]], ["same", "diff", "same"])
 
 
+class DepsTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.t = deps_mod.dependency_table(load_program(EXAMPLE / "new", BuildConfig()))
+        cls.f = {f["func"]: f for f in cls.t["functions"]}
+        cls.v = {v["var"]: v for v in cls.t["variables"]}
+
+    def test_reads_and_writes_through_pointer_are_field_level(self):
+        self.assertEqual(self.f["Debounce"]["writes"], {"g_sensor.counter": [20, 22], "g_sensor.raw": [18]})
+        self.assertEqual(list(self.f["Sensor_GetRaw"]["reads"]), ["g_sensor.raw"])
+
+    def test_transitive_and_callback_calls(self):
+        isr = self.f["Os_Tick_ISR"]
+        self.assertEqual(isr["calls_via_pointer"], ["Sensor_Report", "UpdateDiagnostic"])
+        self.assertIn("g_faultLatched", isr["writes_via_calls"])
+        self.assertTrue(isr["is_isr"])
+        self.assertEqual(self.f["Sensor_Report"]["extern_calls"], ["Dem_SetEventStatus"])
+
+    def test_variable_view(self):
+        v = self.v["g_timeout"]
+        self.assertEqual(list(v["writers"]), ["UpdateTimeout"])
+        self.assertEqual(list(v["readers"]), ["UpdateDiagnostic"])
+        self.assertTrue(v["isr_shared"])
+        self.assertTrue(self.v["g_sensorFault"]["write_only"])
+
+    def test_outputs(self):
+        md = deps_mod.render_md(self.t, transitive=True)
+        self.assertIn("| `Debounce` |", md)
+        self.assertIn("호출을 통해 추가로 씀", md)
+        csv_text = deps_mod.render_csv(self.t)
+        self.assertIn("Debounce,sensor.c,16,g_sensor.counter,write,direct,20 22", csv_text)
+        q = deps_mod.query(self.t, var="g_sensor")
+        self.assertIn("[변수] g_sensor.counter", q)
+        self.assertIn("[변수] g_sensor.valid", q)
+
+
+class SliceTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.prog = load_program(EXAMPLE / "old", BuildConfig())
+
+    def test_what_if_matches_real_change(self):
+        r = run_slice(self.prog, BuildConfig(), at=["timeout.c:9"], what_if="tick >= 200U")
+        self.assertEqual(r["what_if"]["interval"]["diff"], [[100, 199]])
+        self.assertEqual(r["what_if"]["interval"]["old"], "tick ≥ 100")
+        names = {(i["func_display"], i["name"]) for i in r["items"]}
+        self.assertEqual(names, {("UpdateTimeout", "g_timeout"), ("UpdateDiagnostic", "g_faultLatched"),
+                                 ("ReadStatus", "ReadStatus() 반환값")})
+
+    def test_variable_seed(self):
+        r = run_slice(self.prog, BuildConfig(), at=[], var="g_sensor.valid")
+        names = {i["name"] for i in r["items"]}
+        self.assertIn("g_sensorFault", names)
+        self.assertIn("Dem_SetEventStatus() 호출 (외부)", names)
+        self.assertNotIn("g_timeout", names)
+
+    def test_bad_line_suggests_nearby(self):
+        with self.assertRaises(ValueError) as cm:
+            run_slice(self.prog, BuildConfig(), at=["timeout.c:10"])
+        self.assertIn("가까운 줄", str(cm.exception))
+
+
+@unittest.skipUnless(HAS_GCC, "gcc 필요")
+class ExploreTests(unittest.TestCase):
+    def test_finds_interval_and_minimal_sequence(self):
+        cfg = BuildConfig()
+        old, new = load_programs(EXAMPLE / "old", EXAMPLE / "new", cfg)
+        result = run_analysis(old, new, cfg, sil_cycles=6)
+        with tempfile.TemporaryDirectory() as tmp:
+            s = explore(old, new, result, cfg, Path(tmp), cycles=6, budget=150, seed=3)
+            self.assertTrue((Path(tmp) / "explore_report.md").is_file())
+            self.assertTrue((Path(tmp) / "explore_witness.json").is_file())
+        tick = s["by_value"]["tick"]
+        diff_vals = sorted(int(v) for v, c in tick.items() if c["diff"])
+        self.assertEqual(diff_vals, [100, 149, 199])  # 정적 계산 구간 100~199 와 일치
+        self.assertFalse(tick["99"]["diff"])
+        self.assertFalse(tick["200"]["diff"])
+        w = s["witnesses_input_only"]["g_sensor.counter"]
+        self.assertIsInstance(w["bindings"]["raw"], list)  # 카운터 차이는 주기별 시퀀스로만 재현됨
+        self.assertLessEqual(len(set(w["bindings"]["raw"])), 2)
+
+
 class CliTests(unittest.TestCase):
     def test_analyze_writes_reports(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -293,6 +377,18 @@ class CliTests(unittest.TestCase):
             rc = cli.main(["analyze", "--old", str(EXAMPLE / "old"), "--new", str(EXAMPLE / "new"),
                            "-o", tmp, "-q", "-j", "1", "--fail-on-impact"])
             self.assertEqual(rc, 3)
+
+    def test_deps_and_slice_commands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rc = cli.main(["deps", "--src", str(EXAMPLE / "new"), "-o", tmp, "-j", "1", "--var", "g_timeout"])
+            self.assertEqual(rc, 0)
+            self.assertTrue((Path(tmp) / "deps_access.csv").is_file())
+            rc = cli.main(["slice", "--src", str(EXAMPLE / "old"), "--at", "timeout.c:9", "--what-if", "tick >= 200U",
+                           "-o", tmp, "-j", "1"])
+            self.assertEqual(rc, 0)
+            md = (Path(tmp) / "slice_report.md").read_text(encoding="utf-8")
+            self.assertIn("가정한 변경: `tick >= 100U` → `tick >= 200U`", md)
+            self.assertEqual(cli.main(["slice", "--src", str(EXAMPLE / "old"), "-o", tmp]), 1)
 
     @unittest.skipUnless(shutil.which("git"), "git 필요")
     def test_git_revisions(self):

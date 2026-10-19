@@ -104,6 +104,12 @@ python3 diff_review.py mr42 \
 사양서 없이 **변경된 C 코드가 어떤 함수·변수에, 어떤 경로와 조건으로 영향을 줄 수 있는지** 분석합니다.
 변경 전후 코드 비교 → 변수·조건·호출 의존성 추적(전방 프로그램 슬라이싱) → 영향 경로·조건 보고서 → SIL 차등 실행으로 실제 차이 확인까지 CLI 하나로 수행합니다.
 
+| 원하는 기능 | 명령 | 사용하는 분석 |
+|---|---|---|
+| 이 프로젝트에서 어떤 함수가 어떤 변수를 읽고 쓰는가? | `deps` | 함수 간 의존성 분석 (포인터·구조체 필드·함수 포인터·호출 전이 포함) |
+| 이 조건식을 바꾸면 어느 함수·변수까지 확인해야 하는가? | `slice` (바꾸기 전, what-if), `analyze` (바꾼 뒤, 변경 전후 비교) | 전방 프로그램 슬라이싱 |
+| 어떤 입력과 상태에서 실제로 결과가 달라지는가? | `explore` (자동 탐색), `sil` (지정한 시나리오) | 경로·값 분석(판정 차이 구간·경계값) + 변경 전후 SIL 비교 |
+
 ```bash
 pip install -r requirements.txt      # pycparser 필요 (전처리는 gcc 또는 clang)
 
@@ -119,7 +125,45 @@ python3 change_impact.py sil --old v1/src --new v2/src --scenario impact_out/sil
 
 # 4) 분석 + SIL 을 한 번에 (실행 결과가 보고서의 '상태' 열에 합쳐짐)
 python3 change_impact.py analyze --old v1/src --new v2/src --scenario my_scenario.json
+
+# 5) 함수·변수 의존성 표 (한 버전 전체)
+python3 change_impact.py deps --src v2/src --transitive          # impact_out/deps/deps.md, deps.json, deps_access.csv
+python3 change_impact.py deps --src v2/src --var g_sensor        # 구조체면 하위 필드까지 터미널에 출력
+python3 change_impact.py deps --src v2/src --func Os_Tick_ISR
+
+# 6) 코드를 바꾸기 전에: 이 줄/변수를 바꾸면 어디까지 확인해야 하나
+python3 change_impact.py slice --src v1/src --at timeout.c:9 --what-if "tick >= 200U"
+python3 change_impact.py slice --src v1/src --var g_sensor.valid
+
+# 7) 결과가 달라지는 입력·상태 자동 탐색 (analyze 결과로 시나리오를 만들고 SIL 로 실행)
+python3 change_impact.py explore --old v1/src --new v2/src --max-cases 300 --cycles 6 --seed 1
 ```
+
+### 함수·변수 의존성 (`deps`)
+
+- 함수별: 읽는 변수·쓰는 변수(줄 번호), 호출을 통해 추가로 읽고 쓰는 변수(`--transitive`), 호출·피호출(함수 포인터 호출 표시), 외부 함수 호출, 도달하는 진입점(ISR 표시)
+- 변수별: 쓰는 함수·읽는 함수, 접근 진입점, ISR·태스크 공유 / 쓰기만 함 / 읽기만 함 표시
+- `deps_access.csv` 는 함수·변수·read/write·direct/via_call 한 줄씩의 tidy 형식이라 엑셀 피벗에 바로 쓸 수 있습니다.
+- 읽기·쓰기는 포인터 분석을 거친 실제 대상 기준입니다 (`p->counter = 0` → `g_sensor.counter` 쓰기).
+
+### 변경 가정 슬라이스 (`slice`)
+
+- `--at 파일:줄` (여러 번 가능): 그 줄의 문장이 바뀐다고 보고 전방 슬라이스를 만듭니다. 파일은 루트 기준 경로나 파일 이름. 줄에 분석 대상 문장이 없으면 가까운 줄을 알려 줍니다.
+- `--var 이름`: `--at` 와 함께면 그 줄에서 이 변수를 쓰는 문장만, 단독이면 이 변수에 값을 쓰는 모든 문장이 시작점입니다.
+- `--what-if "식"`: 그 줄의 조건식·대입식을 이 식으로 바꾼다고 가정해 **판정이 달라지는 구간과 경계값**을 계산하고 보고서 조건 열에 넣습니다 (예: `tick >= 100U` → `tick >= 200U` 이면 `100 ≤ tick ≤ 199`).
+- 결과(`slice_report.md`)는 analyze 보고서와 같은 형식(확인할 함수·변수 표, 경로, 진입점, 입력 후보)입니다.
+
+### 차이 입력 자동 탐색 (`explore`)
+
+1. **후보 값**: 영향받는 함수(변경 전·후 모두)의 단일 변수 비교식 경계값(c-1, c, c+1), switch 의 case 값, 자료형 끝값을 모읍니다.
+   진입점 인자(이름 일치), 전역·static **초기 상태**, 외부 함수(스텁)의 **반환값·출력 포인터 값**을 탐색 대상으로 씁니다.
+2. **케이스**: 기본값 → 한 변수씩 경계값 → 무작위 조합 → **주기별 입력 시퀀스**(같은 값 유지 후 전환, 카운터·디바운스·래치용) 순으로 `--max-cases` 개까지. `--seed` 가 같으면 같은 케이스입니다.
+3. **실행·최소화**: 변경 전/후를 같은 케이스로 실행하고, 관찰 대상마다 차이를 내는 케이스를 더 단순한 입력(시퀀스 → 단일 값, 구간 합치기, 기본값 복원)으로 줄입니다.
+   **입력만으로 재현**한 경우와 **초기 상태를 바꿔 재현**한 경우를 따로 보고합니다 (초기 상태는 실제 도달 가능 여부를 확인해야 함).
+
+결과: `explore_report.md`(후보 값과 출처, 관찰 대상별 최소 재현 입력, 값별 차이 여부 ●/○), `explore_witness.json`(최소 재현 케이스만, `sil` 로 재실행 가능),
+`explore_scenario.json`(전체 케이스), `impact_report.md`(실행 확인 상태 반영). 예제에서는 `tick` 값별 결과가 `100·149·199 ●, 99·200 ○` 로
+정적으로 계산한 구간 `100 ≤ tick ≤ 199` 와 일치하고, 카운터 리셋 변경은 `raw=[1001, 1001, 1000]`(두 주기 높음 → 낮음) 시퀀스로만 재현된다는 것을 찾아냅니다.
 
 예제(`examples/impact`)는 질문의 예시 코드를 그대로 포함합니다. 헤더의 `#define TIMEOUT_TICKS 100U → 200U` 변경이
 `g_timeout` → `UpdateDiagnostic()`의 `if` → `g_faultLatched` → `ReadStatus()` 반환값으로 전달되는 경로와 차이 구간 `100 ≤ tick ≤ 199`를 찾아냅니다.
@@ -197,6 +241,7 @@ python3 change_impact.py analyze --old examples/impact/old --new examples/impact
 - 전역·static·포인터 메모리는 흐름 비민감으로 연결합니다(실행 주기 간 상태 전달과 ISR 선점을 놓치지 않기 위한 보수적 선택). 중간에 덮어써져 실제 영향이 없는 후보가 포함될 수 있습니다.
 - 배열 원소는 구분하지 않습니다. 함수 포인터 테이블의 모든 항목이 호출 후보가 됩니다.
 - 파싱에 실패한 파일, 본문 없는 외부 함수, 대상을 풀지 못한 함수 포인터, 대상을 모르는 포인터, 하드웨어 주소 접근은 보고서에 따로 나열합니다. 인라인 어셈블리는 제거하고 분석합니다.
+- `explore` 는 후보 값과 케이스 수 안에서의 탐색입니다. 여러 변수가 얽힌 조건·산술식에서만 생기는 차이는 무작위 조합·시퀀스로만 탐색되므로 놓칠 수 있고, 경로 실행 가능성을 기호적으로 증명하지는 않습니다(모델 검사기 연동은 포함하지 않음).
 - **SIL 에서 차이가 검출되지 않았다는 결과는 그 시나리오에 한한 것입니다.** 실제 인터럽트 지연·물리적 타이밍은 정적 분석과 SIL 로 확정할 수 없습니다.
 - `impact_report.md` 는 경로와 소스 위치를 포함하므로, LLM 에 영향 설명·테스트 케이스 초안 작성을 맡길 때 입력으로 쓰기 적합합니다. 의존성 존재 여부는 분석 결과와 실행 증거로 확인하세요.
 

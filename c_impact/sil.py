@@ -61,6 +61,10 @@ def load_scenario(path: str | Path) -> dict:
 
 
 def expand_cases(scn: dict) -> list[tuple[str, dict]]:
+    if scn.get("cases"):  # 명시적 케이스 목록 (explore 가 만든 시나리오 등)
+        if len(scn["cases"]) > MAX_CASES:
+            raise SilError(f"케이스가 {MAX_CASES}개를 넘습니다.")
+        return [(c.get("name") or case_label(c["bindings"]), c["bindings"]) for c in scn["cases"]]
     params = scn.get("params") or {}
     if not params:
         return [("default", {})]
@@ -71,9 +75,12 @@ def expand_cases(scn: dict) -> list[tuple[str, dict]]:
     cases = []
     for combo in combos:
         b = dict(zip(names, combo))
-        label = ", ".join(f"{k}={_fmt_val(v)}" for k, v in b.items())
-        cases.append((label, b))
+        cases.append((case_label(b), b))
     return cases
+
+
+def case_label(b: dict) -> str:
+    return ", ".join(f"{k}={_fmt_val(v)}" for k, v in b.items()) or "default"
 
 
 def _fmt_val(v) -> str:

@@ -146,53 +146,9 @@ def render_md(r: dict) -> str:
     if not r["changes"]:
         out.append("| - | - | - | - | - | - | - | 변경 없음 |")
 
-    out += ["", "## 2. 영향받는 함수·변수", "",
-            "| 영향받는 함수 | 변수·출력 | 어떻게 영향을 받는가 | 차이가 발생하는 조건 | 위치 | 상태 |",
-            "|---|---|---|---|---|---|"]
-    for it in items:
-        how = f"**{it['how_kind']}**: {_cell(it['how'])}"
-        if it["kind"] == "var":
-            how += f" (`{_cell(it['stmt'])}`)"
-        cond = "<br>".join(_cell(c) for c in it["conditions"]) or "모든 실행"
-        ver = "" if set(it["versions"]) == {"new", "old"} else (" (변경 후만)" if it["versions"] == ["new"] else " (변경 전만)")
-        status = it.get("status", STATUS_STATIC)
-        if status == STATUS_CONFIRMED and it.get("evidence"):
-            ev = it["evidence"]
-            status += f": {ev['case']} #{ev['step']} {ev['old']}→{ev['new']}"
-        out.append(f"| `{_cell(it['func_display'])}` | `{_cell(it['name'])}`{ver} | {how} | {cond} | "
-                   f"{it['file']}:{it['line']} | {_cell(status)} |")
-    if not items:
-        out.append("| - | - | 영향받는 전역 상태·반환값·외부 호출 없음 | - | - | - |")
-
-    out += ["", "## 3. 영향 전달 경로", "",
-            "변경 지점에서 각 영향 항목까지 가장 짧은 의존 경로입니다. `[변수]`는 값(데이터) 의존, `[조건 참/거짓]`은 제어 의존입니다.", ""]
-    for it in items:
-        out.append(f"### `{_cell(it['name'])}` — {_cell(it['func_display'])} ({it['file']}:{it['line']})")
-        out.append("")
-        n = 0
-        for stp in it["path"]:
-            if stp["kind"] in ("actual_out", "nop", "exit"):
-                continue
-            n += 1
-            text = stp["src"] or stp["text"]
-            extra = f" ⟨전처리 후: `{_cell(stp['text'])}`⟩" if stp["src"] and stp["kind"] in ("stmt", "cond", "return") \
-                and _norm_ws(stp["src"]) != _norm_ws(stp["text"]) and stp["edge"] and stp["edge"][0] == "seed" else ""
-            out.append(f"{n}. {_arrow(stp['edge'])} `{_cell(stp['func'])}` {stp['file']}:{stp['line']} `{_cell(text)}`{extra}")
-        out.append("")
-
-    out += ["## 4. 진입점(태스크·ISR·콜백) 관점", "",
-            "호출자가 없는 함수와 `--entry`로 지정한 함수를 진입점으로 봅니다. 분석용 main() 에서 호출하지 않는 함수도 빠짐없이 포함됩니다.", "",
-            "| 진입점 | 구분 | 이 진입점에서 실행되는 영향 함수 |", "|---|---|---|"]
-    for e in r["entries"]:
-        kind = "ISR 추정" if e["isr"] else "진입점"
-        if e["user"]:
-            kind += " (지정)"
-        out.append(f"| `{_cell(e['entry'])}` | {kind} | {', '.join('`' + _cell(f) + '`' for f in e['affected_functions'])} |")
-    if r["shared"]:
-        out += ["", "여러 진입점에서 접근하는 영향 변수 (호출 순서·선점에 따라 결과가 달라질 수 있으므로 시퀀스 테스트 권장):", "",
-                "| 변수 | 접근 진입점 | ISR 포함 | 접근 함수 |", "|---|---|---|---|"]
-        for s in r["shared"]:
-            out.append(f"| `{_cell(s['var'])}` | {', '.join(s['entries'])} | {'예' if s['isr'] else '-'} | {', '.join(s['functions'])} |")
+    out += _items_section(items, "## 2. 영향받는 함수·변수", status=True)
+    out += _paths_section(items, "## 3. 영향 전달 경로", "변경 지점")
+    out += _entries_section(r, "## 4. 진입점(태스크·ISR·콜백) 관점")
 
     out += ["", "## 5. 확인용 테스트 후보", ""]
     if r["tests"]:
@@ -261,6 +217,105 @@ def render_md(r: dict) -> str:
     out.append("")
     return "\n".join(out)
 
+
+def _items_section(items: list[dict], title: str, status: bool = True) -> list[str]:
+    out = ["", title, ""]
+    head = "| 영향받는 함수 | 변수·출력 | 어떻게 영향을 받는가 | 차이가 발생하는 조건 | 위치 |"
+    sep = "|---|---|---|---|---|"
+    if status:
+        head += " 상태 |"
+        sep += "---|"
+    out += [head, sep]
+    for it in items:
+        how = f"**{it['how_kind']}**: {_cell(it['how'])}"
+        if it["kind"] == "var":
+            how += f" (`{_cell(it['stmt'])}`)"
+        cond = "<br>".join(_cell(c) for c in it["conditions"]) or "모든 실행"
+        ver = "" if set(it["versions"]) == {"new", "old"} or not status else (
+            " (변경 후만)" if it["versions"] == ["new"] else " (변경 전만)")
+        row = (f"| `{_cell(it['func_display'])}` | `{_cell(it['name'])}`{ver} | {how} | {cond} | "
+               f"{it['file']}:{it['line']} |")
+        if status:
+            st = it.get("status", STATUS_STATIC)
+            if st == STATUS_CONFIRMED and it.get("evidence"):
+                ev = it["evidence"]
+                st += f": {ev['case']} #{ev['step']} {ev['old']}→{ev['new']}"
+            row += f" {_cell(st)} |"
+        out.append(row)
+    if not items:
+        out.append("| - | - | 영향받는 전역 상태·반환값·외부 호출 없음 | - | - |" + (" - |" if status else ""))
+    return out
+
+
+def _paths_section(items: list[dict], title: str, origin: str) -> list[str]:
+    out = ["", title, "",
+           f"{origin}에서 각 영향 항목까지 가장 짧은 의존 경로입니다. `[변수]`는 값(데이터) 의존, `[조건 참/거짓]`은 제어 의존입니다.", ""]
+    for it in items:
+        out.append(f"### `{_cell(it['name'])}` — {_cell(it['func_display'])} ({it['file']}:{it['line']})")
+        out.append("")
+        n = 0
+        for stp in it["path"]:
+            if stp["kind"] in ("actual_out", "nop", "exit"):
+                continue
+            n += 1
+            text = stp["src"] or stp["text"]
+            extra = f" ⟨전처리 후: `{_cell(stp['text'])}`⟩" if stp["src"] and stp["kind"] in ("stmt", "cond", "return") \
+                and _norm_ws(stp["src"]) != _norm_ws(stp["text"]) and stp["edge"] and stp["edge"][0] == "seed" else ""
+            arrow = _arrow(stp["edge"]).replace("변경 지점", origin)
+            out.append(f"{n}. {arrow} `{_cell(stp['func'])}` {stp['file']}:{stp['line']} `{_cell(text)}`{extra}")
+        out.append("")
+    return out
+
+
+def _entries_section(r: dict, title: str) -> list[str]:
+    out = [title, "",
+           "호출자가 없는 함수와 `--entry`로 지정한 함수를 진입점으로 봅니다. 분석용 main() 에서 호출하지 않는 함수도 빠짐없이 포함됩니다.", "",
+           "| 진입점 | 구분 | 이 진입점에서 실행되는 영향 함수 |", "|---|---|---|"]
+    for e in r["entries"]:
+        kind = "ISR 추정" if e["isr"] else "진입점"
+        if e["user"]:
+            kind += " (지정)"
+        out.append(f"| `{_cell(e['entry'])}` | {kind} | {', '.join('`' + _cell(f) + '`' for f in e['affected_functions'])} |")
+    if r["shared"]:
+        out += ["", "여러 진입점에서 접근하는 영향 변수 (호출 순서·선점에 따라 결과가 달라질 수 있으므로 시퀀스 테스트 권장):", "",
+                "| 변수 | 접근 진입점 | ISR 포함 | 접근 함수 |", "|---|---|---|---|"]
+        for s in r["shared"]:
+            out.append(f"| `{_cell(s['var'])}` | {', '.join(s['entries'])} | {'예' if s['isr'] else '-'} | {', '.join(s['functions'])} |")
+    return out
+
+
+def render_slice_md(r: dict) -> str:
+    o = r["options"]
+    out = ["# 변경 가정 영향 분석 (전방 슬라이스)", "",
+           f"- 대상: `{r['root']}` · 시작 위치: {', '.join(o['at']) or '-'}" + (f" · 변수: `{o['var']}`" if o["var"] else ""),
+           f"- 영향 함수 **{len(r['affected_functions'])}개**, 영향 변수·출력 **{len(r['items'])}개** · 호출 문맥 구분 길이 {o['context_depth']}",
+           "- 코드를 바꾸기 전, 이 위치를 바꾸면 확인해야 할 함수·변수 후보입니다 (정적 분석 결과).", ""]
+    for w in r["warnings"]:
+        out.append(f"- ⚠ {_cell(w)}")
+    out += ["## 1. 시작 위치", "", "| 위치 | 함수 | 종류 | 원본 소스 | 전처리 후 |", "|---|---|---|---|---|"]
+    for s in r["seeds"]:
+        out.append(f"| {s['file']}:{s['line']} | `{_cell(s['func'])}` | {s['kind']} | {_code(s['src'])} | {_code(s['text'])} |")
+    w = r.get("what_if")
+    if w:
+        out += ["", f"가정한 변경: `{_cell(w['current'])}` → `{_cell(w['assumed'])}`"]
+        if w["detail"]:
+            out.append(f"- {_cell(w['detail'])}")
+        if w["interval"]:
+            iv = w["interval"]
+            out.append(f"- 현재 참: {_cell(iv['old'])} / 가정 후 참: {_cell(iv['new'])} / 경계값 후보: {', '.join(map(str, iv['tests']))}")
+    out += _items_section(r["items"], "## 2. 확인해야 할 함수·변수", status=False)
+    out += _paths_section(r["items"], "## 3. 영향 전달 경로", "시작 위치")
+    out += _entries_section(r, "## 4. 진입점(태스크·ISR·콜백) 관점")
+    out += ["", "## 5. 확인용 입력 후보", ""]
+    if r["tests"]:
+        out += ["| 함수 | 줄 | 변수 | 판정이 참인 구간 | 경계값 후보 |", "|---|---|---|---|---|"]
+        for t in r["tests"]:
+            out.append(f"| `{_cell(t['func'])}` | {t['line']} | `{_cell(t['var'])}` | {_cell(t['true_when'])} | "
+                       f"{', '.join(map(str, t['values']))} |")
+    else:
+        out.append("시작 위치에 단일 변수 비교식이 없어 자동 경계값 후보가 없습니다.")
+    out.append("")
+    return "\n".join(out)
 
 def _norm_ws(s: str) -> str:
     return "".join(s.split()).rstrip(";{").replace("(", "").replace(")", "")
