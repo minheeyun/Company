@@ -191,6 +191,7 @@ class Program:
         self._inits: list[tuple[tuple, c_ast.Node]] = []
         self._final = False
         self._static_funcs: set[str] = set()
+        self._def_keys: dict[int, str] = {}  # id(FuncDef) → 함수 키 (등록된 정의만)
         self._cd_seen: dict[int, set] = {}
         self._build()
 
@@ -206,8 +207,8 @@ class Program:
             if tu.ast is None:
                 continue
             for ext in tu.ast.ext:
-                if isinstance(ext, c_ast.FuncDef):
-                    key = self._func_key(tu.rel, ext.decl.name)
+                key = self._def_keys.get(id(ext)) if isinstance(ext, c_ast.FuncDef) else None
+                if key is not None:  # 중복 정의(첫 정의만 사용)는 건너뛴다
                     _FuncBuilder(self, self.funcs[key], ext, tu).build()
         self._global_init_nodes()
         self._points_to()
@@ -219,9 +220,6 @@ class Program:
         for f in self.funcs.values():
             self._function_dataflow(f, tracked)
         self._memory_index(tracked)
-
-    def _func_key(self, rel: str, name: str) -> str:
-        return self.tu_static[rel].get(name, name)
 
     def _collect_file_scope(self, tu: TranslationUnit):
         rel = tu.rel
@@ -236,7 +234,8 @@ class Program:
         for ext in tu.ast.ext:
             if isinstance(ext, c_ast.FuncDef):
                 d = ext.decl
-                static = "static" in (d.storage or [])
+                # 앞에 static 원형이 있으면 정의에 static 이 없어도 파일 범위 함수다 (C 표준)
+                static = "static" in (d.storage or []) or f"{d.name}@{rel}" in self._static_funcs
                 key = f"{d.name}@{rel}" if static else d.name
                 if static:
                     self.tu_static[rel][d.name] = key
@@ -247,6 +246,7 @@ class Program:
                 coord = d.coord
                 self.funcs[key] = Function(key, d.name, coord.file if coord else rel, coord.line if coord else 0,
                                            static, d, tu.env, rel, ret_type=d.type.type)
+                self._def_keys[id(ext)] = key
             elif isinstance(ext, c_ast.Decl) and ext.name:
                 d = ext
                 storage = d.storage or []
