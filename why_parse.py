@@ -46,6 +46,8 @@ def main(argv=None) -> int:
     ap.add_argument("--exclude", action="append", default=[])
     ap.add_argument("--no-auto-include", action="store_true")
     ap.add_argument("--gcc", default="gcc")
+    ap.add_argument("--force-include", action="append", default=[], metavar="HEADER",
+                    help="모든 파일 앞에 넣을 헤더 (예: memclass_shim.py 로 만든 cia_memclass.h)")
     args = ap.parse_args(argv)
 
     root = Path(args.project).resolve()
@@ -60,6 +62,7 @@ def main(argv=None) -> int:
                        ["{ROOT}/" + d if d != "." else "{ROOT}" for d in auto]
     cfg.defines = list(args.defines) + [f"{k}=" for k in args.strip]
     cfg.undefines = list(args.undefines)
+    cfg.forced_includes = [str(Path(f).resolve()) for f in args.force_include]
     base = preprocess_command(root, rel, cfg)
     print(f"[대상] {root / rel}")
     print(f"[include 경로] 직접 지정 {len(args.include_dirs)}개가 맨 앞, 자동 {len(auto)}개")
