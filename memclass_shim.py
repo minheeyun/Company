@@ -8,7 +8,9 @@ GHS 등의 Compiler.h 는 `#define VAR(vartype, memclass) memclass vartype` 처�
 이 스크립트는 변경 전/후 폴더의 *.c / *.h 에서
   VAR, CONST, FUNC, P2VAR, P2CONST, CONSTP2VAR, CONSTP2CONST, P2FUNC, CONSTP2FUNC, FUNC_P2VAR, FUNC_P2CONST
 의 memclass/ptrclass 자리에 쓰인 이름을 모아 `#ifndef X / #define X / #endif` 로 정의한 헤더를 만든다.
-Compiler*.h 에서 직접 정의하는 이름(AUTOMATIC, TYPEDEF 등)은 중복 정의 검사(#error)에 걸리지 않도록 뺀다.
+Compiler*.h 가 "이미 정의돼 있으면 #error" 로 검사하는 이름(AUTOMATIC 등)만 뺀다.
+그 밖의 이름은 #ifndef 로 감싸므로, 실제 Compiler_Cfg.h 가 같은 이름을 빈 값으로 정의하면 그대로 같고
+다른 값으로 정의하면 경고만 나고 그 값이 쓰인다.
 메모리 클래스는 메모리 배치(섹션)만 정하므로 비워도 변경 영향 분석 결과에는 영향이 없다.
 
 사용 예)
@@ -35,6 +37,9 @@ POSITIONS = {
 CALL_RE = re.compile(r"\b(" + "|".join(sorted(POSITIONS, key=len, reverse=True)) + r")\s*\(")
 IDENT_RE = re.compile(r"[A-Za-z_]\w*")
 DEFINE_RE = re.compile(r"^\s*#\s*define\s+([A-Za-z_]\w*)", re.M)
+# "#if (defined X)" / "#ifdef X" / "#if defined(X)" 바로 뒤(3줄 안)에 #error 가 있는 이름 = 중복 정의 검사
+GUARD_RE = re.compile(r"^\s*#\s*(?:ifdef\s+(\w+)|if\s*\(?\s*defined\s*\(?\s*(\w+)\s*\)?\s*\)?)[^\n]*\n"
+                      r"(?:[^\n]*\n){0,2}?\s*#\s*error", re.M)
 C_WORDS = {"const", "volatile", "static", "extern", "void", "char", "short", "int", "long", "float", "double",
            "signed", "unsigned", "struct", "union", "enum", "inline", "register", "restrict"}
 
@@ -67,7 +72,7 @@ def strip_comments(text: str) -> str:
 
 
 def collect(roots: list[Path], exclude: list[str]) -> tuple[dict[str, str], set[str]]:
-    """memclass 이름 → 처음 본 위치,  Compiler*.h 에서 정의하는 이름."""
+    """memclass 이름 → 처음 본 위치,  Compiler*.h 가 중복 정의를 #error 로 막는 이름."""
     names: dict[str, str] = {}
     compiler_defined: set[str] = set()
     for root in roots:
@@ -77,7 +82,8 @@ def collect(roots: list[Path], exclude: list[str]) -> tuple[dict[str, str], set[
             except OSError:
                 continue
             if Path(rel).name.lower().startswith("compiler"):
-                compiler_defined.update(DEFINE_RE.findall(raw))
+                for a, b in GUARD_RE.findall(raw):
+                    compiler_defined.add(a or b)
             text = strip_comments(raw)
             for m in CALL_RE.finditer(text):
                 if text[: m.start()].rstrip().endswith("define"):
@@ -116,7 +122,10 @@ def main(argv=None) -> int:
         lines += [f"#ifndef {n}", f"#define {n}", "#endif"]
     lines += ["#endif", ""]
     out.write_text("\n".join(lines), encoding="utf-8")
-    print(f"메모리 클래스 이름 {len(use)}개 정의 (Compiler*.h 에서 직접 정의하는 {len(names) - len(use)}개 제외)")
+    print(f"메모리 클래스 이름 {len(use)}개 정의 (Compiler*.h 의 중복 정의 검사 대상 {len(names) - len(use)}개 제외)")
+    excluded = sorted(n for n in names if n in skip)
+    if excluded:
+        print("  제외: " + ", ".join(excluded[:20]) + (" …" if len(excluded) > 20 else ""))
     print(f"생성: {out}")
     if " " in str(out):
         print("⚠ 경로에 공백이 있으면 --cpp 에 넣을 수 없습니다. 공백 없는 위치로 -o 를 지정하세요.")

@@ -15,8 +15,11 @@ class ShimTests(unittest.TestCase):
             p = Path(tmp)
             (p / "inc").mkdir()
             (p / "inc/Compiler.h").write_text(
+                "#if (defined AUTOMATIC) /* to prevent double definition */\n#error AUTOMATIC already defined\n#endif\n"
                 "#define AUTOMATIC\n#define VAR(vartype, memclass) memclass vartype\n"
                 "#define P2VAR(ptrtype, memclass, ptrclass) ptrclass ptrtype * memclass\n")
+            (p / "tmpl").mkdir()
+            (p / "tmpl/Compiler_Cfg.h").write_text("#define OS_VAR\n")  # 쓰이지 않는 템플릿에만 정의된 이름
             (p / "a.c").write_text(
                 "/* VAR(uint8, IN_COMMENT) */\n"
                 "VAR(uint8, DET_VAR_NOINIT) x;\n"
@@ -36,6 +39,7 @@ class ShimTests(unittest.TestCase):
             text = out.read_text()
             self.assertIn("#ifndef DET_VAR_NOINIT\n#define DET_VAR_NOINIT\n#endif", text)
             self.assertNotIn("define AUTOMATIC", text)
+            self.assertIn("#define OS_VAR", text)  # 다른 Compiler*.h 에 있어도 #error 검사 대상이 아니면 정의
 
     def test_split_args_nested(self):
         args, _ = ms.split_args("a, P2VAR(x, y, z), c) rest", 0)
