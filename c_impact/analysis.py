@@ -40,7 +40,8 @@ def load_programs(old_root: Path, new_root: Path, cfg: BuildConfig, include=None
     progs = []
     for root, label in ((old_root, "old"), (new_root, "new")):
         files = discover_sources(Path(root), include, exclude)
-        progs.append(Program(Path(root).resolve(), load_version(Path(root), files, cfg, jobs), model, label))
+        progs.append(Program(Path(root).resolve(), load_version(Path(root), files, cfg, jobs,
+                                                               "변경 전" if label == "old" else "변경 후"), model, label))
     return progs[0], progs[1]
 
 

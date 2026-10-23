@@ -493,16 +493,49 @@ def _parse_job(args):
     return parse_tu(*args)
 
 
-def load_version(root: Path, files: list[str], cfg: BuildConfig, jobs: int = 1) -> list[TranslationUnit]:
-    """파일별 전처리·파싱. jobs > 1 이면 프로세스 병렬로 처리한다."""
-    if jobs > 1 and len(files) > 1:
+def load_version(root: Path, files: list[str], cfg: BuildConfig, jobs: int = 1, label: str = "") -> list[TranslationUnit]:
+    """파일별 전처리·파싱. jobs > 1 이면 프로세스 병렬로 처리한다.
+
+    구문 트리가 아주 깊은 파일(긴 식·긴 else-if)은 Python 3.11 이하에서 작업 프로세스가 결과를
+    넘기다(pickle) 재귀 한도에 걸린다. 그런 파일만 이 프로세스에서 다시 파싱한다.
+    파일이 많으면 진행률과 남은 예상 시간을 stderr 로 알린다.
+    """
+    import sys
+    import time
+
+    total = len(files)
+    t0 = time.time()
+    step = max(1, min(50, total // 20))
+
+    def tick(done: int):
+        if total >= 20 and (done % step == 0 or done == total):
+            el = time.time() - t0
+            eta = el / done * (total - done)
+            sys.stderr.write(f"  {label + ' ' if label else ''}파싱 {done}/{total} "
+                             f"(경과 {el / 60:.1f}분, 남은 예상 {eta / 60:.1f}분)\n")
+            sys.stderr.flush()
+
+    if jobs > 1 and total > 1:
         import concurrent.futures as cf
+        results: list[TranslationUnit | None] = [None] * total
         try:
-            with cf.ProcessPoolExecutor(max_workers=min(jobs, len(files))) as ex:
-                return list(ex.map(_parse_job, [(root, rel, cfg) for rel in files], chunksize=1))
+            with cf.ProcessPoolExecutor(max_workers=min(jobs, total)) as ex:
+                futs = {ex.submit(_parse_job, (root, rel, cfg)): i for i, rel in enumerate(files)}
+                for done, fut in enumerate(cf.as_completed(futs), 1):
+                    i = futs[fut]
+                    try:
+                        results[i] = fut.result()
+                    except Exception:  # 결과 전달 실패(깊은 구문 트리) 등 → 이 프로세스에서 다시
+                        results[i] = parse_tu(root, files[i], cfg)
+                    tick(done)
+            return results  # type: ignore[return-value]
         except (OSError, cf.process.BrokenProcessPool):
             pass  # 병렬 실행이 막힌 환경이면 순차 처리
-    return [parse_tu(root, rel, cfg) for rel in files]
+    out = []
+    for done, rel in enumerate(files, 1):
+        out.append(parse_tu(root, rel, cfg))
+        tick(done)
+    return out
 
 
 class SourceLines:
