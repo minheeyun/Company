@@ -204,6 +204,11 @@ def render_md(r: dict) -> str:
         out.append("")
         out.append(", ".join(f"`{h}`" for h in ex["hw_access"]))
         out.append("")
+    if ex.get("no_effect_changes"):
+        out.append("**동작 변화 없음으로 본 변경** — 바뀌었지만 시작점에서 뺀 자료형·초기값 변경입니다.")
+        out.append("")
+        out += [f"- {_cell(w)}" for w in ex["no_effect_changes"]]
+        out.append("")
     if ex["warnings"]:
         out.append("**경고**")
         out.append("")

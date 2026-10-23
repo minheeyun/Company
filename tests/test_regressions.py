@@ -77,7 +77,7 @@ class ReadabilityTests(unittest.TestCase):
         old = "typedef struct { int a; int b; } S;\nS g;\nint h;\nvoid F(void) { h = g.a; }\n"
         new = "typedef struct { int a; int b; int c; } S;\nS g;\nint h;\nvoid F(void) { h = g.a; }\n"
         r = analyze({"a.c": old}, {"a.c": new})
-        details = " ".join(c["detail"] for c in r["changes"])
+        details = " ".join(c["detail"] for c in r["changes"]) + " ".join(r["excluded"]["no_effect_changes"])
         self.assertIn("필드 추가", details)
         self.assertIn("c", details)
 
@@ -86,6 +86,46 @@ class ReadabilityTests(unittest.TestCase):
         new = "int g;\nint h;\nvoid F(int x) { if (x) { h = 2; g = 1; } }\n"
         r = analyze({"a.c": old}, {"a.c": new})
         self.assertEqual([c["kind"] for c in r["changes"] if c["func"] == "F"], ["moved"])
+
+
+class StructFieldAdditionTests(unittest.TestCase):
+    H_OLD = "typedef unsigned char U8;\ntypedef struct { U8 cnt; int err; } Ctx_t;\n"
+    H_NEW = "typedef unsigned char U8;\ntypedef struct { U8 cnt; U8 tmo; int err; } Ctx_t;\n"
+    BODY = ("int g_out; int g_new;\n"
+            "static void Use(Ctx_t *c) { g_out = c->cnt; }\n"
+            "void A(void) { static Ctx_t ctx = {INIT}; Use(&ctx); g_out = ctx.err; }\n"
+            "void B(void) { static Ctx_t ctx2; Use(&ctx2); EXTRA }\n")
+
+    def run_case(self, init_old, init_new, extra=""):
+        old = self.H_OLD + self.BODY.replace("INIT", init_old).replace("EXTRA", "")
+        new = self.H_NEW + self.BODY.replace("INIT", init_new).replace("EXTRA", extra)
+        return analyze({"a.c": old}, {"a.c": new})
+
+    def test_added_field_only_is_not_a_change(self):
+        r = self.run_case("1U, 5", "1U, 0U, 5")
+        self.assertEqual(r["changes"], [])
+        self.assertEqual(r["items"], [])
+        self.assertTrue(any("새 필드 1개를 0으로 초기화" in n for n in r["excluded"]["no_effect_changes"]))
+        self.assertTrue(any("필드 추가 tmo" in n for n in r["excluded"]["no_effect_changes"]))
+
+    def test_new_field_use_is_seeded(self):
+        r = self.run_case("1U, 5", "1U, 0U, 5", "g_new = ctx2.tmo;")
+        self.assertIn(("B", "g_new"), {(i["func_display"], i["name"]) for i in r["items"]})
+        self.assertNotIn(("A", "g_out"), {(i["func_display"], i["name"]) for i in r["items"]})
+
+    def test_initializer_compared_by_field_name(self):
+        r = self.run_case("1U, 5", "1U, 0U, 7")
+        ch = [c for c in r["changes"] if c["kind"] == "global_changed"]
+        self.assertEqual(len(ch), 1)
+        self.assertIn("ctx.err = 5", ch[0]["old"])
+        self.assertIn("ctx.err = 7", ch[0]["new"])
+        self.assertNotIn("cnt", ch[0]["old"] + ch[0]["new"])
+
+    def test_scalar_typedef_change_still_seeds_all_uses(self):
+        old = "typedef unsigned char T;\nT g; int h;\nvoid F(void) { h = g + 1; }\n"
+        new = "typedef unsigned short T;\nT g; int h;\nvoid F(void) { h = g + 1; }\n"
+        r = analyze({"a.c": old}, {"a.c": new})
+        self.assertIn(("F", "h"), {(i["func_display"], i["name"]) for i in r["items"]})
 
 
 if __name__ == "__main__":

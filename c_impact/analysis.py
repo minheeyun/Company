@@ -496,6 +496,7 @@ def run_analysis(old: Program, new: Program, cfg: BuildConfig, *, k: int = 2, en
         "unresolved_pointers": sorted(new.unresolved_ptrs | old.unresolved_ptrs),
         "hw_access": sorted(new.hw_access | old.hw_access),
         "warnings": sorted(set(old.warnings + new.warnings)),
+        "no_effect_changes": list(cs.notes),
         "assumptions": [a.format(k=k) for a in ASSUMPTIONS],
     }
     result = {

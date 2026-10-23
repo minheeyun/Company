@@ -234,6 +234,29 @@ def _priority(it: dict, shared: set[str]) -> int:
     return 4
 
 
+# 메모리 복사·초기화 같은 공용 유틸 호출: 거의 모든 변경 경로에 걸리므로 같은 구분 안에서 뒤로 보낸다
+_UTIL_CALL = re.compile(r"(mem(set|cpy|copy|move|cmp|clear)|MemSet|MemCopy|MemClear|MemCpy|SuspendAllInterrupts|"
+                        r"ResumeAllInterrupts|GetLastErrorCode|WaitObjResp)", re.I)
+
+
+def _rank(it: dict, shared: set[str]) -> tuple:
+    """같은 구분 안에서는 직접 바뀐 것 → 전달 단계가 짧은 것 → 공용 유틸이 아닌 것 순."""
+    direct = 0 if it.get("how_kind") == "직접 변경" else 1
+    util = 1 if it["kind"] == "extcall" and _UTIL_CALL.search(it["name"]) else 0
+    return (_priority(it, shared), direct, util, len(it.get("path") or []), it["file"], it["line"])
+
+
+def _ranked(items, shared: set[str], limit_prio: int = 4) -> list[dict]:
+    """우선순위로 정렬하고 같은 (함수, 변수·출력)은 하나만 남긴다."""
+    seen, out = set(), []
+    for it in sorted((i for i in items if _priority(i, shared) < limit_prio), key=lambda i: _rank(i, shared)):
+        k = (it["func_display"], it["name"])
+        if k not in seen:
+            seen.add(k)
+            out.append(it)
+    return out
+
+
 def _origin(it: dict) -> tuple[str, str]:
     p = it["path"][0] if it.get("path") else {"func": it["func_display"], "file": it["file"]}
     return p["func"], p["file"]
@@ -261,16 +284,22 @@ def _impact_sections(r: dict) -> list[str]:
             "| 변경 함수 | 파일 | 변경 내용 | 영향 함수 | 영향 변수·출력 | 우선 확인할 영향 |", "|---|---|---|---|---|---|"]
     for (func, file), g in sorted(groups.items(), key=lambda x: (x[0][1], x[0][0])):
         kinds = " · ".join(f"{k} {v}" for k, v in g["kinds"].items())
-        top = sorted(g["items"], key=lambda it: (_priority(it, shared), it["file"], it["line"]))
-        top = [it for it in top if _priority(it, shared) < 4][:4]
+        top = _ranked(g["items"], shared)[:4]
         tops = "<br>".join(f"{_PRIORITY[_priority(it, shared)]}: `{_c(it['name'])}`" for it in top) or "-"
         out.append(f"| `{_c(func)}` | {_c(file)} | {kinds}<br>{'<br>'.join(g['samples'])} | {len(g['funcs'])} | "
                    f"{len(g['items'])} | {tops} |")
 
-    key_items = sorted((it for it in r["items"] if _priority(it, shared) < 4),
-                       key=lambda it: (_priority(it, shared), it["file"], it["line"]))
+    key_items = _ranked(r["items"], shared)
+    n_key = sum(1 for it in r["items"] if _priority(it, shared) < 4)
     out += ["", "### 2-2. 우선 확인할 영향 (외부 출력 → 레지스터 → 여러 진입점 공유 변수 → 반환값)", ""]
     if key_items:
+        counts = defaultdict(int)
+        for it in key_items:
+            counts[_PRIORITY[_priority(it, shared)]] += 1
+        out.append(" · ".join(f"{k} {v}" for k, v in counts.items())
+                   + f" (같은 함수의 같은 대상은 하나로 합침, 원래 {n_key}개). "
+                   "같은 구분 안에서는 직접 바뀐 것 → 전달 단계가 짧은 것 → 메모리 복사·대기 같은 공용 호출 순입니다.")
+        out.append("")
         out += ["| 구분 | 영향받는 함수 | 변수·출력 | 어떻게 | 차이가 발생하는 조건 | 원인 변경 |", "|---|---|---|---|---|---|"]
         for it in key_items[:50]:
             cond = "<br>".join(_c(_s(x, 120)) for x in it["conditions"][:3]) or "모든 실행"
@@ -281,14 +310,22 @@ def _impact_sections(r: dict) -> list[str]:
                        f"{it['how_kind']}: {_c(_s(it['how'], 120))} | {cond} | `{_c(of)}` ({_c(ofile)}) |")
         if len(key_items) > 50:
             out.append(f"| … | 외 {len(key_items) - 50}개 | | | | |")
-        rest = len(r["items"]) - len(key_items)
+        rest = len(r["items"]) - n_key
         out.append("")
         out.append(f"그 밖의 상태 변수 영향 {rest}개를 포함한 전체 목록과 전달 경로는 "
                    "[`impact/impact_report.md`](impact/impact_report.md) 2·3절에 있습니다.")
     else:
         out.append("외부 출력·레지스터·공유 변수·반환값에 닿는 영향이 없습니다. 전체 목록은 상세 보고서를 보세요.")
 
-    out += ["", "### 2-3. 변경 위치", "",
+    notes = r["excluded"].get("no_effect_changes") or []
+    if notes:
+        out += ["", "### 2-3. 동작 변화 없음으로 본 변경", "",
+                "바뀌었지만 동작에는 영향이 없다고 보고 영향 분석 시작점에서 뺀 변경입니다.", ""]
+        out += [f"- {_c(_s(x, 400))}" for x in notes[:20]]
+        if len(notes) > 20:
+            out.append(f"- 외 {len(notes) - 20}개 (상세 보고서 '분석에서 제외되거나 가정한 구성' 절)")
+
+    out += ["", f"### 2-{4 if notes else 3}. 변경 위치", "",
             "| 위치 | 함수 | 종류 | 변경 전 → 변경 후 | 비고 |", "|---|---|---|---|---|"]
     for c in changes[:60]:
         body = f"`{_c(_s(c['old']))}` → `{_c(_s(c['new']))}`" if c["old"] and c["new"] else f"`{_c(_s(c['new'] or c['old']))}`"
@@ -532,7 +569,7 @@ def run(args) -> int:
     if analysis is not None:
         print(f"상세: {out / 'impact' / 'impact_report.md'}")
         if analysis["excluded"]["parse_errors"]:
-            log(f"경고: 파싱하지 못한 파일 {len(analysis['excluded']['parse_errors'])}개 (summary.md 5절)")
+            log(f"경고: 파싱하지 못한 파일 {len(analysis['excluded']['parse_errors'])}개 (summary.md '분석 범위와 주의' 절)")
         if args.fail_on_impact and analysis["items"]:
             return 3
     return 0
