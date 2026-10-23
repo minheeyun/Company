@@ -53,5 +53,40 @@ class StaticPrototypeTests(unittest.TestCase):
         self.assertIn(("F", "g"), {(i["func_display"], i["name"]) for i in r["items"]})
 
 
+class ReadabilityTests(unittest.TestCase):
+    def test_constant_cast_is_not_hw_register(self):
+        src = "typedef unsigned int U32;\nU32 g;\nvoid F(void) { g = (U32)155U - (U32){K}U; }\n"
+        r = analyze({"a.c": src.replace("{K}", "5")}, {"a.c": src.replace("{K}", "6")})
+        self.assertFalse([i for i in r["items"] if i["kind"] == "hw"])
+        self.assertIn(("F", "g"), {(i["func_display"], i["name"]) for i in r["items"]})
+
+    def test_pointer_cast_is_still_hw_register(self):
+        src = "typedef unsigned int U32;\nvoid F(void) { *(volatile U32 *)0x40001000 = {K}U; }\n"
+        r = analyze({"a.c": src.replace("{K}", "1")}, {"a.c": src.replace("{K}", "2")})
+        self.assertTrue([i for i in r["items"] if i["kind"] == "hw"])
+
+    def test_initializer_diff_shows_only_changed_element(self):
+        src = "typedef struct { int a; int b; } C;\nconst C tbl[3] = {{1, 2}, {3, {K}}, {5, 6}};\nint g;\nvoid F(int i) { g = tbl[i].b; }\n"
+        r = analyze({"a.c": src.replace("{K}", "4")}, {"a.c": src.replace("{K}", "9")})
+        ch = [c for c in r["changes"] if c["kind"] == "global_changed"]
+        self.assertEqual(len(ch), 1)
+        self.assertIn("[1].b", ch[0]["old"] + ch[0]["new"])
+        self.assertNotIn("{5, 6}", ch[0]["old"] + ch[0]["new"])
+
+    def test_struct_type_diff_lists_added_field(self):
+        old = "typedef struct { int a; int b; } S;\nS g;\nint h;\nvoid F(void) { h = g.a; }\n"
+        new = "typedef struct { int a; int b; int c; } S;\nS g;\nint h;\nvoid F(void) { h = g.a; }\n"
+        r = analyze({"a.c": old}, {"a.c": new})
+        details = " ".join(c["detail"] for c in r["changes"])
+        self.assertIn("필드 추가", details)
+        self.assertIn("c", details)
+
+    def test_statement_moved_under_new_condition(self):
+        old = "int g;\nint h;\nvoid F(int x) { if (x) { h = 2; } g = 1; }\n"
+        new = "int g;\nint h;\nvoid F(int x) { if (x) { h = 2; g = 1; } }\n"
+        r = analyze({"a.c": old}, {"a.c": new})
+        self.assertEqual([c["kind"] for c in r["changes"] if c["func"] == "F"], ["moved"])
+
+
 if __name__ == "__main__":
     unittest.main()

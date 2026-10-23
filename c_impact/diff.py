@@ -12,11 +12,12 @@
 from __future__ import annotations
 
 import difflib
+import re
 from dataclasses import dataclass, field
 
 from pycparser import c_ast
 
-from .cexpr import const_eval, norm
+from .cexpr import const_eval, gen, norm
 from .program import Node, Program
 
 INF = float("inf")
@@ -59,6 +60,14 @@ def _sig(n: Node) -> str:
     return n.sig + ("|dead" if n.dead else "")
 
 
+_DEPTH_RE = re.compile(r"^(\w+)\|\d+\|")
+
+
+def _sig_no_depth(n: Node) -> str:
+    """중첩 깊이를 뺀 서명: 같으면 문장은 그대로이고 감싸는 조건 구조만 바뀐 것."""
+    return _DEPTH_RE.sub(r"\1||", n.sig)
+
+
 def compute_changes(old: Program, new: Program) -> ChangeSet:
     cs = ChangeSet()
     for fkey in sorted(set(old.funcs) | set(new.funcs)):
@@ -87,6 +96,10 @@ def compute_changes(old: Program, new: Program) -> ChangeSet:
             for o, n in pairs:
                 if n is None:
                     _add_node_change(cs, "old", "removed", old, o)
+                elif _sig_no_depth(o) == _sig_no_depth(n) and o.dead == n.dead:
+                    det = "같은 문장이 다른 조건 아래로 이동 (감싸는 if·반복문·switch 가 바뀜)"
+                    cs.add(Change("old", "moved", o.id, fkey, o.file, o.line, o.text, n.text, n.id, det))
+                    cs.add(Change("new", "moved", n.id, fkey, n.file, n.line, n.text, o.text, o.id, det))
                 else:
                     det, iv = describe_change(old, o, new, n)
                     cs.add(Change("old", "changed", o.id, fkey, o.file, o.line, o.text, n.text, n.id, det, iv))
@@ -117,12 +130,94 @@ def _global_changes(cs: ChangeSet, old: Program, new: Program):
         elif n is None:
             cs.add(Change("old", "global_removed", o.id, o.func, o.file, o.line, o.text, detail="삭제된 전역/정적 변수"))
         elif o.sig != n.sig:
-            det = "초기값 또는 자료형 변경"
+            if norm(o.ast) == norm(n.ast):
+                continue  # 초기값은 같고 자료형만 바뀜 → _type_changes 가 보고하고 시작점으로 잡는다
+            v = new.vars.get(key)
+            diffs = init_diff(o.ast, n.ast, v.type if v else None, v.env if v else None)
+            name = v.name if v else key
             vo, vn = const_eval(o.ast) if o.ast is not None else 0, const_eval(n.ast) if n.ast is not None else 0
             if vo is not None and vn is not None and vo != vn:
                 det = f"초기값 {vo} → {vn}"
-            cs.add(Change("old", "global_changed", o.id, o.func, o.file, o.line, o.text, n.text, n.id, det))
-            cs.add(Change("new", "global_changed", n.id, n.func, n.file, n.line, n.text, o.text, o.id, det))
+            else:
+                det = f"초기값 {len(diffs)}곳 변경"
+            old_t, new_t = _fmt_init_diffs(name, diffs, 1), _fmt_init_diffs(name, diffs, 2)
+            cs.add(Change("old", "global_changed", o.id, o.func, o.file, o.line, old_t, new_t, n.id, det))
+            cs.add(Change("new", "global_changed", n.id, n.func, n.file, n.line, new_t, old_t, o.id, det))
+
+
+def _short(s: str, n: int = 80) -> str:
+    s = " ".join(s.split())
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def _fmt_init_diffs(name: str, diffs: list[tuple[str, str, str]], side: int, limit: int = 6) -> str:
+    parts = [f"{name}{d[0]} = {_short(d[side])}" for d in diffs[:limit]]
+    if len(diffs) > limit:
+        parts.append(f"외 {len(diffs) - limit}곳")
+    return "; ".join(parts)
+
+
+def init_diff(o, n, t=None, env=None, path: str = "") -> list[tuple[str, str, str]]:
+    """초기값 두 개를 원소·필드 단위로 비교해 (위치, 변경 전, 변경 후) 목록을 돌려준다."""
+    if norm(o) == norm(n):
+        return []
+    if isinstance(o, c_ast.InitList) and isinstance(n, c_ast.InitList):
+        core = env.core(t) if env is not None and t is not None else None
+        names = env.fields(t) if isinstance(core, (c_ast.Struct, c_ast.Union)) else []
+        out: list[tuple[str, str, str]] = []
+        for i in range(max(len(o.exprs), len(n.exprs))):
+            a = o.exprs[i] if i < len(o.exprs) else None
+            b = n.exprs[i] if i < len(n.exprs) else None
+            label, sub_t = f"[{i}]", None
+            named = a if isinstance(a, c_ast.NamedInitializer) else b if isinstance(b, c_ast.NamedInitializer) else None
+            if named is not None:
+                label = "".join(f".{x.name}" if isinstance(x, c_ast.ID) else f"[{gen(x)}]" for x in named.name)
+            elif isinstance(core, c_ast.ArrayDecl):
+                sub_t = env.element(t)
+            elif names and i < len(names):
+                label, sub_t = f".{names[i]}", env.field(t, names[i])
+            a = a.expr if isinstance(a, c_ast.NamedInitializer) else a
+            b = b.expr if isinstance(b, c_ast.NamedInitializer) else b
+            if a is None or b is None:
+                out.append((path + label, gen(a) if a is not None else "(없음)", gen(b) if b is not None else "(없음)"))
+            else:
+                out += init_diff(a, b, sub_t, env, path + label)
+        return out
+    return [(path, gen(o) if o is not None else "(0으로 초기화)", gen(n) if n is not None else "(0으로 초기화)")]
+
+
+def type_diff(vo, vn) -> str:
+    """자료형 변경을 짧게: 구조체는 추가·삭제·바뀐 필드만, 그 밖은 앞뒤 자료형."""
+    to, tn = vo.env.core(vo.type), vn.env.core(vn.type)
+    dims = ""
+    while isinstance(to, c_ast.ArrayDecl) and isinstance(tn, c_ast.ArrayDecl):
+        do, dn = gen(to.dim), gen(tn.dim)
+        if do != dn:
+            dims = f"배열 크기 [{do}] → [{dn}]; "
+        to, tn = vo.env.core(to.type), vn.env.core(tn.type)
+    tname = ""
+    t = vn.type
+    while isinstance(t, (c_ast.ArrayDecl,)):
+        t = t.type
+    if isinstance(t, c_ast.TypeDecl) and isinstance(t.type, c_ast.IdentifierType):
+        tname = " ".join(t.type.names) + ": "
+    if isinstance(to, (c_ast.Struct, c_ast.Union)) and isinstance(tn, (c_ast.Struct, c_ast.Union)) and to.decls and tn.decls:
+        fo = {d.name: vo.env.signature(d.type) for d in to.decls if d.name}
+        fn = {d.name: vn.env.signature(d.type) for d in tn.decls if d.name}
+        parts = []
+        added = [f"{k}({_short(fn[k], 30)})" for k in fn if k not in fo]
+        removed = [k for k in fo if k not in fn]
+        changed = [f"{k}: {_short(fo[k], 30)} → {_short(fn[k], 30)}" for k in fn if k in fo and fo[k] != fn[k]]
+        if added:
+            parts.append("필드 추가 " + ", ".join(added))
+        if removed:
+            parts.append("필드 삭제 " + ", ".join(removed))
+        if changed:
+            parts.append("필드 자료형 변경 " + ", ".join(changed))
+        if [k for k in fo if k in fn] != [k for k in fn if k in fo]:
+            parts.append("필드 순서 변경")
+        return f"자료형 변경: {tname}{dims}" + ("; ".join(parts) or "구조체 안쪽 정의 변경")
+    return f"자료형 변경: {tname}{dims}{_short(vo.env.signature(vo.type), 100)} → {_short(vn.env.signature(vn.type), 100)}"
 
 
 def _type_sigs(prog: Program) -> dict[str, str]:
@@ -137,7 +232,7 @@ def _type_changes(cs: ChangeSet, old: Program, new: Program):
         if to[key] == tn[key]:
             continue
         vn = new.vars[key]
-        det = f"자료형 변경: {to[key]} → {tn[key]}"
+        det = type_diff(old.vars[key], vn)
         cs.add(Change("new", "type_changed", _first_node(new, key), vn.func or "", vn.file, vn.line,
                       f"{vn.name} 자료형", detail=det))
         for prog, seeds in ((old, cs.seeds_old), (new, cs.seeds_new)):

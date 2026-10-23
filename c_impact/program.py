@@ -458,7 +458,8 @@ class Program:
         if isinstance(e, c_ast.Cast):
             v = const_eval(e.expr)
             if v is not None:
-                if v == 0:
+                # 정수 상수를 포인터로 바꿀 때만 고정 주소(레지스터)다. (U32)155U 같은 정수 형 변환은 값일 뿐이다.
+                if v == 0 or not self._is_pointer_typename(e.to_type):
                     return set()
                 key = f"hw:0x{v:X}"
                 if key not in self.vars:
@@ -487,6 +488,17 @@ class Program:
                 out |= self.pts.get(("ret:" + c,), set())
             return out
         return set()
+
+    def _is_pointer_typename(self, tn) -> bool:
+        t = getattr(tn, "type", None)
+        if isinstance(t, c_ast.PtrDecl):
+            return True
+        if isinstance(t, c_ast.TypeDecl) and isinstance(t.type, c_ast.IdentifierType) and len(t.type.names) == 1:
+            name = t.type.names[0]  # typedef 로 만든 포인터 형 (예: typedef volatile uint32 *Reg_t;)
+            for tu in self.tus:
+                if tu.ast is not None and name in tu.env.typedefs:
+                    return tu.env.is_pointer(tu.env.typedefs[name])
+        return False
 
     def _site_callees(self, site: CallSite) -> set[str]:
         if site.direct is not None:

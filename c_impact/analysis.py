@@ -198,8 +198,9 @@ def _merge_items(new_items: list[dict], old_items: list[dict]) -> list[dict]:
         if key in merged:
             merged[key]["versions"].append("old")
             for c in it["conditions"]:
+                # 변경 전 경로에만 있는 조건은 표시해서, 같은 조건이 참·거짓으로 섞여 보이지 않게 한다
                 if c not in merged[key]["conditions"]:
-                    merged[key]["conditions"].append(c)
+                    merged[key]["conditions"].append(f"(변경 전) {c}")
         else:
             merged[key] = it
     kind_rank = {"var": 0, "hw": 1, "pointer": 2, "return": 3, "extcall": 4}
@@ -264,13 +265,13 @@ def _changes_json(cs: ChangeSet, old: Program, new: Program, lines: SourceLines)
     stmt_lines = {(c.version, c.func, c.file, c.line) for c in cs.changes
                   if (old if c.version == "old" else new).nodes[c.node].kind not in ("actual_in", "call", "actual_out")}
     for c in cs.changes:
-        if c.kind in ("changed", "global_changed") and c.version == "old":
+        if c.kind in ("changed", "global_changed", "moved") and c.version == "old":
             continue  # 같은 변경의 변경 후 쪽 항목 하나만 보고
         kind = (old if c.version == "old" else new).nodes[c.node].kind
         if kind in ("actual_in", "call", "actual_out") and (c.version, c.func, c.file, c.line) in stmt_lines:
             continue
         prog = old if c.version == "old" else new
-        if c.kind in ("changed", "global_changed"):
+        if c.kind in ("changed", "global_changed", "moved"):
             old_text, new_text = c.other_text, c.text
         elif c.version == "old":
             old_text, new_text = c.text, ""

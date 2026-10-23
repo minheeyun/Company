@@ -9,6 +9,7 @@ from pathlib import Path
 KIND_KO = {
     "changed": "수정", "added": "추가", "removed": "삭제", "func_added": "함수 추가", "func_removed": "함수 삭제",
     "global_changed": "전역 변경", "global_added": "전역 추가", "global_removed": "전역 삭제", "type_changed": "자료형 변경",
+    "moved": "위치 이동",
 }
 
 STATUS_STATIC = "정적 분석상 영향 후보"
@@ -58,7 +59,7 @@ def merge_sil(result: dict, sil: dict) -> None:
     }
 
 
-def write_outputs(result: dict, out_dir: Path, formats: set[str]) -> list[Path]:
+def write_outputs(result: dict, out_dir: Path, formats: set[str], sil_template: bool = True) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     written = []
     if "json" in formats:
@@ -73,9 +74,10 @@ def write_outputs(result: dict, out_dir: Path, formats: set[str]) -> list[Path]:
         p = out_dir / "impact.dot"
         p.write_text(render_dot(result), encoding="utf-8")
         written.append(p)
-    p = out_dir / "sil_scenario.json"
-    p.write_text(json.dumps(result["sil_template"], ensure_ascii=False, indent=2), encoding="utf-8")
-    written.append(p)
+    if sil_template:
+        p = out_dir / "sil_scenario.json"
+        p.write_text(json.dumps(result["sil_template"], ensure_ascii=False, indent=2), encoding="utf-8")
+        written.append(p)
     return written
 
 
@@ -146,7 +148,7 @@ def render_md(r: dict) -> str:
     if not r["changes"]:
         out.append("| - | - | - | - | - | - | - | 변경 없음 |")
 
-    out += _items_section(items, "## 2. 영향받는 함수·변수", status=True)
+    out += _items_section(items, "## 2. 영향받는 함수·변수", status=has_sil)
     out += _paths_section(items, "## 3. 영향 전달 경로", "변경 지점")
     out += _entries_section(r, "## 4. 진입점(태스크·ISR·콜백) 관점")
 
@@ -160,10 +162,8 @@ def render_md(r: dict) -> str:
                        f"{', '.join(map(str, t['values']))} | {t['drive']} |")
     else:
         out.append("단일 변수 비교식 변경이 없어 자동 경계값 후보는 없습니다. 2절의 조건과 3절 경로를 기준으로 입력을 정하세요.")
-    out += ["", "- 같은 입력·초기 상태·호출 순서로 변경 전/후를 실행해 2절의 변수·출력을 비교하세요.",
-            "- 카운터·타이머·래치가 영향 항목에 있으면 한 번 호출이 아니라 여러 주기, 임계값 도달, wraparound, 리셋 이후까지 비교하세요.",
-            "- 초안 시나리오 `sil_scenario.json` 이 함께 생성되었습니다. 호출 순서·인자를 실제 스케줄에 맞게 고친 뒤 "
-            "`python3 change_impact.py sil --old … --new … --scenario sil_scenario.json` 으로 실행합니다."]
+    out += ["", "- 2절의 변수·출력을 같은 입력·초기 상태·호출 순서에서 변경 전/후로 비교하는 테스트를 권합니다.",
+            "- 카운터·타이머·래치가 영향 항목에 있으면 한 번 호출이 아니라 여러 주기, 임계값 도달, wraparound, 리셋 이후까지 확인하세요."]
 
     if has_sil:
         s = r["sil"]
@@ -173,11 +173,9 @@ def render_md(r: dict) -> str:
             out.append(f"- ⚠ 정적 분석 영향 항목에 없는 관찰 대상에서 차이: {', '.join('`' + u + '`' for u in s['unexpected'])} "
                        "— 분석에서 제외된 구성(7절)이나 관찰식의 이름 차이를 확인하세요.")
         out.append("- 차이가 검출되지 않은 항목은 이 시나리오에 한해 같다는 뜻이며, 모든 실행에서 동일하다는 뜻이 아닙니다.")
-    else:
-        out += ["", "## 6. 실행 확인 (SIL 차등 실행)", "", "실행하지 않았습니다 (`--scenario` 지정 시 함께 실행)."]
 
     ex = r["excluded"]
-    out += ["", "## 7. 분석에서 제외되거나 가정한 구성", ""]
+    out += ["", f"## {7 if has_sil else 6}. 분석에서 제외되거나 가정한 구성", ""]
     if ex["parse_errors"]:
         out.append("**파싱 실패 (분석 제외)**")
         out.append("")

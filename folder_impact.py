@@ -219,6 +219,91 @@ def _collapse_changes(changes: list[dict]) -> list[dict]:
     return out
 
 
+_PRIORITY = {0: "외부 출력", 1: "레지스터", 2: "여러 진입점 공유", 3: "반환값", 4: "상태 변수"}
+
+
+def _priority(it: dict, shared: set[str]) -> int:
+    if it["kind"] == "extcall":
+        return 0
+    if it["kind"] == "hw":
+        return 1
+    if it["kind"] == "var" and it["name"] in shared:
+        return 2
+    if it["kind"] == "return":
+        return 3
+    return 4
+
+
+def _origin(it: dict) -> tuple[str, str]:
+    p = it["path"][0] if it.get("path") else {"func": it["func_display"], "file": it["file"]}
+    return p["func"], p["file"]
+
+
+def _impact_sections(r: dict) -> list[str]:
+    """변경 함수별 요약 → 우선 확인할 핵심 영향 → 변경 위치(압축) 순으로 보여 준다."""
+    out: list[str] = []
+    shared = {x["var"] for x in r.get("shared", [])}
+    changes = _collapse_changes(r["changes"])
+    groups: dict[tuple[str, str], dict] = {}
+    for c in changes:
+        g = groups.setdefault((c["func"], c["file"]), {"kinds": defaultdict(int), "samples": [], "items": [], "funcs": set()})
+        g["kinds"][report.KIND_KO.get(c["kind"], c["kind"])] += 1
+        if len(g["samples"]) < 2:
+            body = f"`{_c(_s(c['old']))}` → `{_c(_s(c['new']))}`" if c["old"] and c["new"] else f"`{_c(_s(c['new'] or c['old']))}`"
+            g["samples"].append(body)
+    for it in r["items"]:
+        g = groups.get(_origin(it))
+        if g is not None:
+            g["items"].append(it)
+            g["funcs"].add(it["func_display"])
+
+    out += ["### 2-1. 변경된 함수별 요약", "",
+            "| 변경 함수 | 파일 | 변경 내용 | 영향 함수 | 영향 변수·출력 | 우선 확인할 영향 |", "|---|---|---|---|---|---|"]
+    for (func, file), g in sorted(groups.items(), key=lambda x: (x[0][1], x[0][0])):
+        kinds = " · ".join(f"{k} {v}" for k, v in g["kinds"].items())
+        top = sorted(g["items"], key=lambda it: (_priority(it, shared), it["file"], it["line"]))
+        top = [it for it in top if _priority(it, shared) < 4][:4]
+        tops = "<br>".join(f"{_PRIORITY[_priority(it, shared)]}: `{_c(it['name'])}`" for it in top) or "-"
+        out.append(f"| `{_c(func)}` | {_c(file)} | {kinds}<br>{'<br>'.join(g['samples'])} | {len(g['funcs'])} | "
+                   f"{len(g['items'])} | {tops} |")
+
+    key_items = sorted((it for it in r["items"] if _priority(it, shared) < 4),
+                       key=lambda it: (_priority(it, shared), it["file"], it["line"]))
+    out += ["", "### 2-2. 우선 확인할 영향 (외부 출력 → 레지스터 → 여러 진입점 공유 변수 → 반환값)", ""]
+    if key_items:
+        out += ["| 구분 | 영향받는 함수 | 변수·출력 | 어떻게 | 차이가 발생하는 조건 | 원인 변경 |", "|---|---|---|---|---|---|"]
+        for it in key_items[:50]:
+            cond = "<br>".join(_c(_s(x, 120)) for x in it["conditions"][:3]) or "모든 실행"
+            if len(it["conditions"]) > 3:
+                cond += f"<br>외 {len(it['conditions']) - 3}개"
+            of, ofile = _origin(it)
+            out.append(f"| {_PRIORITY[_priority(it, shared)]} | `{_c(it['func_display'])}` | `{_c(it['name'])}` | "
+                       f"{it['how_kind']}: {_c(_s(it['how'], 120))} | {cond} | `{_c(of)}` ({_c(ofile)}) |")
+        if len(key_items) > 50:
+            out.append(f"| … | 외 {len(key_items) - 50}개 | | | | |")
+        rest = len(r["items"]) - len(key_items)
+        out.append("")
+        out.append(f"그 밖의 상태 변수 영향 {rest}개를 포함한 전체 목록과 전달 경로는 "
+                   "[`impact/impact_report.md`](impact/impact_report.md) 2·3절에 있습니다.")
+    else:
+        out.append("외부 출력·레지스터·공유 변수·반환값에 닿는 영향이 없습니다. 전체 목록은 상세 보고서를 보세요.")
+
+    out += ["", "### 2-3. 변경 위치", "",
+            "| 위치 | 함수 | 종류 | 변경 전 → 변경 후 | 비고 |", "|---|---|---|---|---|"]
+    for c in changes[:60]:
+        body = f"`{_c(_s(c['old']))}` → `{_c(_s(c['new']))}`" if c["old"] and c["new"] else f"`{_c(_s(c['new'] or c['old']))}`"
+        out.append(f"| {c['file']}:{c['line']} | `{_c(c['func'])}` | {report.KIND_KO.get(c['kind'], c['kind'])} | "
+                   f"{body} | {_c(_s(c['detail'], 200))} |")
+    if len(changes) > 60:
+        out.append(f"| … | | | 외 {len(changes) - 60}개 (상세 보고서 1절) | |")
+    return out
+
+
+def _s(text: str, n: int = 160) -> str:
+    text = " ".join(str(text).split())
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+
 def render_summary(s: dict) -> str:
     ch = s["file_changes"]
     out = ["# 폴더 비교 변경 영향 분석", "",
@@ -251,24 +336,7 @@ def render_summary(s: dict) -> str:
         out.append(f"변경 지점 **{len(r['changes'])}개** · 영향 함수 **{st['affected_functions']}개** · "
                    f"영향 변수·출력 **{len(r['items'])}개** — 상세: [`impact/impact_report.md`](impact/impact_report.md)")
         out.append("")
-        changes = _collapse_changes(r["changes"])
-        if changes:
-            out += ["| 위치 | 함수 | 종류 | 변경 전 → 변경 후 | 비고 |", "|---|---|---|---|---|"]
-            for c in changes[:40]:
-                body = f"`{_c(c['old'])}` → `{_c(c['new'])}`" if c["old"] and c["new"] else f"`{_c(c['new'] or c['old'])}`"
-                out.append(f"| {c['file']}:{c['line']} | `{_c(c['func'])}` | {report.KIND_KO.get(c['kind'], c['kind'])} | "
-                           f"{body} | {_c(c['detail'])} |")
-            if len(changes) > 40:
-                out.append(f"| … | | | 외 {len(changes) - 40}개 (상세 보고서 참고) | |")
-            out.append("")
-        if r["items"]:
-            out += ["| 영향받는 함수 | 변수·출력 | 어떻게 | 차이가 발생하는 조건 | 상태 |", "|---|---|---|---|---|"]
-            for it in r["items"][:60]:
-                cond = "<br>".join(_c(x) for x in it["conditions"][:4]) or "모든 실행"
-                out.append(f"| `{_c(it['func_display'])}` | `{_c(it['name'])}` | {it['how_kind']}: {_c(it['how'])} | {cond} | "
-                           f"{_c(it.get('status', report.STATUS_STATIC))} |")
-            if len(r["items"]) > 60:
-                out.append(f"| … | 외 {len(r['items']) - 60}개 | | | |")
+        out += _impact_sections(r)
 
     d = s.get("deps_diff")
     if d is not None:
@@ -294,31 +362,32 @@ def render_summary(s: dict) -> str:
         if d["vars_added"] or d["vars_removed"]:
             out += ["", f"- 새 상태 변수: {_list(d['vars_added'], 20)}", f"- 사라진 상태 변수: {_list(d['vars_removed'], 20)}"]
 
-    out += ["", "## 4. 실행 확인", ""]
     ex = s.get("explore")
+    sil = s.get("sil")
+    sec = 4
+    if ex or sil:
+        out += ["", "## 4. 실행 확인", ""]
+        sec = 5
     if ex:
         out.append(f"- 자동 탐색: 케이스 {ex['cases']}개 중 차이 {ex['diff_cases']}개 — [`explore/explore_report.md`](explore/explore_report.md)")
         for lab, w in sorted(ex["witnesses_input_only"].items()):
             b = ", ".join(f"{k}={json.dumps(v)}" for k, v in w["bindings"].items() if v != ex["defaults"].get(k)) or "기본값"
             out.append(f"  - `{_c(lab)}` (입력만): {_c(b)} → 단계 #{w['step']} `{_c(w['old'])}` → `{_c(w['new'])}`")
-    sil = s.get("sil")
     if sil:
         out.append(f"- 지정 시나리오: 케이스 {sil['cases']}개 중 차이 {sil['diff_cases']}개 — [`sil/sil_report.md`](sil/sil_report.md)")
-    if not ex and not sil:
-        out.append("실행하지 않았습니다. `--explore` 로 차이를 내는 입력을 자동 탐색하거나 `--scenario` 로 시나리오를 실행할 수 있습니다. "
-                   "초안 시나리오는 `impact/sil_scenario.json` 입니다.")
 
-    out += ["", "## 5. 분석 범위와 주의", ""]
+    out += ["", f"## {sec}. 분석 범위와 주의", ""]
     for w in s["warnings"]:
         out.append(f"- ⚠ {_c(w)}")
     if r is not None:
         pe = r["excluded"]["parse_errors"]
         if pe:
-            out.append(f"- 파싱하지 못해 분석에서 빠진 파일 {len(pe)}개: {_list(pe, 20)} (상세 보고서 7절)")
+            out.append(f"- 파싱하지 못해 분석에서 빠진 파일 {len(pe)}개: {_list(pe, 20)} (상세 보고서 '분석에서 제외되거나 가정한 구성' 절)")
         if r["excluded"]["extern_functions"]:
-            out.append(f"- 본문 없는 외부 함수 {len(r['excluded']['extern_functions'])}개는 보수적으로 가정했습니다 (상세 보고서 7절).")
-    out.append("- 결과는 정적 분석상 영향 후보입니다. 실행 확인은 지정·탐색한 입력 범위 안에서만 의미가 있습니다. "
-               "동작 차이가 의도된 변경인지 결함인지는 별도로 판단해야 합니다.")
+            out.append(f"- 본문 없는 외부 함수 {len(r['excluded']['extern_functions'])}개는 보수적으로 가정했습니다 (상세 보고서 '분석에서 제외되거나 가정한 구성' 절).")
+        if not pe:
+            out.append(f"- 파싱 실패 없음 (변경 전 {s['analyzed']['old']}개 / 변경 후 {s['analyzed']['new']}개 파일 모두 분석)")
+    out.append("- 결과는 정적 분석상 영향 후보입니다. 동작 차이가 의도된 변경인지 결함인지는 별도로 판단해야 합니다.")
     out += ["", "## 결과 파일", ""] + [f"- `{p}`" for p in s["outputs"]] + [""]
     return "\n".join(out)
 
@@ -446,7 +515,8 @@ def run(args) -> int:
                 summary["outputs"].append(str(out / "explore" / "explore_report.md"))
             except (SilError, OSError, ValueError) as e:
                 warnings.append(f"자동 탐색 실패: {str(e).splitlines()[0]}")
-        written = report.write_outputs(analysis, out / "impact", set(args.format.split(",")))
+        written = report.write_outputs(analysis, out / "impact", set(args.format.split(",")),
+                                       sil_template=bool(args.scenario or args.explore))
         summary["outputs"] = [str(p) for p in written] + summary["outputs"]
         summary["analysis"] = analysis
 
