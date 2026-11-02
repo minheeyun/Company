@@ -17,6 +17,7 @@ git 이 없어도 되는 폴더 비교 전용 실행기다. 내부 분석은 c_i
   python3 folder_impact.py before/ after/ --compile-commands after/build/compile_commands.json
 
 결과 (-o, 기본 impact_out/folder):
+  report.html                   모든 결과를 항목별 탭으로 묶은 HTML 보고서 (브라우저로 열기, 검색·필터·경로 펼치기)
   summary.md / summary.json     폴더 비교 요약 (파일 변경, 영향 요약, 의존성 변화, 실행 확인, 분석 범위)
   impact/impact_report.md       변경 영향 분석 보고서 (변경 위치, 영향 함수·변수 표, 경로, 진입점, 테스트 후보, 제외 구성)
   impact/impact.json, impact.dot, sil_scenario.json
@@ -38,7 +39,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from c_impact import deps as deps_mod
-from c_impact import report
+from c_impact import html_report, report
 from c_impact.analysis import load_programs, run_analysis
 from c_impact.frontend import BuildConfig, load_compile_commands
 from c_impact.sil import SilError, load_scenario, run_sil
@@ -262,23 +263,31 @@ def _origin(it: dict) -> tuple[str, str]:
     return p["func"], p["file"]
 
 
-def _impact_sections(r: dict) -> list[str]:
-    """변경 함수별 요약 → 우선 확인할 핵심 영향 → 변경 위치(압축) 순으로 보여 준다."""
-    out: list[str] = []
-    shared = {x["var"] for x in r.get("shared", [])}
+def change_groups(r: dict) -> tuple[list[dict], dict[tuple[str, str], dict]]:
+    """압축한 변경 목록과, (변경 함수, 파일)별 묶음 {kinds, changes, items, funcs}."""
     changes = _collapse_changes(r["changes"])
     groups: dict[tuple[str, str], dict] = {}
     for c in changes:
-        g = groups.setdefault((c["func"], c["file"]), {"kinds": defaultdict(int), "samples": [], "items": [], "funcs": set()})
+        g = groups.setdefault((c["func"], c["file"]),
+                              {"kinds": defaultdict(int), "changes": [], "items": [], "funcs": set()})
         g["kinds"][report.KIND_KO.get(c["kind"], c["kind"])] += 1
-        if len(g["samples"]) < 2:
-            body = f"`{_c(_s(c['old']))}` → `{_c(_s(c['new']))}`" if c["old"] and c["new"] else f"`{_c(_s(c['new'] or c['old']))}`"
-            g["samples"].append(body)
+        g["changes"].append(c)
     for it in r["items"]:
         g = groups.get(_origin(it))
         if g is not None:
             g["items"].append(it)
             g["funcs"].add(it["func_display"])
+    return changes, groups
+
+
+def _impact_sections(r: dict) -> list[str]:
+    """변경 함수별 요약 → 우선 확인할 핵심 영향 → 변경 위치(압축) 순으로 보여 준다."""
+    out: list[str] = []
+    shared = {x["var"] for x in r.get("shared", [])}
+    changes, groups = change_groups(r)
+    for g in groups.values():
+        g["samples"] = [f"`{_c(_s(c['old']))}` → `{_c(_s(c['new']))}`" if c["old"] and c["new"]
+                        else f"`{_c(_s(c['new'] or c['old']))}`" for c in g["changes"][:2]]
 
     out += ["### 2-1. 변경된 함수별 요약", "",
             "| 변경 함수 | 파일 | 변경 내용 | 영향 함수 | 영향 변수·출력 | 우선 확인할 영향 |", "|---|---|---|---|---|---|"]
@@ -351,6 +360,7 @@ def render_summary(s: dict) -> str:
            f"- include 경로: {'자동 ' + str(len(s['auto_include'])) + '개' if s['auto_include'] else '자동 등록 안 함'}"
            + (f" + 지정 {len(s['user_include'])}개" if s["user_include"] else "")
            + (" · compile_commands.json 사용" if s["compile_commands"] else ""),
+           "- 전체 결과를 항목별로 보기: [`report.html`](report.html) (브라우저로 열기 — 검색·필터·전달 경로 펼치기)",
            ""]
     out += ["## 1. 파일 변경 (*.c, *.h)", "",
             f"추가 {len(ch['added'])} · 삭제 {len(ch['removed'])} · 수정 {len(ch['modified'])} · 동일 {len(ch['unchanged'])}", ""]
@@ -427,6 +437,67 @@ def render_summary(s: dict) -> str:
     out.append("- 결과는 정적 분석상 영향 후보입니다. 동작 차이가 의도된 변경인지 결함인지는 별도로 판단해야 합니다.")
     out += ["", "## 결과 파일", ""] + [f"- `{p}`" for p in s["outputs"]] + [""]
     return "\n".join(out)
+
+
+def html_payload(s: dict) -> dict:
+    """report.html 에 넣을 데이터. 표시용으로 정렬·우선순위·원인 변경을 미리 계산해 둔다."""
+    ch = s["file_changes"]
+    data: dict = {
+        "meta": {k: s.get(k) for k in ("old_dir", "new_dir", "time", "elapsed", "scope_reason", "analyzed",
+                                       "warnings", "duplicate_headers", "outputs")},
+        "include": {"auto": len(s["auto_include"]), "user": len(s["user_include"]), "cc": bool(s["compile_commands"])},
+        "files": [{"status": st, "file": rel} for st, key in (("수정", "modified"), ("추가", "added"), ("삭제", "removed"))
+                  for rel in ch[key]],
+        "file_counts": {k: len(v) for k, v in ch.items()},
+        "deps": s.get("deps_diff"),
+        "explore": s.get("explore"), "sil": s.get("sil"),
+        "analysis": None,
+    }
+    r = s.get("analysis")
+    if r is None:
+        return data
+    shared = {x["var"] for x in r.get("shared", [])}
+    changes, groups = change_groups(r)
+    order = {id(it): i for i, it in enumerate(sorted(r["items"], key=lambda it: _rank(it, shared)))}
+    key_ids = {id(it) for it in _ranked(r["items"], shared)}
+    items = []
+    idx_of: dict[int, int] = {}
+    for it in sorted(r["items"], key=lambda it: order[id(it)]):
+        idx_of[id(it)] = len(items)
+        pr = _priority(it, shared)
+        of, ofile = _origin(it)
+        items.append({
+            "prio": pr, "prio_label": _PRIORITY[pr], "key": id(it) in key_ids,
+            "func": it["func_display"], "file": it["file"], "line": it["line"], "name": it["name"],
+            "kind": it["kind"], "how_kind": it["how_kind"], "how": it["how"], "src": it.get("src") or it.get("stmt", ""),
+            "conditions": it["conditions"], "origin": of, "origin_file": ofile, "versions": it.get("versions", []),
+            "path": [{"arrow": report._arrow(st["edge"]), "func": st["func"], "file": st["file"], "line": st["line"],
+                      "text": st["src"] or st["text"]}
+                     for st in it.get("path") or [] if st["kind"] not in ("actual_out", "nop", "exit")],
+        })
+    chg = [{"file": c["file"], "line": c["line"], "func": c["func"], "kind": report.KIND_KO.get(c["kind"], c["kind"]),
+            "old": c["old"], "new": c["new"], "detail": c["detail"], "src": c.get("src", "")} for c in changes]
+    cidx = {id(c): i for i, c in enumerate(changes)}
+    grp = []
+    for (func, file), g in sorted(groups.items(), key=lambda x: (x[0][1], x[0][0])):
+        grp.append({
+            "func": func, "file": file, "kinds": dict(g["kinds"]),
+            "changes": [cidx[id(c)] for c in g["changes"]],
+            "items": sorted(idx_of[id(it)] for it in g["items"]),
+            "top": [idx_of[id(it)] for it in _ranked(g["items"], shared)[:4]],
+            "n_funcs": len(g["funcs"]),
+        })
+    ex = r["excluded"]
+    data["analysis"] = {
+        "stats": {"changes": len(r["changes"]), "affected_functions": r["stats"]["affected_functions"],
+                  "items": len(r["items"])},
+        "groups": grp, "changes": chg, "items": items,
+        "notes": ex.get("no_effect_changes") or [],
+        "entries": r.get("entries", []), "shared": r.get("shared", []),
+        "excluded": {k: ex.get(k) for k in ("parse_errors", "extern_functions", "unresolved_calls",
+                                            "unresolved_pointers", "hw_access", "warnings", "assumptions")},
+    }
+    return data
 
 
 def terminal(s: dict) -> str:
@@ -559,12 +630,15 @@ def run(args) -> int:
 
     summary["elapsed"] = time.time() - t0
     summary["outputs"] = [str(out / "summary.md"), str(out / "summary.json")] + summary["outputs"]
+    summary["outputs"].insert(0, str(out / "report.html"))
     (out / "summary.md").write_text(render_summary(summary), encoding="utf-8")
+    (out / "report.html").write_text(html_report.render(html_payload(summary)), encoding="utf-8")
     (out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
     if not args.quiet:
         print(terminal(summary))
         print()
+    print(f"보고서(HTML): {out / 'report.html'}")
     print(f"요약: {out / 'summary.md'}")
     if analysis is not None:
         print(f"상세: {out / 'impact' / 'impact_report.md'}")

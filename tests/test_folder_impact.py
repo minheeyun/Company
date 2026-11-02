@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -80,6 +81,11 @@ class FolderImpactTests(unittest.TestCase):
         md = (self.out / "summary.md").read_text(encoding="utf-8")
         self.assertIn("| src/app/app.c:5 | `App_Out` | 추가 | `Drv_Set(g_level)` |", md)
         self.assertTrue((self.out / "impact" / "impact_report.md").is_file())
+        html = (self.out / "report.html").read_text(encoding="utf-8")
+        data = json.loads(re.search(r'<script type="application/json" id="data">(.*?)</script>', html, re.S).group(1))
+        self.assertIn("App_Main", {g["func"] for g in data["analysis"]["groups"]})
+        self.assertIn(("Drv_Set", "g_reg"), {(i["func"], i["name"]) for i in data["analysis"]["items"]})
+        self.assertNotIn("</script", data["analysis"]["items"][0]["src"])
         self.assertTrue((self.out / "deps" / "deps_access_new.csv").is_file())
 
     def test_dependency_diff(self):
