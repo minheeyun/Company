@@ -468,7 +468,7 @@ def sil_template(new: Program, cs: ChangeSet, items: list[dict], entries: list[s
 
 def run_analysis(old: Program, new: Program, cfg: BuildConfig, *, k: int = 2, entries: list[str] | None = None,
                  isr: list[str] | None = None, sil_cycles: int = 3, rules=None, symbolic: bool = True,
-                 sym_paths: int = 64, sym_budget: float = 120.0) -> dict:
+                 sym_paths: int = 64, sym_budget: float = 120.0, cwe: bool = False) -> dict:
     entries = entries or []
     isr = isr or []
     cs = compute_changes(old, new)
@@ -479,7 +479,7 @@ def run_analysis(old: Program, new: Program, cfg: BuildConfig, *, k: int = 2, en
                          _items_for(_Ctx(old, hits_old, cs, "old", lines)))
     entry_rows, shared = _entry_view(new, items, entries, isr)
     sec = analyze_security(old, new, cs, hits_new, hits_old, lines, rules, symbolic=symbolic,
-                           sym_paths=sym_paths, sym_budget=sym_budget)
+                           sym_paths=sym_paths, sym_budget=sym_budget, cwe=cwe)
     risks = sec["findings"]
     internal = {"cpg": sec.pop("_cpg_new"), "old": old, "new": new,
                 "sinks": {id(f): (f.get("_sink"), f.get("_node")) for f in risks}}

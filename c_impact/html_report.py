@@ -297,7 +297,7 @@ function riskDetail(r) {
                                   : el("div", {class: "muted", text: "모든 실행 (조건 없음)"});
   var t = r.taint || {}, s = r.symbolic, b = r.baseline || {}, ch = r.change;
   var kv = [
-    el("div", {text: "취약점"}), el("div", {}, [sev(r), " ", stat(r), " ", el("b", {text: r.cwe + " " + (r.cwe_name || "")})]),
+    el("div", {text: "판정"}), el("div", {}, [sev(r), " ", stat(r), r.cwe ? el("b", {text: " " + r.cwe + " " + (r.cwe_name || "")}) : null]),
     el("div", {text: "위험"}), el("div", {}, [el("b", {text: r.kind_label}), " — " + r.risk]),
     el("div", {text: "위치"}), el("div", {}, [code(r.func), " ", loc(r.file, r.line)]),
     el("div", {text: "문장"}), el("div", {}, [code(r.src || r.expr)]),
@@ -325,13 +325,15 @@ function riskDetail(r) {
   ]);
 }
 function riskTable(rows) {
+  var showCwe = rows.some(function (r) { return !!r.cwe; });
   return new Table({
-    rows: rows, search: function (r) { return [r.id, r.cwe, r.func, r.file, r.expr, r.operand, r.origin, r.evidence, r.src, r.verification].concat(r.values || [], r.conditions).join(" "); },
-    placeholder: "ID·CWE·함수·파일·연산 검색",
+    rows: rows, search: function (r) { return [r.id, r.cwe || "", r.kind_label, r.func, r.file, r.expr, r.operand, r.origin, r.evidence, r.src, r.verification].concat(r.values || [], r.conditions).join(" "); },
+    placeholder: "ID·위험 종류·함수·파일·연산 검색",
     filters: [
       {name: "level", label: "등급", options: uniq(rows.map(function (r) { return r.level; }), ["High", "Medium", "Low"]), test: function (r, v) { return r.level === v; }},
       {name: "status", label: "상태", options: uniq(rows.map(function (r) { return r.status; }), ["신규 발생", "판정 보류", "기존 존재", "해결"]), test: function (r, v) { return r.status === v; }},
-      {name: "cwe", label: "CWE", options: uniq(rows.map(function (r) { return r.cwe; })), test: function (r, v) { return r.cwe === v; }},
+      showCwe ? {name: "cwe", label: "CWE", options: uniq(rows.map(function (r) { return r.cwe; })), test: function (r, v) { return r.cwe === v; }}
+              : {name: "kind", label: "위험 종류", options: uniq(rows.map(function (r) { return r.kind_label; })), test: function (r, v) { return r.kind_label === v; }},
       {name: "taint", label: "외부 입력", options: ["도달", "없음"], test: function (r, v) { return !!(r.taint || {}).flow_detected === (v === "도달"); }},
       {name: "sym", label: "기호 실행", options: ["위반 (반례 있음)", "안전", "판정 보류", "미실행"], test: function (r, v) {
         var s = r.symbolic ? ({violated: "위반 (반례 있음)", holds: "안전", unknown: "판정 보류"}[r.symbolic.result]) : "미실행"; return s === v; }},
@@ -340,7 +342,8 @@ function riskTable(rows) {
     columns: [
       {label: "ID", render: function (r) { return el("b", {text: r.id}); }, cls: "nowrap"},
       {label: "등급·상태", render: function (r) { return frag([sev(r), el("br"), stat(r)]); }, cls: "nowrap"},
-      {label: "CWE", render: function (r) { return frag([el("b", {text: r.cwe}), el("br"), el("span", {class: "small muted", text: r.kind_label})]); }},
+      {label: showCwe ? "CWE" : "위험 종류", render: function (r) { return showCwe ? frag([el("b", {text: r.cwe || "-"}), el("br"), el("span", {class: "small muted", text: r.kind_label})])
+                                                               : frag([el("b", {text: r.kind_label}), el("br"), el("span", {class: "small muted", text: r.risk})]); }},
       {label: "위치", render: function (r) { return frag([code(r.func), el("br"), loc(r.file, r.line)]); }},
       {label: "위험 연산 (피연산자)", render: function (r) { return frag([code(short(r.expr, 110)), el("br"), el("span", {class: "small muted", text: "피연산자 "}), code(short(r.operand, 70))]); }},
       {label: "외부 입력 (Taint)", render: function (r) { var t = r.taint || {}; return t.flow_detected ? frag([el("b", {text: t.source}), el("br"), el("span", {class: "small", text: t.source_label})]) : el("span", {class: "muted", text: "-"}); }},
@@ -483,7 +486,7 @@ if (A) {
         ]);
         if (g.risks.length) {
           d.insertBefore(el("ul", {}, g.risks.slice(0, 20).map(function (i) { var r = A.risks[i];
-            return el("li", {}, [el("b", {text: r.id + " "}), sev(r), " ", stat(r), " ", el("b", {text: r.cwe + " " + r.kind_label}), " ", code(r.func), " ", loc(r.file, r.line), " ", code(short(r.expr, 90)),
+            return el("li", {}, [el("b", {text: r.id + " "}), sev(r), " ", stat(r), " ", el("b", {text: (r.cwe ? r.cwe + " " : "") + r.kind_label}), " ", code(r.func), " ", loc(r.file, r.line), " ", code(short(r.expr, 90)),
               el("span", {class: "small muted", text: "  " + symText(r)})]); })), d.childNodes[2]);
           d.insertBefore(el("h4", {text: "보안 취약점 " + g.risks.length + "개"}), d.childNodes[2]);
         }

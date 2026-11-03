@@ -278,6 +278,8 @@ python folder_impact.py before/ after/ -o result --rules config/security_rules.y
 python folder_impact.py before/ after/ -o result --klee --klee-include /usr/local/include   # KLEE 재현까지
 ```
 
+CWE 분류는 기본으로 표시하지 않으며, `--cwe` 를 주면 각 항목에 CWE 번호·이름을 붙입니다.
+
 판정은 정적 분석 근거입니다. `신규 발생`은 변경 후 위반이 증명되고 변경 전에는 안전했다는 뜻이고, 실제 악용 가능성(입력 경로·보안 영향)은
 반례 입력으로 재현해 확인해야 합니다.
 

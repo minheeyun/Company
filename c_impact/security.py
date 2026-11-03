@@ -156,7 +156,8 @@ def _verification(f: dict, change: Change | None) -> str:
 
 
 def analyze_security(old: Program, new: Program, cs, hits_new, hits_old, lines, rules: Rules | None = None, *,
-                     symbolic: bool = True, sym_paths: int = 64, sym_budget: float = 120.0) -> dict:
+                     symbolic: bool = True, sym_paths: int = 64, sym_budget: float = 120.0, cwe: bool = False) -> dict:
+    """cwe=False 이면 결과에서 CWE 분류(cwe, cwe_name)를 뺀다."""
     from .analysis import _Ctx, _rel, _step
 
     rules = rules or Rules()
@@ -265,6 +266,9 @@ def analyze_security(old: Program, new: Program, cs, hits_new, hits_old, lines, 
     findings.sort(key=_rank)
     for i, f in enumerate(findings, 1):
         f["id"] = f"V{i}"
+        if not cwe:
+            f.pop("cwe", None)
+            f.pop("cwe_name", None)
     counts = {s: sum(1 for f in findings if f["status_code"] == s) for s in STATUS}
     return {
         "findings": findings,

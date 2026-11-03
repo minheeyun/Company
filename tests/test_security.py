@@ -40,6 +40,7 @@ def analyze(files_old: dict, files_new: dict, **kw) -> dict:
                 p.write_text(textwrap.dedent(text), encoding="utf-8")
         cfg = BuildConfig()
         old, new = load_programs(root / "old", root / "new", cfg)
+        kw.setdefault("cwe", True)
         return run_analysis(old, new, cfg, **kw)
 
 
@@ -222,7 +223,8 @@ class FolderOutputsTests(unittest.TestCase):
             self.assertTrue((sd / p).is_file(), p)
         import json
         rep = json.loads((sd / "vulnerability_report.json").read_text(encoding="utf-8"))
-        self.assertEqual(rep["findings"][0]["cwe"], "CWE-787")
+        self.assertNotIn("cwe", rep["findings"][0])  # 기본은 CWE 분류를 표시하지 않음
+        self.assertEqual(rep["findings"][0]["kind"], "length")
         cpg = json.loads((sd / "cpg.json").read_text(encoding="utf-8"))
         types = {e[2] for e in cpg["edges"]}
         self.assertTrue({"CFG", "CDG", "REACHING_DEF"} <= types)
@@ -230,10 +232,16 @@ class FolderOutputsTests(unittest.TestCase):
             self.assertTrue((sd / "klee" / "V1" / "verify.c").is_file())
             self.assertIn("klee_assert", (sd / "klee" / "V1" / "cia_diag_inst.c").read_text(encoding="utf-8"))
         md = (out / "summary.md").read_text(encoding="utf-8")
-        self.assertIn("CWE-787", md)
+        self.assertNotIn("CWE", md)
         self.assertIn("신규 발생", md)
         html = (out / "report.html").read_text(encoding="utf-8")
-        self.assertIn("CWE-787", html)
+        self.assertNotIn("CWE-787", html)
+
+    def test_cwe_option_shows_classification(self):
+        out = self.tmp / "out2"
+        fi.main([str(self.tmp / "before"), str(self.tmp / "after"), "-o", str(out), "-q", "--cwe"])
+        self.assertIn("CWE-787", (out / "summary.md").read_text(encoding="utf-8"))
+        self.assertIn("CWE-787", (out / "report.html").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

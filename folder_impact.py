@@ -8,7 +8,7 @@ git 이 없어도 되는 폴더 비교 전용 실행기다. 내부 분석은 c_i
   3. 분석 범위: 전체 *.c (기본) 또는 변경된 .c + 변경된 헤더를 (간접) include 하는 .c 만 (--scope changed)
   4. 변경 영향 분석 (전처리 후 AST 비교 → 의존성 → 전방 슬라이싱 → 영향 함수·변수·경로·조건)
   4-1. 변경 기반 보안 취약점: CPG(변경 → 위험 연산) + Taint(외부 입력 → 위험 연산) + Symbolic Execution(z3 반례)
-       + 변경 전후 비교(신규 발생·기존 존재·해결·판정 보류) + CWE 매핑, 규칙은 config/security_rules.yaml
+       + 변경 전후 비교(신규 발생·기존 존재·해결·판정 보류), 규칙은 config/security_rules.yaml (--cwe: CWE 분류 표시)
   5. 함수별 읽기·쓰기·호출 관계가 변경 전후로 어떻게 달라졌는지 비교
   6. (선택) --explore: 결과가 달라지는 입력·상태 자동 탐색, --scenario: 지정한 SIL 시나리오 실행
 
@@ -332,8 +332,9 @@ def _risk_section(r: dict, num: str) -> list[str]:
     if not risks:
         return out + ["", "변경으로 영향받는 위험 연산·보안 검사 조건이 없습니다."]
     out.append("- " + _risk_counts(risks))
-    out += ["", "| ID | 등급 | CWE | 상태 | 위치 | 위험 연산 (피연산자) | 외부 입력 (Taint) | 기호 실행 | 원인 변경 | 검증 방법 |",
-            "|---|---|---|---|---|---|---|---|---|---|"]
+    show_cwe = any(x.get("cwe") for x in risks)
+    out += ["", "| ID | 등급 | " + ("CWE | " if show_cwe else "") + "상태 | 위치 | 위험 연산 (피연산자) | 외부 입력 (Taint) | 기호 실행 | 원인 변경 | 검증 방법 |",
+            "|---|---|" + ("---|" if show_cwe else "") + "---|---|---|---|---|---|---|"]
     for x in risks[:40]:
         t = x.get("taint") or {}
         src = f"{t.get('source')}: {t.get('source_label')}" if t.get("flow_detected") else "-"
@@ -341,12 +342,13 @@ def _risk_section(r: dict, num: str) -> list[str]:
         cause = (f"`{_c(_s(ch.get('before') or '(없음)', 50))}` → `{_c(_s(ch.get('after') or '(삭제)', 50))}`<br>"
                  f"{_c(ch.get('file', ''))}:{ch.get('line', '')}") if ch else f"`{_c(x['origin']['func'])}`"
         lvl = f"**{x['level']}**" if x["level"] == "High" else x["level"]
-        out.append(f"| {x['id']} | {lvl} | {x['cwe']} | {x['status']} | `{_c(x['func'])}`<br>{_c(x['file'])}:{x['line']} | "
+        cw = f"{x.get('cwe', '')} | " if show_cwe else ""
+        out.append(f"| {x['id']} | {lvl} | {cw}{x['status']} | `{_c(x['func'])}`<br>{_c(x['file'])}:{x['line']} | "
                    f"`{_c(_s(x['expr'], 80))}` (`{_c(_s(x['operand'], 40))}`)<br>{_c(x['kind_label'])} | {_c(src)} | "
                    f"{_c(_s(_sym_text(x), 80))} | {cause} | {_c(_s(x.get('verification', ''), 160))} |")
     if len(risks) > 40:
         out.append(f"| … | 외 {len(risks) - 40}개 ([`report.html`](report.html) '보안 취약점' 탭, "
-                   "[`security/vulnerability_report.json`](security/vulnerability_report.json)) | | | | | | | | |")
+                   "[`security/vulnerability_report.json`](security/vulnerability_report.json)) |" + " |" * (8 if show_cwe else 7))
     tools = sec.get("tools", {})
     if tools:
         out += ["", "- 외부 도구 입력: Joern `security/joern/taint.sc`, CodeQL `security/codeql/ChangeTaint.ql`, "
@@ -765,7 +767,7 @@ def run(args) -> int:
         log("    보안 취약점 분석 (CPG · Taint · Symbolic Execution)...")
         analysis = run_analysis(old, new, cfg, k=args.context_depth, entries=args.entry, isr=args.isr,
                                 sil_cycles=args.cycles, rules=rules, symbolic=not args.no_symbolic,
-                                sym_paths=args.sym_paths, sym_budget=args.sym_budget)
+                                sym_paths=args.sym_paths, sym_budget=args.sym_budget, cwe=args.cwe)
         summary["outputs"] += security_outputs(analysis, out / "security", new_dir, cfg, rules, args)
 
         log("4/5 의존성 비교 중...")
@@ -865,6 +867,7 @@ def main(argv: list[str] | None = None) -> int:
     sec = ap.add_argument_group("보안 취약점 분석 (CPG + Taint + Symbolic Execution)")
     sec.add_argument("--rules", help="Source·Sink·보안 검사 규칙 (YAML·JSON). 기본: config/security_rules.yaml")
     sec.add_argument("--no-symbolic", action="store_true", help="기호 실행(z3) 생략")
+    sec.add_argument("--cwe", action="store_true", help="보안 항목에 CWE 분류 표시 (기본: 표시 안 함)")
     sec.add_argument("--sym-paths", type=int, default=64, help="위험 연산 하나당 기호 실행 최대 경로 수 (기본 64)")
     sec.add_argument("--sym-budget", type=float, default=180.0, help="기호 실행 전체 시간 한도(초, 기본 180)")
     sec.add_argument("--cpg-export", choices=["impact", "all", "none"], default="impact",

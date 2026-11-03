@@ -284,19 +284,22 @@ def _risks_section(risks: list[dict]) -> list[str]:
            "(기호 실행)을 확인한 뒤 변경 전 코드와 비교한 결과입니다. 판정은 정적 분석 근거이며 재현 확인이 필요합니다.", ""]
     if not risks:
         return out + ["변경으로 영향받는 위험 연산·보안 검사 조건이 없습니다."]
-    out += ["| ID | 등급 | CWE | 상태 | 위치 | 위험 연산 | 피연산자 | 외부 입력 | 기호 실행 | 근거 |",
-            "|---|---|---|---|---|---|---|---|---|---|"]
+    show_cwe = any(x.get("cwe") for x in risks)
+    out += ["| ID | 등급 | " + ("CWE | " if show_cwe else "") + "상태 | 위치 | 위험 연산 | 피연산자 | 외부 입력 | 기호 실행 | 근거 |",
+            "|---|---|" + ("---|" if show_cwe else "") + "---|---|---|---|---|---|---|"]
     for x in risks:
         t = x.get("taint") or {}
         sym = x.get("symbolic") or {}
         cex = ", ".join(f"{k}={v}" for k, v in (sym.get("counterexample") or {}).items())
         symt = (sym.get("result", "") + (f" ({cex})" if cex else "")) if sym else (x.get("proof") or "-")
-        out.append(f"| {x.get('id', '')} | {x.get('level', '')} | {x.get('cwe', '')} | {x.get('status', '')} | "
+        cw = f"{x.get('cwe', '')} | " if show_cwe else ""
+        out.append(f"| {x.get('id', '')} | {x.get('level', '')} | {cw}{x.get('status', '')} | "
                    f"`{_cell(x['func'])}` {x['file']}:{x['line']} | {_code(x['expr'])} | {_code(x['operand'])} | "
                    f"{_cell(t.get('source', '-') if t.get('flow_detected') else '-')} | {_cell(symt)} | {_cell(x['evidence'])} |")
     out += ["", "### 항목별 근거", ""]
     for x in risks:
-        out.append(f"**{x.get('id', '')}** {x.get('level', '')} · {x.get('cwe', '')} {x.get('cwe_name', '')} · {x.get('status', '')} — "
+        cw = f"{x['cwe']} {x.get('cwe_name', '')} · " if x.get("cwe") else ""
+        out.append(f"**{x.get('id', '')}** {x.get('level', '')} · {cw}{x.get('status', '')} · {x.get('kind_label', '')} — "
                    f"`{_cell(x['func'])}` ({x['file']}:{x['line']}) {_code(x['expr'])}")
         out.append("")
         ch = x.get("change")
@@ -424,7 +427,7 @@ def terminal_summary(r: dict) -> str:
         out.append("[보안 취약점]")
         for x in r["risks"][:30]:
             ev = f"  ({x['evidence']})" if x["evidence"] else ""
-            out.append(f"  {x.get('id', '')} {x.get('level', '')} {x.get('cwe', '')} {x.get('status', '')}  {x['file']}:{x['line']} "
+            out.append(f"  {x.get('id', '')} {x.get('level', '')} {x.get('cwe') or x.get('kind_label', '')} {x.get('status', '')}  {x['file']}:{x['line']} "
                        f"{x['func']}  {x['expr']}{ev}")
         if len(r["risks"]) > 30:
             out.append(f"  … 외 {len(r['risks']) - 30}개")
