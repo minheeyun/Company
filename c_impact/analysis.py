@@ -12,6 +12,7 @@ from .frontend import BuildConfig, SourceLines, discover_sources, load_version
 from .program import Program, display_path, load_extern_model, overlaps
 from .sil import _typename
 from .slicer import Hit, forward_slice, path_to
+from .taint import find_risks
 
 ISR_PATTERN = re.compile(r"(isr|irq|interrupt|handler)", re.I)
 
@@ -471,6 +472,7 @@ def run_analysis(old: Program, new: Program, cfg: BuildConfig, *, k: int = 2, en
     items = _merge_items(_items_for(_Ctx(new, hits_new, cs, "new", lines)),
                          _items_for(_Ctx(old, hits_old, cs, "old", lines)))
     entry_rows, shared = _entry_view(new, items, entries, isr)
+    risks = find_risks(_Ctx(new, hits_new, cs, "new", lines), old)
 
     affected_funcs = defaultdict(lambda: {"items": [], "versions": set()})
     for prog, hits, ver in ((new, hits_new, "new"), (old, hits_old, "old")):
@@ -513,9 +515,11 @@ def run_analysis(old: Program, new: Program, cfg: BuildConfig, *, k: int = 2, en
             "affected_nodes": {"old": len(hits_old), "new": len(hits_new)},
             "affected_functions": len(affected_funcs),
             "items": len(items),
+            "risks": len(risks),
         },
         "changes": _changes_json(cs, old, new, lines),
         "items": items,
+        "risks": risks,
         "functions": [
             {"func": f, "items": sorted(set(v["items"])), "versions": sorted(v["versions"])}
             for f, v in sorted(affected_funcs.items())

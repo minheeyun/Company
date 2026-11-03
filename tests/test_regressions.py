@@ -128,5 +128,60 @@ class StructFieldAdditionTests(unittest.TestCase):
         self.assertIn(("F", "h"), {(i["func_display"], i["name"]) for i in r["items"]})
 
 
+class TaintRiskTests(unittest.TestCase):
+    T = "typedef unsigned char U8; typedef unsigned short U16; typedef unsigned int U32;\n"
+    OLD = T + """
+U8 g_buf[10]; U16 g_div; U8 g_idx; U32 g_out32; U8 g_shift; U32 g_lim;
+void memcpy_x(void *d, const void *s, U32 n);
+U8 dst[16]; U8 srcb[16];
+void SetIdx(U8 v) { g_idx = v; }
+void A(U8 i) {
+  if (i < 10U) { g_buf[i] = 1U; }
+  g_buf[3] = 2U;
+  g_out32 = 1000U / g_div;
+  g_out32 = 1U << g_shift;
+  memcpy_x(dst, srcb, g_lim);
+}
+void B(void) { if (g_div != 0U) { g_out32 = 100U / g_div; } }
+"""
+
+    def risks(self, new):
+        r = analyze({"a.c": self.OLD}, {"a.c": new})
+        return {(x["func"], x["kind"], x["operand"]): x for x in r["risks"]}
+
+    def test_constant_index_beyond_array_is_certain(self):
+        rs = self.risks(self.OLD.replace("g_buf[3] = 2U", "g_buf[12] = 2U"))
+        x = rs[("A", "index", "12")]
+        self.assertEqual(x["severity"], "확실한 위험")
+        self.assertEqual(x["how"], "변경된 연산")
+        self.assertIn("배열 크기 10", x["evidence"])
+
+    def test_changed_guard_allowing_out_of_range_is_certain(self):
+        rs = self.risks(self.OLD.replace("if (i < 10U)", "if (i <= 10U)"))
+        x = rs[("A", "index", "i")]
+        self.assertEqual(x["severity"], "확실한 위험")
+        self.assertIn("바뀐 조건", x["evidence"])
+
+    def test_tainted_operands_reach_sinks_and_guarded_divisor_is_safe(self):
+        new = self.OLD.replace("void SetIdx(U8 v) { g_idx = v; }",
+                               "void SetIdx(U8 v) { g_idx = v; g_div = v; g_shift = v; g_lim = v; }")
+        rs = self.risks(new)
+        for key in (("A", "div", "g_div"), ("A", "shift", "g_shift"), ("A", "length", "g_lim")):
+            self.assertIn(key, rs)
+            self.assertEqual(rs[key]["how"], "값 전달")
+            self.assertEqual(rs[key]["path"][0]["func"], "SetIdx")
+        self.assertNotIn(("B", "div", "g_div"), rs)  # if (g_div != 0U) 안의 나눗셈은 안전
+
+    def test_unrelated_operand_is_not_reported(self):
+        # 배열 원소 값만 바뀌면 인덱스 위험이 아니다
+        rs = self.risks(self.OLD.replace("g_buf[3] = 2U", "g_buf[3] = 7U"))
+        self.assertEqual([k for k in rs if k[1] == "index"], [])
+
+    def test_narrowing_of_changed_expression(self):
+        rs = self.risks(self.OLD.replace("g_idx = v;", "g_idx = v + 1U;"))
+        x = rs[("SetIdx", "narrow", "v + 1U")]
+        self.assertIn("0..255", x["evidence"])
+
+
 if __name__ == "__main__":
     unittest.main()

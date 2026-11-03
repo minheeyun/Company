@@ -137,6 +137,9 @@ def render_md(r: dict) -> str:
                f"영향 변수·출력 **{len(items)}개**" + (f" (실행으로 차이 확인 {confirmed}개)" if has_sil else ""))
     if r["excluded"]["parse_errors"]:
         out.append(f"- ⚠ 파싱하지 못한 파일 {len(r['excluded']['parse_errors'])}개가 있습니다 (7절). 해당 파일의 영향은 빠져 있습니다.")
+    risks = r.get("risks", [])
+    n_cert = sum(1 for x in risks if x["severity"] == "확실한 위험")
+    out.append(f"- 위험 연산 도달: 확실한 위험 **{n_cert}개**, 위험 후보 {len(risks) - n_cert}개 (1-1절)")
     out.append("- 결과는 **정적 분석상 영향 후보**입니다. 동작 차이가 의도된 변경인지 결함인지는 별도로 판단해야 합니다.")
 
     out += ["", "## 1. 변경 위치", "",
@@ -148,6 +151,7 @@ def render_md(r: dict) -> str:
     if not r["changes"]:
         out.append("| - | - | - | - | - | - | - | 변경 없음 |")
 
+    out += _risks_section(risks)
     out += _items_section(items, "## 2. 영향받는 함수·변수", status=has_sil)
     out += _paths_section(items, "## 3. 영향 전달 경로", "변경 지점")
     out += _entries_section(r, "## 4. 진입점(태스크·ISR·콜백) 관점")
@@ -270,6 +274,35 @@ def _paths_section(items: list[dict], title: str, origin: str) -> list[str]:
     return out
 
 
+def _risks_section(risks: list[dict]) -> list[str]:
+    out = ["", "## 1-1. 위험 연산 도달 (Taint 분석)", "",
+           "변경 지점에서 퍼진 영향이 위험 연산의 위험한 자리(배열 인덱스, 분모, 시프트 양, 복사 길이, 좁아지는 변환, 포인터, "
+           "반복 조건)에 닿는 곳입니다. 확실한 위험은 상수나 바뀐 조건 구간으로 위반이 증명된 것입니다 (변경 후 코드 기준).", ""]
+    if not risks:
+        return out + ["변경 영향이 위험 연산의 위험한 자리에 닿는 곳이 없습니다."]
+    out += ["| # | 판정 | 위험 종류 | 위치 | 위험 연산 | 위험 피연산자 | 판정 방식 | 근거 | 원인 변경 |", "|---|---|---|---|---|---|---|---|---|"]
+    for i, x in enumerate(risks, 1):
+        o = x["origin"]
+        how = x["how"] + (f" (`{_cell(', '.join(x['values']))}`)" if x["values"] else "")
+        out.append(f"| R{i} | {x['severity']} | {x['kind_label']} | `{_cell(x['func'])}` {x['file']}:{x['line']} | {_code(x['expr'])} | "
+                   f"{_code(x['operand'])} | {how} | {_cell(x['evidence'])} | `{_cell(o['func'])}` {o['file']}:{o['line']} |")
+    out += ["", "### 위험 연산까지의 전달 경로와 조건", ""]
+    for i, x in enumerate(risks, 1):
+        out.append(f"**R{i}** {x['severity']} · {x['kind_label']} — `{_cell(x['func'])}` ({x['file']}:{x['line']}) {_code(x['expr'])}")
+        out.append("")
+        if x["conditions"]:
+            out.append("조건: " + "; ".join(_code(c) for c in x["conditions"]))
+            out.append("")
+        n = 0
+        for stp in x["path"]:
+            if stp["kind"] in ("actual_out", "nop", "exit"):
+                continue
+            n += 1
+            out.append(f"{n}. {_arrow(stp['edge'])} `{_cell(stp['func'])}` {stp['file']}:{stp['line']} `{_cell(stp['src'] or stp['text'])}`")
+        out.append("")
+    return out
+
+
 def _entries_section(r: dict, title: str) -> list[str]:
     out = [title, "",
            "호출자가 없는 함수와 `--entry`로 지정한 함수를 진입점으로 봅니다. 분석용 main() 에서 호출하지 않는 함수도 빠짐없이 포함됩니다.", "",
@@ -361,6 +394,14 @@ def terminal_summary(r: dict) -> str:
             body = f"{c['old']}  →  {c['new']}" if c["old"] and c["new"] else (c["new"] or c["old"])
             det = f"   ({c['detail']})" if c["detail"] else ""
             out.append(f"  {c['file']}:{c['line']} {c['func']} [{KIND_KO.get(c['kind'], c['kind'])}] {body}{det}")
+        out.append("")
+    if r.get("risks"):
+        out.append("[위험 연산 도달]")
+        for x in r["risks"][:30]:
+            ev = f"  ({x['evidence']})" if x["evidence"] else ""
+            out.append(f"  {x['severity']}  {x['kind_label']}  {x['file']}:{x['line']} {x['func']}  {x['expr']}  [{x['how']}]{ev}")
+        if len(r["risks"]) > 30:
+            out.append(f"  … 외 {len(r['risks']) - 30}개")
         out.append("")
     if r["items"]:
         out.append("[영향받는 함수·변수]")

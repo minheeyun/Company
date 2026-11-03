@@ -7,6 +7,7 @@ git 이 없어도 되는 폴더 비교 전용 실행기다. 내부 분석은 c_i
   2. 헤더가 있는 폴더를 모두 include 경로로 자동 등록 (-I 직접 지정, compile_commands.json 도 가능)
   3. 분석 범위: 전체 *.c (기본) 또는 변경된 .c + 변경된 헤더를 (간접) include 하는 .c 만 (--scope changed)
   4. 변경 영향 분석 (전처리 후 AST 비교 → 의존성 → 전방 슬라이싱 → 영향 함수·변수·경로·조건)
+  4-1. 위험 연산 도달 (Taint 분석: 변경 지점 → 배열 인덱스·분모·시프트·복사 길이·좁아지는 변환·포인터·반복 조건)
   5. 함수별 읽기·쓰기·호출 관계가 변경 전후로 어떻게 달라졌는지 비교
   6. (선택) --explore: 결과가 달라지는 입력·상태 자동 탐색, --scenario: 지정한 SIL 시나리오 실행
 
@@ -269,7 +270,7 @@ def change_groups(r: dict) -> tuple[list[dict], dict[tuple[str, str], dict]]:
     groups: dict[tuple[str, str], dict] = {}
     for c in changes:
         g = groups.setdefault((c["func"], c["file"]),
-                              {"kinds": defaultdict(int), "changes": [], "items": [], "funcs": set()})
+                              {"kinds": defaultdict(int), "changes": [], "items": [], "funcs": set(), "risks": []})
         g["kinds"][report.KIND_KO.get(c["kind"], c["kind"])] += 1
         g["changes"].append(c)
     for it in r["items"]:
@@ -277,7 +278,54 @@ def change_groups(r: dict) -> tuple[list[dict], dict[tuple[str, str], dict]]:
         if g is not None:
             g["items"].append(it)
             g["funcs"].add(it["func_display"])
+    for rk in r.get("risks", []):
+        g = groups.get((rk["origin"]["func"], rk["origin"]["file"]))
+        if g is not None:
+            g["risks"].append(rk)
     return changes, groups
+
+
+def _risk_counts(risks: list[dict]) -> str:
+    n_c = sum(1 for x in risks if x["severity"] == "확실한 위험")
+    return (f"**확실한 위험 {n_c}개**" if n_c else "확실한 위험 0개") + f" · 위험 후보 {len(risks) - n_c}개"
+
+
+def _path_short(path: list[dict]) -> str:
+    steps = [f"{p['func']}:{p['line']}" for p in path if p["kind"] not in ("actual_out", "nop", "exit", "entry")]
+    if len(steps) > 6:
+        steps = steps[:3] + ["…"] + steps[-2:]
+    return " → ".join(steps)
+
+
+def _risk_section(r: dict, num: str) -> list[str]:
+    risks = r.get("risks", [])
+    out = ["", f"### {num}. 위험 연산 도달 (Taint 분석)", "",
+           "변경 지점에서 퍼진 영향이 위험 연산의 위험한 자리(배열 인덱스, 분모, 시프트 양, 복사 길이, 좁아지는 변환, "
+           "포인터, 반복 조건)에 닿는 곳입니다. **확실한 위험**은 상수나 바뀐 조건 구간으로 위반이 증명된 것이고, "
+           "감싸는 조건·자료형 범위로 안전이 증명된 연산은 뺐습니다 (변경 후 코드 기준).", ""]
+    if not risks:
+        return out + ["변경 영향이 위험 연산의 위험한 자리에 닿는 곳이 없습니다."]
+    kinds = defaultdict(int)
+    for x in risks:
+        kinds[x["kind_label"]] += 1
+    out.append(_risk_counts(risks) + " — " + " · ".join(f"{k} {v}" for k, v in kinds.items()))
+    out += ["", "| 판정 | 위험 종류 | 위치 | 위험 연산 (위험 피연산자) | 판정 방식·근거 | 차이가 발생하는 조건 | 원인 변경 | 전달 경로 |",
+            "|---|---|---|---|---|---|---|---|"]
+    for x in risks[:40]:
+        cond = "<br>".join(_c(_s(c, 100)) for c in x["conditions"][:2]) or "모든 실행"
+        if len(x["conditions"]) > 2:
+            cond += f"<br>외 {len(x['conditions']) - 2}개"
+        basis = x["how"] + (f": 영향받은 값 `{_c(', '.join(x['values']))}`" if x["values"] else "")
+        if x["evidence"]:
+            basis += f"<br>{_c(_s(x['evidence'], 160))}"
+        sev = f"**{x['severity']}**" if x["severity"] == "확실한 위험" else x["severity"]
+        o = x["origin"]
+        out.append(f"| {sev} | {x['kind_label']} | `{_c(x['func'])}`<br>{_c(x['file'])}:{x['line']} | "
+                   f"`{_c(_s(x['expr'], 100))}` (`{_c(_s(x['operand'], 60))}`) | {basis} | {cond} | "
+                   f"`{_c(o['func'])}` ({_c(o['file'])}:{o['line']}) | {_c(_path_short(x['path']))} |")
+    if len(risks) > 40:
+        out.append(f"| … | 외 {len(risks) - 40}개 ([`report.html`](report.html) '위험 연산 도달' 탭) | | | | | | |")
+    return out
 
 
 def _impact_sections(r: dict) -> list[str]:
@@ -290,17 +338,21 @@ def _impact_sections(r: dict) -> list[str]:
                         else f"`{_c(_s(c['new'] or c['old']))}`" for c in g["changes"][:2]]
 
     out += ["### 2-1. 변경된 함수별 요약", "",
-            "| 변경 함수 | 파일 | 변경 내용 | 영향 함수 | 영향 변수·출력 | 우선 확인할 영향 |", "|---|---|---|---|---|---|"]
+            "| 변경 함수 | 파일 | 변경 내용 | 영향 함수 | 영향 변수·출력 | 위험 연산 | 우선 확인할 영향 |", "|---|---|---|---|---|---|---|"]
     for (func, file), g in sorted(groups.items(), key=lambda x: (x[0][1], x[0][0])):
         kinds = " · ".join(f"{k} {v}" for k, v in g["kinds"].items())
         top = _ranked(g["items"], shared)[:4]
         tops = "<br>".join(f"{_PRIORITY[_priority(it, shared)]}: `{_c(it['name'])}`" for it in top) or "-"
+        n_c = sum(1 for x in g["risks"] if x["severity"] == "확실한 위험")
+        rk = (f"**확실 {n_c}**" + (f" · 후보 {len(g['risks']) - n_c}" if len(g["risks"]) > n_c else "")) if n_c \
+            else (f"후보 {len(g['risks'])}" if g["risks"] else "-")
         out.append(f"| `{_c(func)}` | {_c(file)} | {kinds}<br>{'<br>'.join(g['samples'])} | {len(g['funcs'])} | "
-                   f"{len(g['items'])} | {tops} |")
+                   f"{len(g['items'])} | {rk} | {tops} |")
+    out += _risk_section(r, "2-2")
 
     key_items = _ranked(r["items"], shared)
     n_key = sum(1 for it in r["items"] if _priority(it, shared) < 4)
-    out += ["", "### 2-2. 우선 확인할 영향 (외부 출력 → 레지스터 → 여러 진입점 공유 변수 → 반환값)", ""]
+    out += ["", "### 2-3. 우선 확인할 영향 (외부 출력 → 레지스터 → 여러 진입점 공유 변수 → 반환값)", ""]
     if key_items:
         counts = defaultdict(int)
         for it in key_items:
@@ -328,13 +380,13 @@ def _impact_sections(r: dict) -> list[str]:
 
     notes = r["excluded"].get("no_effect_changes") or []
     if notes:
-        out += ["", "### 2-3. 동작 변화 없음으로 본 변경", "",
+        out += ["", "### 2-4. 동작 변화 없음으로 본 변경", "",
                 "바뀌었지만 동작에는 영향이 없다고 보고 영향 분석 시작점에서 뺀 변경입니다.", ""]
         out += [f"- {_c(_s(x, 400))}" for x in notes[:20]]
         if len(notes) > 20:
             out.append(f"- 외 {len(notes) - 20}개 (상세 보고서 '분석에서 제외되거나 가정한 구성' 절)")
 
-    out += ["", f"### 2-{4 if notes else 3}. 변경 위치", "",
+    out += ["", f"### 2-{5 if notes else 4}. 변경 위치", "",
             "| 위치 | 함수 | 종류 | 변경 전 → 변경 후 | 비고 |", "|---|---|---|---|---|"]
     for c in changes[:60]:
         body = f"`{_c(_s(c['old']))}` → `{_c(_s(c['new']))}`" if c["old"] and c["new"] else f"`{_c(_s(c['new'] or c['old']))}`"
@@ -381,7 +433,8 @@ def render_summary(s: dict) -> str:
     else:
         st = r["stats"]
         out.append(f"변경 지점 **{len(r['changes'])}개** · 영향 함수 **{st['affected_functions']}개** · "
-                   f"영향 변수·출력 **{len(r['items'])}개** — 상세: [`impact/impact_report.md`](impact/impact_report.md)")
+                   f"영향 변수·출력 **{len(r['items'])}개** · 위험 연산 도달: {_risk_counts(r.get('risks', []))} — "
+                   "상세: [`impact/impact_report.md`](impact/impact_report.md)")
         out.append("")
         out += _impact_sections(r)
 
@@ -478,6 +531,15 @@ def html_payload(s: dict) -> dict:
     chg = [{"file": c["file"], "line": c["line"], "func": c["func"], "kind": report.KIND_KO.get(c["kind"], c["kind"]),
             "old": c["old"], "new": c["new"], "detail": c["detail"], "src": c.get("src", "")} for c in changes]
     cidx = {id(c): i for i, c in enumerate(changes)}
+    risks = []
+    for x in r.get("risks", []):
+        risks.append({**{k: x[k] for k in ("severity", "kind", "kind_label", "risk", "how", "func", "file", "line", "src",
+                                          "expr", "operand", "values", "evidence", "conditions")},
+                      "origin": x["origin"]["func"], "origin_file": x["origin"]["file"], "origin_line": x["origin"]["line"],
+                      "path": [{"arrow": report._arrow(st["edge"]), "func": st["func"], "file": st["file"],
+                                "line": st["line"], "text": st["src"] or st["text"]}
+                               for st in x["path"] if st["kind"] not in ("actual_out", "nop", "exit")]})
+    ridx = {(x["file"], x["line"], x["kind"], x["operand"]): i for i, x in enumerate(risks)}
     grp = []
     for (func, file), g in sorted(groups.items(), key=lambda x: (x[0][1], x[0][0])):
         grp.append({
@@ -486,12 +548,13 @@ def html_payload(s: dict) -> dict:
             "items": sorted(idx_of[id(it)] for it in g["items"]),
             "top": [idx_of[id(it)] for it in _ranked(g["items"], shared)[:4]],
             "n_funcs": len(g["funcs"]),
+            "risks": [ridx[(x["file"], x["line"], x["kind"], x["operand"])] for x in g["risks"]],
         })
     ex = r["excluded"]
     data["analysis"] = {
         "stats": {"changes": len(r["changes"]), "affected_functions": r["stats"]["affected_functions"],
                   "items": len(r["items"])},
-        "groups": grp, "changes": chg, "items": items,
+        "groups": grp, "changes": chg, "items": items, "risks": risks,
         "notes": ex.get("no_effect_changes") or [],
         "entries": r.get("entries", []), "shared": r.get("shared", []),
         "excluded": {k: ex.get(k) for k in ("parse_errors", "extern_functions", "unresolved_calls",
