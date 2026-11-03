@@ -64,7 +64,8 @@ def write_outputs(result: dict, out_dir: Path, formats: set[str], sil_template: 
     written = []
     if "json" in formats:
         p = out_dir / "impact.json"
-        p.write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        p.write_text(json.dumps({k: v for k, v in result.items() if not k.startswith("_")},
+                                ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         written.append(p)
     if "md" in formats:
         p = out_dir / "impact_report.md"
@@ -87,6 +88,8 @@ def _arrow(edge) -> str:
     kind, label = edge
     if kind == "seed":
         return "변경 지점"
+    if kind == "source":
+        return f"[외부 입력 {label}]" if label else "[외부 입력]"
     if kind in ("data", "memory"):
         return f"[{label}]"
     if kind == "control":
@@ -138,8 +141,9 @@ def render_md(r: dict) -> str:
     if r["excluded"]["parse_errors"]:
         out.append(f"- ⚠ 파싱하지 못한 파일 {len(r['excluded']['parse_errors'])}개가 있습니다 (7절). 해당 파일의 영향은 빠져 있습니다.")
     risks = r.get("risks", [])
-    n_cert = sum(1 for x in risks if x["severity"] == "확실한 위험")
-    out.append(f"- 위험 연산 도달: 확실한 위험 **{n_cert}개**, 위험 후보 {len(risks) - n_cert}개 (1-1절)")
+    n_high = sum(1 for x in risks if x.get("level") == "High" and x.get("status_code") != "FIXED")
+    n_new = sum(1 for x in risks if x.get("status_code") == "NEW_REGRESSION")
+    out.append(f"- 보안 취약점: High **{n_high}개**, 신규 발생 **{n_new}개**, 전체 {len(risks)}개 (1-1절)")
     out.append("- 결과는 **정적 분석상 영향 후보**입니다. 동작 차이가 의도된 변경인지 결함인지는 별도로 판단해야 합니다.")
 
     out += ["", "## 1. 변경 위치", "",
@@ -275,30 +279,51 @@ def _paths_section(items: list[dict], title: str, origin: str) -> list[str]:
 
 
 def _risks_section(risks: list[dict]) -> list[str]:
-    out = ["", "## 1-1. 위험 연산 도달 (Taint 분석)", "",
-           "변경 지점에서 퍼진 영향이 위험 연산의 위험한 자리(배열 인덱스, 분모, 시프트 양, 복사 길이, 좁아지는 변환, 포인터, "
-           "반복 조건)에 닿는 곳입니다. 확실한 위험은 상수나 바뀐 조건 구간으로 위반이 증명된 것입니다 (변경 후 코드 기준).", ""]
+    out = ["", "## 1-1. 변경 기반 보안 취약점 (CPG + Taint + Symbolic Execution)", "",
+           "변경점에서 영향이 닿는 위험 연산·보안 검사 조건을 찾고, 외부 입력(Source) 도달 여부(Taint)와 안전 속성 위반 입력"
+           "(기호 실행)을 확인한 뒤 변경 전 코드와 비교한 결과입니다. 판정은 정적 분석 근거이며 재현 확인이 필요합니다.", ""]
     if not risks:
-        return out + ["변경 영향이 위험 연산의 위험한 자리에 닿는 곳이 없습니다."]
-    out += ["| # | 판정 | 위험 종류 | 위치 | 위험 연산 | 위험 피연산자 | 판정 방식 | 근거 | 원인 변경 |", "|---|---|---|---|---|---|---|---|---|"]
-    for i, x in enumerate(risks, 1):
-        o = x["origin"]
-        how = x["how"] + (f" (`{_cell(', '.join(x['values']))}`)" if x["values"] else "")
-        out.append(f"| R{i} | {x['severity']} | {x['kind_label']} | `{_cell(x['func'])}` {x['file']}:{x['line']} | {_code(x['expr'])} | "
-                   f"{_code(x['operand'])} | {how} | {_cell(x['evidence'])} | `{_cell(o['func'])}` {o['file']}:{o['line']} |")
-    out += ["", "### 위험 연산까지의 전달 경로와 조건", ""]
-    for i, x in enumerate(risks, 1):
-        out.append(f"**R{i}** {x['severity']} · {x['kind_label']} — `{_cell(x['func'])}` ({x['file']}:{x['line']}) {_code(x['expr'])}")
+        return out + ["변경으로 영향받는 위험 연산·보안 검사 조건이 없습니다."]
+    out += ["| ID | 등급 | CWE | 상태 | 위치 | 위험 연산 | 피연산자 | 외부 입력 | 기호 실행 | 근거 |",
+            "|---|---|---|---|---|---|---|---|---|---|"]
+    for x in risks:
+        t = x.get("taint") or {}
+        sym = x.get("symbolic") or {}
+        cex = ", ".join(f"{k}={v}" for k, v in (sym.get("counterexample") or {}).items())
+        symt = (sym.get("result", "") + (f" ({cex})" if cex else "")) if sym else (x.get("proof") or "-")
+        out.append(f"| {x.get('id', '')} | {x.get('level', '')} | {x.get('cwe', '')} | {x.get('status', '')} | "
+                   f"`{_cell(x['func'])}` {x['file']}:{x['line']} | {_code(x['expr'])} | {_code(x['operand'])} | "
+                   f"{_cell(t.get('source', '-') if t.get('flow_detected') else '-')} | {_cell(symt)} | {_cell(x['evidence'])} |")
+    out += ["", "### 항목별 근거", ""]
+    for x in risks:
+        out.append(f"**{x.get('id', '')}** {x.get('level', '')} · {x.get('cwe', '')} {x.get('cwe_name', '')} · {x.get('status', '')} — "
+                   f"`{_cell(x['func'])}` ({x['file']}:{x['line']}) {_code(x['expr'])}")
         out.append("")
+        ch = x.get("change")
+        if ch:
+            out.append(f"- 변경: {ch['file']}:{ch['line']} {_code(ch.get('before') or '(없음)')} → {_code(ch.get('after') or '(삭제)')}")
         if x["conditions"]:
-            out.append("조건: " + "; ".join(_code(c) for c in x["conditions"]))
-            out.append("")
+            out.append("- 발생 조건: " + "; ".join(_code(c) for c in x["conditions"]))
+        sym = x.get("symbolic")
+        if sym:
+            out.append(f"- 기호 실행: {sym.get('result')} — 속성 `{sym.get('property')}` · {sym.get('detail', '')}")
+        b = x.get("baseline") or {}
+        if b:
+            out.append(f"- 변경 전: {b.get('old_state_label', '')} {b.get('old_location', '')} {_cell(b.get('old_evidence', ''))}")
+        out.append(f"- 검증 방법: {_cell(x.get('verification', ''))}")
+        out.append("- 근거 경로 (변경 → 위험 연산):")
         n = 0
         for stp in x["path"]:
             if stp["kind"] in ("actual_out", "nop", "exit"):
                 continue
             n += 1
-            out.append(f"{n}. {_arrow(stp['edge'])} `{_cell(stp['func'])}` {stp['file']}:{stp['line']} `{_cell(stp['src'] or stp['text'])}`")
+            out.append(f"  {n}. {_arrow(stp['edge'])} `{_cell(stp['func'])}` {stp['file']}:{stp['line']} `{_cell(stp['src'] or stp['text'])}`")
+        t = x.get("taint") or {}
+        if t.get("flow_detected"):
+            out.append(f"- 근거 경로 (외부 입력 {t.get('source')}: {_cell(t.get('source_label', ''))} → 위험 연산):")
+            for i, stp in enumerate([z for z in t.get("path", []) if z["kind"] not in ("actual_out", "nop", "exit")], 1):
+                arrow = "[외부 입력]" if stp["edge"] and stp["edge"][0] == "source" else _arrow(stp["edge"])
+                out.append(f"  {i}. {arrow} `{_cell(stp['func'])}` {stp['file']}:{stp['line']} `{_cell(stp['src'] or stp['text'])}`")
         out.append("")
     return out
 
@@ -396,10 +421,11 @@ def terminal_summary(r: dict) -> str:
             out.append(f"  {c['file']}:{c['line']} {c['func']} [{KIND_KO.get(c['kind'], c['kind'])}] {body}{det}")
         out.append("")
     if r.get("risks"):
-        out.append("[위험 연산 도달]")
+        out.append("[보안 취약점]")
         for x in r["risks"][:30]:
             ev = f"  ({x['evidence']})" if x["evidence"] else ""
-            out.append(f"  {x['severity']}  {x['kind_label']}  {x['file']}:{x['line']} {x['func']}  {x['expr']}  [{x['how']}]{ev}")
+            out.append(f"  {x.get('id', '')} {x.get('level', '')} {x.get('cwe', '')} {x.get('status', '')}  {x['file']}:{x['line']} "
+                       f"{x['func']}  {x['expr']}{ev}")
         if len(r["risks"]) > 30:
             out.append(f"  … 외 {len(r['risks']) - 30}개")
         out.append("")

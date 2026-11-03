@@ -132,7 +132,7 @@ class TaintRiskTests(unittest.TestCase):
     T = "typedef unsigned char U8; typedef unsigned short U16; typedef unsigned int U32;\n"
     OLD = T + """
 U8 g_buf[10]; U16 g_div; U8 g_idx; U32 g_out32; U8 g_shift; U32 g_lim;
-void memcpy_x(void *d, const void *s, U32 n);
+void *memcpy(void *d, const void *s, U32 n);
 U8 dst[16]; U8 srcb[16];
 void SetIdx(U8 v) { g_idx = v; }
 void A(U8 i) {
@@ -140,7 +140,7 @@ void A(U8 i) {
   g_buf[3] = 2U;
   g_out32 = 1000U / g_div;
   g_out32 = 1U << g_shift;
-  memcpy_x(dst, srcb, g_lim);
+  memcpy(dst, srcb, g_lim);
 }
 void B(void) { if (g_div != 0U) { g_out32 = 100U / g_div; } }
 """

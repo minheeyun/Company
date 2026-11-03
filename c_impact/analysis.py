@@ -12,7 +12,7 @@ from .frontend import BuildConfig, SourceLines, discover_sources, load_version
 from .program import Program, display_path, load_extern_model, overlaps
 from .sil import _typename
 from .slicer import Hit, forward_slice, path_to
-from .taint import find_risks
+from .security import analyze_security, strip_internal
 
 ISR_PATTERN = re.compile(r"(isr|irq|interrupt|handler)", re.I)
 
@@ -26,6 +26,11 @@ ASSUMPTIONS = [
     "호출 문맥은 길이 {k} 까지 구분합니다. 포인터 인자를 통한 쓰기는 문맥을 구분하지 않습니다.",
     "실제 인터럽트 지연·물리적 타이밍·DMA 는 정적 분석과 SIL 로 확정할 수 없습니다.",
 ]
+
+
+def public(result: dict) -> dict:
+    """JSON 으로 내보낼 결과 ('_' 로 시작하는 내부 값 제외)."""
+    return {k: v for k, v in result.items() if not k.startswith("_")}
 
 
 def _rel(prog: Program, path: str) -> str:
@@ -462,7 +467,8 @@ def sil_template(new: Program, cs: ChangeSet, items: list[dict], entries: list[s
 
 
 def run_analysis(old: Program, new: Program, cfg: BuildConfig, *, k: int = 2, entries: list[str] | None = None,
-                 isr: list[str] | None = None, sil_cycles: int = 3) -> dict:
+                 isr: list[str] | None = None, sil_cycles: int = 3, rules=None, symbolic: bool = True,
+                 sym_paths: int = 64, sym_budget: float = 120.0) -> dict:
     entries = entries or []
     isr = isr or []
     cs = compute_changes(old, new)
@@ -472,7 +478,12 @@ def run_analysis(old: Program, new: Program, cfg: BuildConfig, *, k: int = 2, en
     items = _merge_items(_items_for(_Ctx(new, hits_new, cs, "new", lines)),
                          _items_for(_Ctx(old, hits_old, cs, "old", lines)))
     entry_rows, shared = _entry_view(new, items, entries, isr)
-    risks = find_risks(_Ctx(new, hits_new, cs, "new", lines), old)
+    sec = analyze_security(old, new, cs, hits_new, hits_old, lines, rules, symbolic=symbolic,
+                           sym_paths=sym_paths, sym_budget=sym_budget)
+    risks = sec["findings"]
+    internal = {"cpg": sec.pop("_cpg_new"), "old": old, "new": new,
+                "sinks": {id(f): (f.get("_sink"), f.get("_node")) for f in risks}}
+    strip_internal(risks)
 
     affected_funcs = defaultdict(lambda: {"items": [], "versions": set()})
     for prog, hits, ver in ((new, hits_new, "new"), (old, hits_old, "old")):
@@ -520,6 +531,8 @@ def run_analysis(old: Program, new: Program, cfg: BuildConfig, *, k: int = 2, en
         "changes": _changes_json(cs, old, new, lines),
         "items": items,
         "risks": risks,
+        "security": {k: v for k, v in sec.items() if k != "findings"},
+        "_internal": internal,
         "functions": [
             {"func": f, "items": sorted(set(v["items"])), "versions": sorted(v["versions"])}
             for f, v in sorted(affected_funcs.items())

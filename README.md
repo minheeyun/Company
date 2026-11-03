@@ -245,6 +245,42 @@ python3 change_impact.py analyze --old examples/impact/old --new examples/impact
 - **SIL 에서 차이가 검출되지 않았다는 결과는 그 시나리오에 한한 것입니다.** 실제 인터럽트 지연·물리적 타이밍은 정적 분석과 SIL 로 확정할 수 없습니다.
 - `impact_report.md` 는 경로와 소스 위치를 포함하므로, LLM 에 영향 설명·테스트 케이스 초안 작성을 맡길 때 입력으로 쓰기 적합합니다. 의존성 존재 여부는 분석 결과와 실행 증거로 확인하세요.
 
+## 변경 기반 보안 취약점 분석 (CPG + Taint + Symbolic Execution)
+
+`folder_impact.py`(및 `change_impact.py analyze`)는 변경 영향 분석에 이어 **이번 변경 때문에 새로 생긴 보안 취약점**을 찾습니다.
+세 기술을 따로 실행하지 않고 하나의 파이프라인으로 묶어, CPG·Taint 로 후보를 좁힌 뒤 그 후보에만 기호 실행을 합니다.
+
+| 단계 | 모듈 | 질문 | 결과 |
+|---|---|---|---|
+| 1 변경점 | `diff.py` (AST Diff) | 어떤 함수·조건·변수·상수가 바뀌었나 | 변경 문장, 조건 판정 차이 구간 |
+| 2 CPG | `program.py`·`slicer.py`·`cpg.py` | 변경이 어떤 경로·데이터에 영향을 주나 | 변경 → 위험 연산 경로 (제어·데이터 의존) |
+| 3 Taint | `cpg.py` + `config/security_rules.yaml` | 외부 입력(Source)이 위험 연산(Sink)까지 오나 | Source → Sink 경로 |
+| 4 Symbolic Execution | `symexec.py` (z3) | 안전 속성을 어기는 입력이 실제로 있나 | 반례 입력 (예: `len = 9`) 또는 안전 증명 |
+| 5 변경 전후 비교 | `security.py` | 변경 전 코드에서는 어땠나 | **신규 발생 · 기존 존재 · 해결 · 판정 보류** |
+| 6 보고서 | `report.html` '보안 취약점' 탭, `summary.md`, `security/vulnerability_report.json` | | CWE · 등급 · 영향 함수 · 발생 조건 · 근거 경로 · 검증 방법 |
+
+- **위험 연산(Sink)**: 배열 인덱스(CWE-787/125), 복사·초기화 길이 대 목적지 버퍼 크기(CWE-787), 0 나누기(CWE-369), 시프트 양(CWE-1335), 값 잘림·넘침(CWE-197/190), 포인터 역참조(CWE-476/822), 반복 조건(CWE-834).
+  위험한 **피연산자** 기준으로 판정하고, 감싸는 조건(`if (d != 0U)`)·자료형 범위로 안전이 증명되면 보고하지 않습니다.
+- **보안 조건 변경**: 규칙의 권한·세션(CWE-862), 실패 횟수·잠금 시간(CWE-307), 무결성 검증(CWE-354), 보안 상태(CWE-840) 조건,
+  외부 입력 검증 조건(CWE-20)이 바뀌거나 삭제되면 보고합니다.
+- **규칙 파일** `config/security_rules.yaml`: Source(함수 인자, `Rte_Read_*` 같은 출력 인자, 반환값), Sink(복사 함수와 길이·목적지 인자), 보안 검사 이름 패턴을 프로젝트에 맞게 고칩니다 (`--rules` 로 다른 파일 지정, JSON 도 가능).
+- **기호 실행**은 위험 연산이 있는 함수 하나에서 진입점 → 위험 연산 경로를 펼쳐 z3 로 풉니다(반복문은 2회까지, 경로 64개·전체 180초 한도).
+  인자·전역은 자료형 범위 안의 임의 값으로 보므로 반례는 '이 값이 들어오면' 이라는 뜻이며, 외부 입력 도달 여부(Taint)와 함께 판단합니다.
+  z3 가 없으면 조건 구간 증명으로 대신합니다.
+- **외부 도구 교차 검증**: 같은 규칙으로 `security/joern/taint.sc`(Joern `reachableByFlows`), `security/codeql/ChangeTaint.ql`
+  (`TaintTracking::Global`), `security/klee/<ID>/`(KLEE 하네스·`klee_assert` 삽입 소스·실행 스크립트)를 만듭니다.
+  도구가 설치되어 있으면 `--joern`, `--codeql --codeql-build "빌드 명령"`, `--klee` 로 실행하고 결과를 보고서에 표시합니다.
+- CPG 는 `security/cpg.json` 으로 내보냅니다 (노드 label·간선 type 은 Joern 이름: METHOD, CALL, CONTROL_STRUCTURE, CFG, CDG, REACHING_DEF, CALL, ARGUMENT, RETURN).
+
+```bash
+pip install pycparser z3-solver pyyaml        # z3·PyYAML 은 선택 (없으면 구간 증명·내장 규칙 사용)
+python folder_impact.py before/ after/ -o result --rules config/security_rules.yaml
+python folder_impact.py before/ after/ -o result --klee --klee-include /usr/local/include   # KLEE 재현까지
+```
+
+판정은 정적 분석 근거입니다. `신규 발생`은 변경 후 위반이 증명되고 변경 전에는 안전했다는 뜻이고, 실제 악용 가능성(입력 경로·보안 영향)은
+반례 입력으로 재현해 확인해야 합니다.
+
 ## 테스트
 
 ```bash

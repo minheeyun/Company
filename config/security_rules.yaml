@@ -1,0 +1,71 @@
+# 변경 기반 보안 취약점 분석 규칙 (folder_impact.py --rules config/security_rules.yaml)
+# 함수 이름에는 glob(* ?)을 쓸 수 있습니다. 인자 번호는 1부터 셉니다 (-1 = 마지막 인자).
+# 이 파일은 이 도구의 자체 형식입니다. --joern / --codeql 을 쓰면 같은 규칙으로 각 도구의 질의를 만듭니다.
+
+sources:
+  # 함수 정의의 인자를 외부 입력으로 본다 (포인터 인자는 가리키는 데이터를, 값 인자는 값 자체를)
+  - name: DIAG_INPUT
+    note: "UDS 진단 요청 데이터 (Dcm 콜아웃·DID 쓰기·루틴 제어)"
+    functions:
+      - process_diag
+      - "*_WriteData"
+      - "*RoutineControl*"
+      - "Dcm_*Request*"
+      - "*_ProcessRequest"
+      - "*SecurityAccess*CompareKey*"
+      - "*_CompareKey"
+    # args: [rx, len]        # 특정 인자만 지정하려면 이름이나 번호를 적습니다
+
+  - name: COM_INPUT
+    note: "통신 수신 데이터 (CAN/LIN/Ethernet PDU)"
+    functions:
+      - "*_RxIndication"
+      - "*_TpRxIndication"
+      - "*_CopyRxData"
+      - "*_StartOfReception"
+    # 호출한 뒤 출력 포인터 인자가 가리키는 값이 외부 입력인 함수 (데이터 전달 의미 모델)
+    out_args:
+      - functions: ["Rte_Read_*", "Rte_Receive_*", "Rte_DRead_*"]
+        args: [-1]
+      - functions: ["Com_ReceiveSignal", "Com_ReceiveSignalGroup", "Com_ReceiveShadowSignal"]
+        args: [2]
+      - functions: ["CanIf_ReadRxPduData", "PduR_*Receive*"]
+        args: [-1]
+    # 반환값이 외부 입력인 함수
+    returns: ["Can_Read*", "Lin_Read*"]
+
+sinks:
+  - name: MEMORY_COPY
+    functions: [memcpy, memmove, "*_memcpy", "*MemCopy", "*MemCpy", Rte_MemCpy, strncpy]
+    sensitive_argument: 3     # 복사 길이
+    dest_argument: 1          # 목적지 버퍼 (크기와 비교)
+  - name: MEMORY_WRITE
+    functions: [memset, "*_memset", "*MemSet", "*MemClear"]
+    sensitive_argument: -1
+    dest_argument: 1
+  - {name: ARRAY_ACCESS, type: array_index}
+  - {name: POINTER_DEREF, type: pointer_deref}
+  - {name: DIVISION, type: division}
+  - {name: SHIFT, type: shift}
+  - {name: NARROWING, type: narrowing}
+  - {name: LOOP_BOUND, type: loop}
+  - {name: FUNCTION_POINTER, type: function_pointer}
+
+# 조건식에 아래 이름이 들어 있는 검사가 바뀌거나 삭제되면 보안 조건 변경으로 보고합니다
+security_checks:
+  - name: AUTHORIZATION
+    label: "권한·세션 확인"
+    cwe: CWE-862
+    patterns: [SecurityLevel, SecLevel, SecurityAccess, Session, SesCtrl, Authentic, Unlock, Privilege, AccessRight, Dcm_GetSecurity]
+  - name: BRUTE_FORCE
+    label: "실패 횟수·잠금 시간"
+    cwe: CWE-307
+    patterns: [AttemptCnt, AttemptCount, FailCnt, FailCount, FailedAttempt, DelayTime, DelayTimer, LockTime, LockTimer, Lockout, RetryCnt]
+  - name: INTEGRITY
+    label: "무결성·인증 검증 (OTA·보안 부팅·MAC)"
+    cwe: CWE-354
+    patterns: [Crc, Mac, Cmac, Signature, Verify, Hash, Sha256, Integrity, SecureBoot, Freshness]
+  - name: SECURITY_STATE
+    label: "보안 상태 전이·NVM 보안 상태"
+    cwe: CWE-840
+    patterns: [SecurityState, SecState, LockState, Tamper, ConfigurationLock, DebugLock]

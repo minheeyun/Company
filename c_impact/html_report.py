@@ -99,7 +99,7 @@ code, .code { font-family: Consolas, "D2Coding", "Courier New", monospace; font-
 .t2 { color: var(--p2); background: var(--p2-bg); } .t3 { color: var(--p3); background: var(--p3-bg); }
 .t4 { color: var(--p4); background: var(--p4-bg); }
 .sev { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; white-space: nowrap; font-weight: 700; }
-.sev.c { color: #fff; background: var(--p0); } .sev.u { color: var(--p1); background: var(--p1-bg); }
+.sev.c { color: #fff; background: var(--p0); } .sev.u { color: var(--p1); background: var(--p1-bg); } .sev.l { color: var(--p4); background: var(--p4-bg); }
 .card.alert { border-color: var(--p0); } .card.alert .v { color: var(--p0); }
 .arrow { color: var(--accent); font-weight: 600; margin-right: 4px; }
 .old { color: var(--del); } .new { color: var(--add); }
@@ -275,47 +275,79 @@ function itemTable(rows, extraFilters) {
     detail: itemDetail
   });
 }
-function sev(r) { return el("span", {class: "sev " + (r.severity === "확실한 위험" ? "c" : "u"), text: r.severity}); }
+function sev(r) {
+  var c = r.level === "High" ? "c" : (r.level === "Medium" ? "u" : "l");
+  return el("span", {class: "sev " + c, text: r.level || r.severity});
+}
+function stat(r) { return el("span", {class: "tag " + ({NEW_REGRESSION: "t0", EXISTING: "t1", FIXED: "t3"}[r.status_code] || "t4"), text: r.status}); }
+function symText(r) {
+  var s = r.symbolic;
+  if (!s) return r.proof || "-";
+  var t = {violated: "위반 (반례 있음)", holds: "안전", unknown: "판정 보류"}[s.result] || s.result;
+  var cex = s.counterexample ? Object.keys(s.counterexample).map(function (k) { return k + " = " + s.counterexample[k]; }).join(", ") : "";
+  return t + (cex ? ": " + cex : "");
+}
+function steps(list) {
+  return el("ol", {class: "path"}, (list || []).map(function (s) {
+    return el("li", {}, [el("span", {class: "arrow", text: s.arrow || ""}), code(s.func), " ", loc(s.file, s.line), " ", code(s.text)]);
+  }));
+}
 function riskDetail(r) {
   var conds = r.conditions.length ? el("ul", {}, r.conditions.map(function (c) { return el("li", {}, [code(c)]); }))
                                   : el("div", {class: "muted", text: "모든 실행 (조건 없음)"});
+  var t = r.taint || {}, s = r.symbolic, b = r.baseline || {}, ch = r.change;
+  var kv = [
+    el("div", {text: "취약점"}), el("div", {}, [sev(r), " ", stat(r), " ", el("b", {text: r.cwe + " " + (r.cwe_name || "")})]),
+    el("div", {text: "위험"}), el("div", {}, [el("b", {text: r.kind_label}), " — " + r.risk]),
+    el("div", {text: "위치"}), el("div", {}, [code(r.func), " ", loc(r.file, r.line)]),
+    el("div", {text: "문장"}), el("div", {}, [code(r.src || r.expr)]),
+    el("div", {text: "위험 연산"}), el("div", {}, [code(r.expr), "  피연산자 ", code(r.operand)])
+  ];
+  if (ch) kv.push(el("div", {text: "원인 변경"}), el("div", {}, [loc(ch.file, ch.line), " ", code(ch.func), " ",
+    el("span", {class: "code old", text: ch.before || "(없음)"}), " → ", el("span", {class: "code new", text: ch.after || "(삭제)"}),
+    ch.detail ? el("span", {class: "small muted", text: "  " + ch.detail}) : null]));
+  kv.push(el("div", {text: "CPG"}), el("div", {text: r.how + (r.values && r.values.length ? " — 영향받은 값 " + r.values.join(", ") : "")
+    + ((r.cpg || {}).control_dependency_changed ? " · 제어 의존 변경" : "")}));
+  kv.push(el("div", {text: "Taint"}), el("div", {}, [t.flow_detected ? frag([el("b", {text: "외부 입력 도달 "}), code(t.source + ": " + t.source_label), " → ", code(t.value || r.operand)])
+    : el("span", {class: "muted", text: "규칙의 외부 입력(Source)에서 이 피연산자까지 데이터 흐름 없음"})]));
+  kv.push(el("div", {text: "기호 실행"}), el("div", {}, [el("b", {text: symText(r)}), s ? el("span", {class: "small muted", text: "  속성 " + s.property + " · " + (s.detail || "") + " · " + s.engine}) : null]));
+  kv.push(el("div", {text: "근거"}), el("div", {text: r.evidence || "-"}));
+  kv.push(el("div", {text: "변경 전 비교"}), el("div", {text: (b.old_state_label || "-") + (b.old_location ? " (" + b.old_location + ")" : "")
+    + (b.old_evidence ? " — " + b.old_evidence : "") + (b.old_symbolic && b.old_symbolic.result ? " · 기호 실행 " + b.old_symbolic.result : "")}));
+  kv.push(el("div", {text: "검증 방법"}), el("div", {}, [el("b", {text: r.verification || "-"}), r.klee_harness ? el("div", {class: "small muted", text: "KLEE 하네스: " + r.klee_harness}) : null]));
+  if (r.external) kv.push(el("div", {text: "외부 도구"}), el("div", {text: Object.keys(r.external).map(function (k) { return k + (r.external[k] ? " 경로 확인" : " 경로 없음"); }).join(" · ")}));
   return el("div", {}, [
-    el("div", {class: "kv"}, [
-      el("div", {text: "위험"}), el("div", {}, [sev(r), " ", el("b", {text: r.kind_label}), " — " + r.risk]),
-      el("div", {text: "위치"}), el("div", {}, [code(r.func), " ", loc(r.file, r.line)]),
-      el("div", {text: "문장"}), el("div", {}, [code(r.src || r.expr)]),
-      el("div", {text: "위험 연산"}), el("div", {}, [code(r.expr)]),
-      el("div", {text: "위험 피연산자"}), el("div", {}, [code(r.operand)]),
-      el("div", {text: "판정 방식"}), el("div", {}, [el("b", {text: r.how}), r.values.length ? frag([" — 영향받은 값 ", code(r.values.join(", "))]) : null]),
-      el("div", {text: "근거"}), el("div", {text: r.evidence || "-"}),
-      el("div", {text: "원인 변경"}), el("div", {}, [code(r.origin), " ", loc(r.origin_file, r.origin_line)])
-    ]),
+    el("div", {class: "kv"}, kv),
     el("h4", {text: "차이가 발생하는 조건"}), conds,
-    el("h4", {text: "전달 경로 (변경 지점 → 위험 연산)"}),
-    el("ol", {class: "path"}, r.path.map(function (s) {
-      return el("li", {}, [el("span", {class: "arrow", text: s.arrow || ""}), code(s.func), " ", loc(s.file, s.line), " ", code(s.text)]);
-    }))
+    el("h4", {text: "근거 경로 1 — 변경 지점 → 위험 연산 (CPG)"}), steps(r.path),
+    t.flow_detected ? el("h4", {text: "근거 경로 2 — 외부 입력(Source) → 위험 연산 (Taint)"}) : null,
+    t.flow_detected ? steps(t.path) : null
   ]);
 }
 function riskTable(rows) {
   return new Table({
-    rows: rows, search: function (r) { return [r.func, r.file, r.expr, r.operand, r.origin, r.evidence, r.src].concat(r.values, r.conditions).join(" "); },
-    placeholder: "함수·파일·연산·변수 검색",
+    rows: rows, search: function (r) { return [r.id, r.cwe, r.func, r.file, r.expr, r.operand, r.origin, r.evidence, r.src, r.verification].concat(r.values || [], r.conditions).join(" "); },
+    placeholder: "ID·CWE·함수·파일·연산 검색",
     filters: [
-      {name: "sev", label: "판정", options: uniq(rows.map(function (r) { return r.severity; }), ["확실한 위험", "위험 후보"]), test: function (r, v) { return r.severity === v; }},
-      {name: "kind", label: "위험 종류", options: uniq(rows.map(function (r) { return r.kind_label; })), test: function (r, v) { return r.kind_label === v; }},
-      {name: "how", label: "판정 방식", options: uniq(rows.map(function (r) { return r.how; }), ["값 전달", "변경된 연산", "실행 조건 변경", "추가된 연산", "영향 범위 안의 연산"]), test: function (r, v) { return r.how === v; }},
+      {name: "level", label: "등급", options: uniq(rows.map(function (r) { return r.level; }), ["High", "Medium", "Low"]), test: function (r, v) { return r.level === v; }},
+      {name: "status", label: "상태", options: uniq(rows.map(function (r) { return r.status; }), ["신규 발생", "판정 보류", "기존 존재", "해결"]), test: function (r, v) { return r.status === v; }},
+      {name: "cwe", label: "CWE", options: uniq(rows.map(function (r) { return r.cwe; })), test: function (r, v) { return r.cwe === v; }},
+      {name: "taint", label: "외부 입력", options: ["도달", "없음"], test: function (r, v) { return !!(r.taint || {}).flow_detected === (v === "도달"); }},
+      {name: "sym", label: "기호 실행", options: ["위반 (반례 있음)", "안전", "판정 보류", "미실행"], test: function (r, v) {
+        var s = r.symbolic ? ({violated: "위반 (반례 있음)", holds: "안전", unknown: "판정 보류"}[r.symbolic.result]) : "미실행"; return s === v; }},
       {name: "origin", label: "원인 변경", options: uniq(rows.map(function (r) { return r.origin; })), test: function (r, v) { return r.origin === v; }}
     ],
     columns: [
-      {label: "판정", render: sev, cls: "nowrap"},
-      {label: "위험 종류", render: function (r) { return frag([el("b", {text: r.kind_label}), el("br"), el("span", {class: "small muted", text: r.risk})]); }},
+      {label: "ID", render: function (r) { return el("b", {text: r.id}); }, cls: "nowrap"},
+      {label: "등급·상태", render: function (r) { return frag([sev(r), el("br"), stat(r)]); }, cls: "nowrap"},
+      {label: "CWE", render: function (r) { return frag([el("b", {text: r.cwe}), el("br"), el("span", {class: "small muted", text: r.kind_label})]); }},
       {label: "위치", render: function (r) { return frag([code(r.func), el("br"), loc(r.file, r.line)]); }},
-      {label: "위험 연산 (위험 피연산자)", render: function (r) { return frag([code(short(r.expr, 120)), el("br"), el("span", {class: "small muted", text: "피연산자 "}), code(short(r.operand, 80))]); }},
-      {label: "판정 방식·근거", render: function (r) { return frag([el("b", {text: r.how}), r.values.length ? frag([": ", code(r.values.join(", "))]) : null,
-        r.evidence ? el("div", {class: "small", text: short(r.evidence, 160)}) : null]); }},
-      {label: "차이가 발생하는 조건", render: condCell},
-      {label: "원인 변경", render: function (r) { return frag([code(r.origin), el("br"), loc(r.origin_file, r.origin_line)]); }}
+      {label: "위험 연산 (피연산자)", render: function (r) { return frag([code(short(r.expr, 110)), el("br"), el("span", {class: "small muted", text: "피연산자 "}), code(short(r.operand, 70))]); }},
+      {label: "외부 입력 (Taint)", render: function (r) { var t = r.taint || {}; return t.flow_detected ? frag([el("b", {text: t.source}), el("br"), el("span", {class: "small", text: t.source_label})]) : el("span", {class: "muted", text: "-"}); }},
+      {label: "기호 실행", render: function (r) { return el("span", {class: "small", text: short(symText(r), 90)}); }},
+      {label: "원인 변경", render: function (r) { var ch = r.change; return ch ? frag([el("span", {class: "code old", text: short(ch.before || "(없음)", 40)}), " → ",
+        el("span", {class: "code new", text: short(ch.after || "(삭제)", 40)}), el("br"), loc(ch.file, ch.line)]) : frag([code(r.origin), el("br"), loc(r.origin_file, r.origin_line)]); }},
+      {label: "검증 방법", render: function (r) { return el("span", {class: "small", text: short(r.verification || "", 140)}); }}
     ],
     detail: riskDetail
   });
@@ -359,8 +391,10 @@ addTab("overview", "개요", null, function (p) {
       ["영향 변수·출력", A.stats.items, "all"]
     ]);
     if (A.notes.length) cards.push(["동작 변화 없음", A.notes.length, "notes"]);
-    var ncert = A.risks.filter(function (r) { return r.severity === "확실한 위험"; }).length;
-    cards.splice(3, 0, ["확실한 위험 (위험 연산)", ncert, "risks", ncert ? "alert" : ""], ["위험 후보 (위험 연산)", A.risks.length - ncert, "risks"]);
+    var nh = A.risks.filter(function (r) { return r.level === "High" && r.status_code !== "FIXED"; }).length;
+    var nnew = A.risks.filter(function (r) { return r.status_code === "NEW_REGRESSION"; }).length;
+    cards.splice(3, 0, ["보안 취약점 High", nh, "risks", nh ? "alert" : ""], ["신규 발생 취약점", nnew, "risks", nnew ? "alert" : ""],
+      ["보안 분석 항목 전체", A.risks.length, "risks"]);
   }
   p.appendChild(el("div", {class: "cards"}, cards.map(function (c) {
     return el("div", {class: "card link " + (c[3] || ""), onclick: function () { if (panes[c[2]]) show(c[2]); }}, [el("div", {class: "v", text: c[1]}), el("div", {class: "k", text: c[0]})]);
@@ -411,10 +445,11 @@ if (A) {
         {name: "file", label: "파일", options: uniq(A.groups.map(function (g) { return g.file; })), test: function (g, v) { return g.file === v; }},
         {name: "kind", label: "변경 종류", options: uniq([].concat.apply([], A.groups.map(function (g) { return Object.keys(g.kinds); }))), test: function (g, v) { return !!g.kinds[v]; }},
         {name: "imp", label: "영향", options: ["우선 확인할 영향 있음", "영향 없음"], test: function (g, v) { return (g.top.length > 0) === (v === "우선 확인할 영향 있음"); }},
-        {name: "risk", label: "위험 연산", options: ["확실한 위험 있음", "위험 연산 있음", "위험 연산 없음"], test: function (g, v) {
-          if (v === "위험 연산 없음") return !g.risks.length;
-          if (v === "위험 연산 있음") return g.risks.length > 0;
-          return g.risks.some(function (i) { return A.risks[i].severity === "확실한 위험"; }); }}
+        {name: "risk", label: "보안 취약점", options: ["High 있음", "신규 발생 있음", "취약점 있음", "취약점 없음"], test: function (g, v) {
+          if (v === "취약점 없음") return !g.risks.length;
+          if (v === "취약점 있음") return g.risks.length > 0;
+          if (v === "신규 발생 있음") return g.risks.some(function (i) { return A.risks[i].status_code === "NEW_REGRESSION"; });
+          return g.risks.some(function (i) { return A.risks[i].level === "High"; }); }}
       ],
       columns: [
         {label: "변경 함수", render: function (g) { return frag([code(g.func), el("br"), loc(g.file)]); }},
@@ -425,11 +460,11 @@ if (A) {
         }},
         {label: "영향 함수", render: function (g) { return String(g.n_funcs); }, cls: "nowrap"},
         {label: "영향 변수·출력", render: function (g) { return String(g.items.length); }, cls: "nowrap"},
-        {label: "위험 연산", render: function (g) {
+        {label: "보안 취약점", render: function (g) {
           if (!g.risks.length) return el("span", {class: "muted", text: "-"});
-          var c = g.risks.filter(function (i) { return A.risks[i].severity === "확실한 위험"; }).length;
-          return frag([c ? el("span", {class: "sev c", text: "확실 " + c}) : null, c && g.risks.length > c ? " " : null,
-            g.risks.length > c ? el("span", {class: "sev u", text: "후보 " + (g.risks.length - c)}) : null]);
+          var lv = {High: 0, Medium: 0, Low: 0};
+          g.risks.forEach(function (i) { lv[A.risks[i].level] = (lv[A.risks[i].level] || 0) + 1; });
+          return frag(["High", "Medium", "Low"].map(function (k) { return lv[k] ? frag([el("span", {class: "sev " + (k === "High" ? "c" : k === "Medium" ? "u" : "l"), text: k + " " + lv[k]}), " "]) : null; }));
         }, cls: "nowrap"},
         {label: "우선 확인할 영향", render: function (g) {
           if (!g.top.length) return el("span", {class: "muted", text: "-"});
@@ -448,9 +483,9 @@ if (A) {
         ]);
         if (g.risks.length) {
           d.insertBefore(el("ul", {}, g.risks.slice(0, 20).map(function (i) { var r = A.risks[i];
-            return el("li", {}, [sev(r), " ", el("b", {text: r.kind_label}), " ", code(r.func), " ", loc(r.file, r.line), " ", code(short(r.expr, 90)),
-              el("span", {class: "small muted", text: "  " + r.how})]); })), d.childNodes[2]);
-          d.insertBefore(el("h4", {text: "위험 연산 도달 " + g.risks.length + "개"}), d.childNodes[2]);
+            return el("li", {}, [el("b", {text: r.id + " "}), sev(r), " ", stat(r), " ", el("b", {text: r.cwe + " " + r.kind_label}), " ", code(r.func), " ", loc(r.file, r.line), " ", code(short(r.expr, 90)),
+              el("span", {class: "small muted", text: "  " + symText(r)})]); })), d.childNodes[2]);
+          d.insertBefore(el("h4", {text: "보안 취약점 " + g.risks.length + "개"}), d.childNodes[2]);
         }
         if (g.items.length) d.appendChild(el("p", {}, [el("button", {class: "lnk", text: "이 변경의 영향 " + g.items.length + "개 모두 보기 →",
           onclick: function () { show("all"); allTable.set("originKey", g.func + "|" + g.file, "원인 변경: " + g.func); }})]));
@@ -459,20 +494,29 @@ if (A) {
     p.appendChild(t.node);
   });
 
-  /* 위험 연산 도달 */
-  addTab("risks", "위험 연산 도달", A.risks.length, function (p) {
-    head(p, "위험 연산 도달 (Taint 분석)", "변경 지점에서 퍼진 영향이 위험 연산의 위험한 자리(배열 인덱스, 분모, 시프트 양, 복사 길이, 좁아지는 변환, 포인터, 반복 조건)에 닿는 곳입니다. "
-      + "'확실한 위험'은 상수나 바뀐 조건 구간으로 위반이 증명된 것입니다. 감싸는 조건이나 자료형 범위로 안전이 증명된 연산은 뺐습니다 (변경 후 코드 기준). 행을 누르면 근거·조건·전달 경로가 펼쳐집니다.");
-    if (!A.risks.length) { p.appendChild(el("p", {class: "muted", text: "변경 영향이 위험 연산의 위험한 자리에 닿는 곳이 없습니다."})); return; }
-    var byKind = {};
-    A.risks.forEach(function (r) { var k = r.kind_label; byKind[k] = byKind[k] || [0, 0]; byKind[k][r.severity === "확실한 위험" ? 0 : 1]++; });
-    p.appendChild(el("div", {class: "cards"}, Object.keys(byKind).map(function (k) {
-      return el("div", {class: "card" + (byKind[k][0] ? " alert" : "")}, [el("div", {class: "v", text: byKind[k][0] + byKind[k][1]}),
-        el("div", {class: "k", text: k + (byKind[k][0] ? " (확실 " + byKind[k][0] + ")" : "")})]);
-    })));
-    p.appendChild(el("div", {class: "box small"}, [el("b", {text: "판정 방식  "}),
-      "값 전달: 영향받은 값이 위험한 피연산자로 들어감 · 변경된 연산: 변경된 문장에서 위험한 피연산자 자체가 바뀜 · 추가된 연산: 새로 생긴 문장·함수의 위험 연산 · "
-      + "실행 조건 변경: 감싸는 조건이 바뀌었거나 문장이 다른 조건 아래로 옮겨짐 · 영향 범위 안의 연산: 영향 경로 위에서 위반이 증명된 기존 연산"]));
+  /* 보안 취약점 */
+  addTab("risks", "보안 취약점", A.risks.length, function (p) {
+    var sec = A.security || {}, eng = sec.engine || {}, tools = sec.tools || {};
+    head(p, "변경 기반 보안 취약점 (CPG + Taint + Symbolic Execution)", "변경점에서 CPG(제어·데이터 의존)를 따라 영향이 닿는 위험 연산을 찾고, 규칙의 외부 입력(Source)이 그 피연산자에 도달하는지(Taint), "
+      + "안전 속성을 어기는 입력이 있는지(기호 실행)를 확인한 뒤 변경 전 코드와 비교했습니다. 행을 누르면 원인 변경·CPG·Taint·기호 실행·변경 전 비교·검증 방법과 두 근거 경로가 펼쳐집니다.");
+    var counts = (sec.summary || {}).by_status || {};
+    var lv = (sec.summary || {}).by_level || {};
+    p.appendChild(el("div", {class: "cards"}, [
+      el("div", {class: "card" + (lv.High ? " alert" : "")}, [el("div", {class: "v", text: lv.High || 0}), el("div", {class: "k", text: "High"})]),
+      el("div", {class: "card"}, [el("div", {class: "v", text: lv.Medium || 0}), el("div", {class: "k", text: "Medium"})]),
+      el("div", {class: "card"}, [el("div", {class: "v", text: lv.Low || 0}), el("div", {class: "k", text: "Low"})])
+    ].concat(Object.keys(counts).map(function (k) {
+      return el("div", {class: "card" + (k === "신규 발생" && counts[k] ? " alert" : "")}, [el("div", {class: "v", text: counts[k]}), el("div", {class: "k", text: k})]);
+    }))));
+    var tl = [];
+    if (tools.cpg) tl.push("CPG JSON: security/cpg.json (함수 " + tools.cpg.methods + "개, 노드 " + tools.cpg.nodes + "개, 간선 " + tools.cpg.edges + "개)");
+    if (tools.joern) tl.push("Joern: " + (tools.joern.ran ? "실행함 (경로 " + tools.joern.flows.length + "개)" : (tools.joern.note || "")) + " — security/joern/taint.sc");
+    if (tools.codeql) tl.push("CodeQL: " + (tools.codeql.ran ? "실행함 (결과 " + tools.codeql.results.length + "개)" : (tools.codeql.note || "")) + " — security/codeql/ChangeTaint.ql");
+    if (tools.klee) tl.push("KLEE: 하네스 " + tools.klee.harnesses + "개 생성, 실행 " + tools.klee.ran + "개 — security/klee/");
+    p.appendChild(el("div", {class: "box small"}, [el("div", {}, [el("b", {text: "엔진  "}), "CPG " + (eng.cpg || "-") + " · Taint " + (eng.taint || "-") + " · 기호 실행 " + (eng.symbolic || "-") + " · 규칙 " + (eng.rules || "-")]),
+      tl.length ? el("ul", {}, tl.map(function (x) { return el("li", {text: x}); })) : null,
+      el("div", {class: "muted", text: "상태: 신규 발생 = 변경 후 위반 확인 & 변경 전 안전·없음 · 기존 존재 = 변경 전에도 위반 · 해결 = 변경 전 위반 & 변경 후 안전 · 판정 보류 = 위반을 증명하지 못한 후보. 등급: 위반 확인 + (외부 입력 도달 또는 메모리 쓰기) = High."})]));
+    if (!A.risks.length) { p.appendChild(el("p", {class: "muted", text: "변경으로 영향받는 위험 연산·보안 검사 조건이 없습니다."})); return; }
     p.appendChild(riskTable(A.risks).node);
   });
 

@@ -64,11 +64,12 @@ _LOOP_SIGS = ("while|", "for|", "dowhile|")
 
 
 class _Sink:
-    __slots__ = ("kind", "expr", "operand", "target", "dim", "width")
+    __slots__ = ("kind", "expr", "operand", "target", "dim", "width", "write")
 
     def __init__(self, kind, expr, operand, target=None, dim=None, width=None):
         self.kind, self.expr, self.operand = kind, expr, operand
-        self.target, self.dim, self.width = target, dim, width
+        self.target, self.dim, self.width = target, dim, width  # dim: 배열 크기 또는 복사 목적지 바이트 크기
+        self.write = False
 
     def key(self) -> tuple:
         return self.kind, norm(self.operand), self.target, self.dim
@@ -263,7 +264,134 @@ def _walk(E: _Env, e, out: list):
         _walk(E, c, out)
 
 
-def sinks_of(prog: Program, n: Node) -> list[_Sink]:
+def _length_spec(prog: Program, name: str, nargs: int, rules=None):
+    """복사·초기화 함수면 (길이 인자 위치, 목적지 인자 위치) — 0부터. 아니면 None."""
+    if rules is not None:
+        spec = rules.length_rule(name)
+        if spec is None:
+            return None
+        _, la, da = spec
+    elif LENGTH_CALL.search(name):
+        la, da = -1, 1
+    else:
+        return None
+    li = nargs + la if la < 0 else la - 1
+    di = nargs + da if da < 0 else da - 1
+    if nargs < 2 or not 0 <= li < nargs:
+        return None
+    return li, (di if 0 <= di < nargs else None)
+
+
+def _dest_size(E: "_Env", prog: Program, dest):
+    """복사 목적지 식이 가리키는 버퍼의 바이트 크기 (모르면 None)."""
+    if dest is None:
+        return None
+    d = _strip(dest)
+    off = 0
+    if isinstance(d, c_ast.BinaryOp) and d.op == "+":
+        c = E.const(d.right)
+        if c is None:
+            return None
+        base = _strip(d.left)
+        es = None
+        try:
+            for l in prog.lvals(base) if isinstance(base, (c_ast.ID, c_ast.StructRef)) else ():
+                t, env = prog.path_type(l)
+                et = env.element(t) if env else None
+                es = sizeof_type(env, et) if et is not None else None
+        except Exception:
+            es = None
+        if es is None:
+            return None
+        off, d = c * es, base
+    if isinstance(d, c_ast.UnaryOp) and d.op == "&":
+        size = sizeof_expr(E, d.expr)
+    elif isinstance(d, (c_ast.ID, c_ast.StructRef, c_ast.ArrayRef)) and _is_array_expr(prog, d):
+        size = sizeof_expr(E, d)
+    else:
+        try:
+            objs = {o for o in prog.pvals(d) if not o[0].startswith(("fn:", "sym:", "hw:"))}
+        except Exception:
+            objs = set()
+        sizes = []
+        for o in objs:
+            t, env = prog.path_type(o[:-1] if o[-1] == "[]" else o)
+            sizes.append(sizeof_type(env, t) if env is not None else None)
+        size = min(sizes) if sizes and None not in sizes else None
+    return None if size is None else size - off
+
+
+def _is_array_expr(prog: Program, e) -> bool:
+    try:
+        return any(prog._is_array_path(l) for l in prog.lvals(e))
+    except Exception:
+        return False
+
+
+_SCALAR_SIZE = {"char": 1, "_Bool": 1, "short": 2, "int": 4, "long": 4, "float": 4, "double": 8, "void": 1}
+
+
+def sizeof_type(env, t, depth: int = 0):
+    """32비트 MCU 기준 sizeof (char 1, short 2, int·long·포인터·enum 4, long long·double 8). 모르면 None."""
+    if env is None or t is None or depth > 32:
+        return None
+    c = env.core(t)
+    if isinstance(c, c_ast.IdentifierType):
+        names = [x for x in c.names if x not in ("signed", "unsigned", "const", "volatile")]
+        if names.count("long") == 2:
+            return 8
+        for k in ("char", "_Bool", "short", "double", "float", "long", "int", "void"):
+            if k in names:
+                return _SCALAR_SIZE[k]
+        return 4 if not names else None
+    if isinstance(c, (c_ast.PtrDecl, c_ast.Enum)):
+        return 4
+    if isinstance(c, c_ast.ArrayDecl):
+        dim = const_eval(c.dim) if c.dim is not None else None
+        es = sizeof_type(env, c.type, depth + 1)
+        return dim * es if dim is not None and es is not None else None
+    if isinstance(c, (c_ast.Struct, c_ast.Union)) and c.decls:
+        size, align = 0, 1
+        for d in c.decls:
+            s = sizeof_type(env, d.type, depth + 1)
+            a = _alignof(env, d.type, depth + 1)
+            if s is None or a is None:
+                return None
+            align = max(align, a)
+            if isinstance(c, c_ast.Union):
+                size = max(size, s)
+            else:
+                size = (size + a - 1) // a * a + s
+        return (size + align - 1) // align * align
+    return None
+
+
+def _alignof(env, t, depth=0):
+    c = env.core(t)
+    if isinstance(c, c_ast.ArrayDecl):
+        return _alignof(env, c.type, depth + 1)
+    if isinstance(c, (c_ast.Struct, c_ast.Union)) and c.decls:
+        al = [_alignof(env, d.type, depth + 1) for d in c.decls]
+        return None if None in al else max(al or [1])
+    return sizeof_type(env, t, depth)
+
+
+def sizeof_expr(E: "_Env", e):
+    """sizeof(식 또는 자료형)."""
+    if isinstance(e, c_ast.Typename):
+        return sizeof_type(E.env, e.type)
+    try:
+        ls = E.prog.lvals(e)
+    except Exception:
+        return None
+    sizes = set()
+    for l in ls:
+        t, env = E.prog.path_type(l)
+        sizes.add(sizeof_type(env, t) if env is not None else None)
+    return sizes.pop() if len(sizes) == 1 else None
+
+
+def sinks_of(prog: Program, n: Node, rules=None) -> list[_Sink]:
     E = _Env(prog, n)
     out: list[_Sink] = []
     e = n.ast
@@ -283,20 +411,42 @@ def sinks_of(prog: Program, n: Node) -> list[_Sink]:
     elif n.kind == "actual_in":
         _walk(E, e, out)
         site = prog.sites[n.site]
-        nargs = len(site.ast.args.exprs) if site.ast.args else 0
-        if LENGTH_CALL.search(site.name) and nargs >= 2 and n.arg == nargs - 1:
-            out.append(_Sink("length", site.ast, e))
+        args = site.ast.args.exprs if site.ast.args else []
+        spec = _length_spec(prog, site.name, len(args), rules)
+        if spec and n.arg == spec[0]:
+            dest = args[spec[1]] if spec[1] is not None else None
+            out.append(_Sink("length", site.ast, e, dim=_dest_size(E, prog, dest)))
     elif n.kind == "extcall":
         args = e.args.exprs if e.args else []
         for a in args:
             _walk(E, a, out)
-        if LENGTH_CALL.search(prog.sites[n.site].name) and len(args) >= 2:
-            out.append(_Sink("length", e, args[-1]))
+        spec = _length_spec(prog, prog.sites[n.site].name, len(args), rules)
+        if spec:
+            dest = args[spec[1]] if spec[1] is not None else None
+            out.append(_Sink("length", e, args[spec[0]], dim=_dest_size(E, prog, dest)))
     elif n.kind == "call":
         site = prog.sites[n.site]
         if site.direct is None:
             out.append(_Sink("fptr", site.ast, site.ast.name))
+    if rules is not None:
+        out = [sk for sk in out if sk.kind in rules.enabled_kinds]
+    for sk in out:
+        sk.write = sk.kind == "index" and _is_write(e, sk.expr)
     return out
+
+
+def _is_write(stmt, target) -> bool:
+    stack = [stmt]
+    while stack:
+        x = stack.pop()
+        if x is None:
+            continue
+        if isinstance(x, c_ast.Assignment) and x.lvalue is target:
+            return True
+        if isinstance(x, c_ast.UnaryOp) and x.op in ("++", "--", "p++", "p--") and x.expr is target:
+            return True
+        stack.extend(c for _, c in x.children())
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -414,11 +564,34 @@ def _judge(E: _Env, prog: Program, sk: _Sink, guards, seeds: set[int]):
             return "safe", ""
         return "unknown", f"값 범위 {_fmt_num(r[0])}..{_fmt_num(r[1])} → 대상 범위 {lo}..{hi}"
     if sk.kind == "length":
+        size = sk.dim
         if c is not None:
-            return ("certain", f"음수 길이 {c}") if c < 0 else ("safe", "")
-        if isinstance(_strip(op), c_ast.UnaryOp) and _strip(op).op == "sizeof":
+            if c < 0:
+                return "certain", f"음수 길이 {c}"
+            if size is not None and c > size:
+                return "certain", f"상수 길이 {c} — 목적지 버퍼 {size}바이트"
             return "safe", ""
-        return "unknown", ""
+        so = _strip(op)
+        if isinstance(so, c_ast.UnaryOp) and so.op == "sizeof":
+            s2 = sizeof_expr(E, so.expr)
+            if size is not None and s2 is not None and s2 > size:
+                return "certain", f"sizeof 길이 {s2} — 목적지 버퍼 {size}바이트"
+            return "safe", ""
+        if size is None:
+            return "unknown", "목적지 버퍼 크기를 확정하지 못함"
+        r = E.rng(op)
+        dom = r if r else (0, INF)
+        if r and r[1] <= size:
+            return "safe", ""
+        allowed, changed, texts = _allowed(prog, guards, op, dom, seeds)
+        if allowed is None:
+            return "unknown", f"목적지 버퍼 {size}바이트, 복사 길이 `{var}` 범위 " + \
+                (f"{_fmt_num(r[0])}..{_fmt_num(r[1])}" if r else "모름")
+        viol = _intersect(allowed, [(size + 1, INF)])
+        if not viol:
+            return "safe", ""
+        return ("certain" if changed else "unknown"), \
+            f"조건상 {fmt_set(var, allowed, dom)} → 목적지 버퍼 {size}바이트를 넘는 복사 가능 ({'; '.join(texts)})"
     if sk.kind == "loop":
         return "unknown", ""
     if sk.kind == "fptr":
@@ -483,8 +656,9 @@ class _Taint:
 # ---------------------------------------------------------------------------
 
 
-def find_risks(ctx, old: Program) -> list[dict]:
-    """ctx: analysis._Ctx (변경 후 버전). 위험 연산 도달 항목 목록 (중요한 것부터)."""
+def find_risks(ctx, old: Program, rules=None) -> list[dict]:
+    """ctx: analysis._Ctx (분석할 버전), old: 비교 상대 버전. 위험 연산 도달 항목 목록 (중요한 것부터).
+    각 항목의 '_node'·'_sink'·'_verdict' 는 검증 단계용 내부 값이다 (JSON 으로 내보내기 전에 지운다)."""
     from .analysis import _conditions, _guards, _rel, _step
 
     prog, hits, cs = ctx.prog, ctx.hits, ctx.cs
@@ -495,7 +669,7 @@ def find_risks(ctx, old: Program) -> list[dict]:
         n = prog.nodes[m]
         if n.dead or not n.visible or n.kind in ("formal_in", "ginit", "actual_out"):
             continue
-        sinks = sinks_of(prog, n)
+        sinks = sinks_of(prog, n, rules)
         if not sinks:
             continue
         E = _Env(prog, n)
@@ -503,7 +677,7 @@ def find_risks(ctx, old: Program) -> list[dict]:
         ch = ctx.change_by_node.get(m)
         old_keys = None
         if ch is not None and ch.kind == "changed" and ch.other_node is not None:
-            old_keys = {sk.key() for sk in sinks_of(old, old.nodes[ch.other_node])}
+            old_keys = {sk.key() for sk in sinks_of(old, old.nodes[ch.other_node], rules)}
         ctrl = [(p, lab) for p, lab in prog.cd_parents.get(m, ()) if p in seeds and prog.nodes[p].kind == "cond"]
         for sk in sinks:
             verdict, evidence = _judge(E, prog, sk, guards, seeds)
@@ -560,6 +734,7 @@ def find_risks(ctx, old: Program) -> list[dict]:
             first = path[0].node
             fn = prog.nodes[first]
             row["origin"] = {"func": prog.func_display(fn.func), "file": _rel(prog, fn.file), "line": fn.line}
+            row["_node"], row["_sink"], row["_verdict"], row["_origin_node"] = m, sk, verdict, first
             prev = out.get(key)
             if prev is None or _rank(row) < _rank(prev):
                 out[key] = row

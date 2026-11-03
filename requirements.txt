@@ -1,2 +1,5 @@
 anthropic>=1.13.0
 pycparser>=2.21
+# 선택: 기호 실행(z3)과 YAML 규칙 파일
+z3-solver>=4.12
+pyyaml>=6.0

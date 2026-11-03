@@ -7,7 +7,8 @@ git 이 없어도 되는 폴더 비교 전용 실행기다. 내부 분석은 c_i
   2. 헤더가 있는 폴더를 모두 include 경로로 자동 등록 (-I 직접 지정, compile_commands.json 도 가능)
   3. 분석 범위: 전체 *.c (기본) 또는 변경된 .c + 변경된 헤더를 (간접) include 하는 .c 만 (--scope changed)
   4. 변경 영향 분석 (전처리 후 AST 비교 → 의존성 → 전방 슬라이싱 → 영향 함수·변수·경로·조건)
-  4-1. 위험 연산 도달 (Taint 분석: 변경 지점 → 배열 인덱스·분모·시프트·복사 길이·좁아지는 변환·포인터·반복 조건)
+  4-1. 변경 기반 보안 취약점: CPG(변경 → 위험 연산) + Taint(외부 입력 → 위험 연산) + Symbolic Execution(z3 반례)
+       + 변경 전후 비교(신규 발생·기존 존재·해결·판정 보류) + CWE 매핑, 규칙은 config/security_rules.yaml
   5. 함수별 읽기·쓰기·호출 관계가 변경 전후로 어떻게 달라졌는지 비교
   6. (선택) --explore: 결과가 달라지는 입력·상태 자동 탐색, --scenario: 지정한 SIL 시나리오 실행
 
@@ -19,6 +20,7 @@ git 이 없어도 되는 폴더 비교 전용 실행기다. 내부 분석은 c_i
 
 결과 (-o, 기본 impact_out/folder):
   report.html                   모든 결과를 항목별 탭으로 묶은 HTML 보고서 (브라우저로 열기, 검색·필터·경로 펼치기)
+  security/vulnerability_report.json, cpg.json, joern/, codeql/, klee/   보안 분석 결과와 외부 도구 입력
   summary.md / summary.json     폴더 비교 요약 (파일 변경, 영향 요약, 의존성 변화, 실행 확인, 분석 범위)
   impact/impact_report.md       변경 영향 분석 보고서 (변경 위치, 영향 함수·변수 표, 경로, 진입점, 테스트 후보, 제외 구성)
   impact/impact.json, impact.dot, sil_scenario.json
@@ -41,7 +43,9 @@ from pathlib import Path
 
 from c_impact import deps as deps_mod
 from c_impact import html_report, report
-from c_impact.analysis import load_programs, run_analysis
+from c_impact import external
+from c_impact.analysis import load_programs, public, run_analysis
+from c_impact.rules import load_rules
 from c_impact.frontend import BuildConfig, load_compile_commands
 from c_impact.sil import SilError, load_scenario, run_sil
 
@@ -286,8 +290,17 @@ def change_groups(r: dict) -> tuple[list[dict], dict[tuple[str, str], dict]]:
 
 
 def _risk_counts(risks: list[dict]) -> str:
-    n_c = sum(1 for x in risks if x["severity"] == "확실한 위험")
-    return (f"**확실한 위험 {n_c}개**" if n_c else "확실한 위험 0개") + f" · 위험 후보 {len(risks) - n_c}개"
+    if not risks:
+        return "없음"
+    lv = defaultdict(int)
+    for x in risks:
+        if x.get("status_code") != "FIXED":
+            lv[x.get("level", "Low")] += 1
+    st = defaultdict(int)
+    for x in risks:
+        st[x.get("status", "")] += 1
+    head = " · ".join(f"**{k} {lv[k]}**" if k == "High" and lv[k] else f"{k} {lv[k]}" for k in ("High", "Medium", "Low"))
+    return head + " (" + " · ".join(f"{k} {v}" for k, v in st.items() if k) + ")"
 
 
 def _path_short(path: list[dict]) -> str:
@@ -297,34 +310,48 @@ def _path_short(path: list[dict]) -> str:
     return " → ".join(steps)
 
 
+def _sym_text(x: dict) -> str:
+    sym = x.get("symbolic") or {}
+    if not sym:
+        return x.get("proof") or "-"
+    r = {"violated": "위반 (반례 있음)", "holds": "안전", "unknown": "판정 보류"}.get(sym.get("result"), sym.get("result", ""))
+    cex = ", ".join(f"{k} = {v}" for k, v in (sym.get("counterexample") or {}).items())
+    return r + (f": {cex}" if cex else "")
+
+
 def _risk_section(r: dict, num: str) -> list[str]:
     risks = r.get("risks", [])
-    out = ["", f"### {num}. 위험 연산 도달 (Taint 분석)", "",
-           "변경 지점에서 퍼진 영향이 위험 연산의 위험한 자리(배열 인덱스, 분모, 시프트 양, 복사 길이, 좁아지는 변환, "
-           "포인터, 반복 조건)에 닿는 곳입니다. **확실한 위험**은 상수나 바뀐 조건 구간으로 위반이 증명된 것이고, "
-           "감싸는 조건·자료형 범위로 안전이 증명된 연산은 뺐습니다 (변경 후 코드 기준).", ""]
+    sec = r.get("security", {})
+    eng = sec.get("engine", {})
+    out = ["", f"### {num}. 변경 기반 보안 취약점 (CPG + Taint + Symbolic Execution)", "",
+           "변경점에서 CPG(제어·데이터 의존)를 따라 영향이 닿는 위험 연산을 찾고, 규칙의 외부 입력(Source)이 그 피연산자에 "
+           "도달하는지(Taint), 안전 속성을 어기는 입력이 있는지(기호 실행)를 확인한 뒤 변경 전 코드와 비교했습니다. "
+           "상태: **신규 발생**(이번 변경으로 생김) · 기존 존재 · 해결 · 판정 보류.", "",
+           f"- 엔진: CPG {eng.get('cpg', '-')} · Taint {eng.get('taint', '-')} · 기호 실행 {eng.get('symbolic', '-')} · "
+           f"규칙 {eng.get('rules', '-')}"]
     if not risks:
-        return out + ["변경 영향이 위험 연산의 위험한 자리에 닿는 곳이 없습니다."]
-    kinds = defaultdict(int)
-    for x in risks:
-        kinds[x["kind_label"]] += 1
-    out.append(_risk_counts(risks) + " — " + " · ".join(f"{k} {v}" for k, v in kinds.items()))
-    out += ["", "| 판정 | 위험 종류 | 위치 | 위험 연산 (위험 피연산자) | 판정 방식·근거 | 차이가 발생하는 조건 | 원인 변경 | 전달 경로 |",
-            "|---|---|---|---|---|---|---|---|"]
+        return out + ["", "변경으로 영향받는 위험 연산·보안 검사 조건이 없습니다."]
+    out.append("- " + _risk_counts(risks))
+    out += ["", "| ID | 등급 | CWE | 상태 | 위치 | 위험 연산 (피연산자) | 외부 입력 (Taint) | 기호 실행 | 원인 변경 | 검증 방법 |",
+            "|---|---|---|---|---|---|---|---|---|---|"]
     for x in risks[:40]:
-        cond = "<br>".join(_c(_s(c, 100)) for c in x["conditions"][:2]) or "모든 실행"
-        if len(x["conditions"]) > 2:
-            cond += f"<br>외 {len(x['conditions']) - 2}개"
-        basis = x["how"] + (f": 영향받은 값 `{_c(', '.join(x['values']))}`" if x["values"] else "")
-        if x["evidence"]:
-            basis += f"<br>{_c(_s(x['evidence'], 160))}"
-        sev = f"**{x['severity']}**" if x["severity"] == "확실한 위험" else x["severity"]
-        o = x["origin"]
-        out.append(f"| {sev} | {x['kind_label']} | `{_c(x['func'])}`<br>{_c(x['file'])}:{x['line']} | "
-                   f"`{_c(_s(x['expr'], 100))}` (`{_c(_s(x['operand'], 60))}`) | {basis} | {cond} | "
-                   f"`{_c(o['func'])}` ({_c(o['file'])}:{o['line']}) | {_c(_path_short(x['path']))} |")
+        t = x.get("taint") or {}
+        src = f"{t.get('source')}: {t.get('source_label')}" if t.get("flow_detected") else "-"
+        ch = x.get("change") or {}
+        cause = (f"`{_c(_s(ch.get('before') or '(없음)', 50))}` → `{_c(_s(ch.get('after') or '(삭제)', 50))}`<br>"
+                 f"{_c(ch.get('file', ''))}:{ch.get('line', '')}") if ch else f"`{_c(x['origin']['func'])}`"
+        lvl = f"**{x['level']}**" if x["level"] == "High" else x["level"]
+        out.append(f"| {x['id']} | {lvl} | {x['cwe']} | {x['status']} | `{_c(x['func'])}`<br>{_c(x['file'])}:{x['line']} | "
+                   f"`{_c(_s(x['expr'], 80))}` (`{_c(_s(x['operand'], 40))}`)<br>{_c(x['kind_label'])} | {_c(src)} | "
+                   f"{_c(_s(_sym_text(x), 80))} | {cause} | {_c(_s(x.get('verification', ''), 160))} |")
     if len(risks) > 40:
-        out.append(f"| … | 외 {len(risks) - 40}개 ([`report.html`](report.html) '위험 연산 도달' 탭) | | | | | | |")
+        out.append(f"| … | 외 {len(risks) - 40}개 ([`report.html`](report.html) '보안 취약점' 탭, "
+                   "[`security/vulnerability_report.json`](security/vulnerability_report.json)) | | | | | | | | |")
+    tools = sec.get("tools", {})
+    if tools:
+        out += ["", "- 외부 도구 입력: Joern `security/joern/taint.sc`, CodeQL `security/codeql/ChangeTaint.ql`, "
+                f"KLEE 하네스 {tools.get('klee', {}).get('harnesses', 0)}개 `security/klee/` "
+                f"(실행 {tools.get('klee', {}).get('ran', 0)}개), CPG `security/cpg.json`"]
     return out
 
 
@@ -338,14 +365,15 @@ def _impact_sections(r: dict) -> list[str]:
                         else f"`{_c(_s(c['new'] or c['old']))}`" for c in g["changes"][:2]]
 
     out += ["### 2-1. 변경된 함수별 요약", "",
-            "| 변경 함수 | 파일 | 변경 내용 | 영향 함수 | 영향 변수·출력 | 위험 연산 | 우선 확인할 영향 |", "|---|---|---|---|---|---|---|"]
+            "| 변경 함수 | 파일 | 변경 내용 | 영향 함수 | 영향 변수·출력 | 보안 취약점 | 우선 확인할 영향 |", "|---|---|---|---|---|---|---|"]
     for (func, file), g in sorted(groups.items(), key=lambda x: (x[0][1], x[0][0])):
         kinds = " · ".join(f"{k} {v}" for k, v in g["kinds"].items())
         top = _ranked(g["items"], shared)[:4]
         tops = "<br>".join(f"{_PRIORITY[_priority(it, shared)]}: `{_c(it['name'])}`" for it in top) or "-"
-        n_c = sum(1 for x in g["risks"] if x["severity"] == "확실한 위험")
-        rk = (f"**확실 {n_c}**" + (f" · 후보 {len(g['risks']) - n_c}" if len(g["risks"]) > n_c else "")) if n_c \
-            else (f"후보 {len(g['risks'])}" if g["risks"] else "-")
+        lv = defaultdict(int)
+        for x in g["risks"]:
+            lv[x.get("level", "Low")] += 1
+        rk = " · ".join((f"**{k} {lv[k]}**" if k == "High" else f"{k} {lv[k]}") for k in ("High", "Medium", "Low") if lv[k]) or "-"
         out.append(f"| `{_c(func)}` | {_c(file)} | {kinds}<br>{'<br>'.join(g['samples'])} | {len(g['funcs'])} | "
                    f"{len(g['items'])} | {rk} | {tops} |")
     out += _risk_section(r, "2-2")
@@ -433,7 +461,7 @@ def render_summary(s: dict) -> str:
     else:
         st = r["stats"]
         out.append(f"변경 지점 **{len(r['changes'])}개** · 영향 함수 **{st['affected_functions']}개** · "
-                   f"영향 변수·출력 **{len(r['items'])}개** · 위험 연산 도달: {_risk_counts(r.get('risks', []))} — "
+                   f"영향 변수·출력 **{len(r['items'])}개** · 보안 취약점: {_risk_counts(r.get('risks', []))} — "
                    "상세: [`impact/impact_report.md`](impact/impact_report.md)")
         out.append("")
         out += _impact_sections(r)
@@ -533,8 +561,16 @@ def html_payload(s: dict) -> dict:
     cidx = {id(c): i for i, c in enumerate(changes)}
     risks = []
     for x in r.get("risks", []):
-        risks.append({**{k: x[k] for k in ("severity", "kind", "kind_label", "risk", "how", "func", "file", "line", "src",
-                                          "expr", "operand", "values", "evidence", "conditions")},
+        risks.append({**{k: x.get(k) for k in ("severity", "kind", "kind_label", "risk", "how", "func", "file", "line", "src",
+                                              "expr", "operand", "values", "evidence", "conditions", "id", "level", "cwe",
+                                              "cwe_name", "status", "status_code", "state", "proof", "category",
+                                              "verification", "change", "symbolic", "baseline", "external",
+                                              "klee_harness")},
+                      "taint": {**{k: v for k, v in (x.get("taint") or {}).items() if k != "path"},
+                                "path": [{"arrow": report._arrow(st["edge"]), "func": st["func"], "file": st["file"],
+                                          "line": st["line"], "text": st["src"] or st["text"]}
+                                         for st in (x.get("taint") or {}).get("path", [])
+                                         if st["kind"] not in ("actual_out", "nop", "exit")]},
                       "origin": x["origin"]["func"], "origin_file": x["origin"]["file"], "origin_line": x["origin"]["line"],
                       "path": [{"arrow": report._arrow(st["edge"]), "func": st["func"], "file": st["file"],
                                 "line": st["line"], "text": st["src"] or st["text"]}
@@ -555,12 +591,85 @@ def html_payload(s: dict) -> dict:
         "stats": {"changes": len(r["changes"]), "affected_functions": r["stats"]["affected_functions"],
                   "items": len(r["items"])},
         "groups": grp, "changes": chg, "items": items, "risks": risks,
+        "security": {k: v for k, v in (r.get("security") or {}).items() if k in ("summary", "engine", "tools")},
         "notes": ex.get("no_effect_changes") or [],
         "entries": r.get("entries", []), "shared": r.get("shared", []),
         "excluded": {k: ex.get(k) for k in ("parse_errors", "extern_functions", "unresolved_calls",
                                             "unresolved_pointers", "hw_access", "warnings", "assumptions")},
     }
     return data
+
+
+def _load_rules(path: str | None):
+    """규칙 파일을 읽는다. 지정하지 않으면 config/security_rules.yaml, 읽을 수 없으면 내장 기본 규칙."""
+    if path:
+        return load_rules(path), ""
+    default = Path(__file__).resolve().parent / "config" / "security_rules.yaml"
+    if default.is_file():
+        try:
+            return load_rules(str(default)), ""
+        except ValueError:
+            return load_rules(None), "PyYAML 이 없어 config/security_rules.yaml 대신 내장 기본 규칙을 썼습니다 (pip install pyyaml)"
+    return load_rules(None), ""
+
+
+def security_outputs(analysis: dict, sd: Path, new_dir: Path, cfg, rules, args) -> list[str]:
+    """보안 분석 산출물: vulnerability_report.json, CPG JSON, Joern·CodeQL 질의, KLEE 하네스(실행은 옵션)."""
+    sd.mkdir(parents=True, exist_ok=True)
+    internal = analysis.get("_internal") or {}
+    new = internal.get("new")
+    findings = analysis.get("risks", [])
+    written = []
+    tools: dict = {}
+    if args.cpg_export != "none" and internal.get("cpg") is not None and new is not None:
+        funcs = None
+        if args.cpg_export == "impact":
+            names = {f["func"] for f in analysis.get("functions", [])} | {f["func"] for f in findings}
+            funcs = {k for k, fn in new.funcs.items() if new.func_display(k) in names}
+        info = internal["cpg"].export_json(sd / "cpg.json", funcs)
+        tools["cpg"] = {"file": str(sd / "cpg.json"), **info}
+        written.append(str(sd / "cpg.json"))
+    try:
+        tools["joern"] = external.run_joern(sd, new_dir, rules, args.joern)
+        tools["codeql"] = external.run_codeql(sd, new_dir, rules, args.codeql, args.codeql_build)
+    except OSError as e:
+        tools["error"] = str(e)
+    incs = [d.replace("{ROOT}", str(new_dir)) for d in cfg.include_dirs]
+    klee = []
+    sinks = internal.get("sinks", {})
+    for f in findings:
+        sk, nid = sinks.get(id(f), (None, None))
+        if sk is None or f["state"] not in ("violated", "unknown") or len(klee) >= 40:
+            continue
+        n = new.nodes[nid]
+        info = external.klee_harness(new, nid, sk, f["id"], sd, incs + [str(Path(n.file).parent)], cfg.defines)
+        if info is None:
+            continue
+        if args.klee:
+            info = external.run_klee(info, args.klee_include)
+            if info.get("ran"):
+                f["symbolic"] = f.get("symbolic") or {}
+                f["klee"] = {"violated": info.get("violated"), "dir": info["dir"]}
+        f["klee_harness"] = info["dir"]
+        klee.append(info)
+    tools["klee"] = {"harnesses": len(klee), "ran": sum(1 for k in klee if k.get("ran"))}
+    codeql_hits = {(r["file"].split("/")[-1], r["line"]) for r in tools.get("codeql", {}).get("results", [])}
+    joern_hits = {tuple(x.rsplit(":", 1)) for fl in tools.get("joern", {}).get("flows", []) for x in fl[-1:]}
+    for f in findings:
+        ext = {}
+        if codeql_hits:
+            ext["codeql"] = (f["file"].split("/")[-1], f["line"]) in codeql_hits
+        if joern_hits:
+            ext["joern"] = any(fl[0].endswith(f["file"].split("/")[-1]) and fl[1] == str(f["line"]) for fl in joern_hits)
+        if ext:
+            f["external"] = ext
+    sec = analysis.setdefault("security", {})
+    sec["tools"] = tools
+    report_data = {"summary": sec.get("summary"), "engine": sec.get("engine"), "tools": tools, "findings": findings}
+    (sd / "vulnerability_report.json").write_text(json.dumps(report_data, ensure_ascii=False, indent=2, default=str),
+                                                  encoding="utf-8")
+    written.insert(0, str(sd / "vulnerability_report.json"))
+    return written
 
 
 def terminal(s: dict) -> str:
@@ -650,8 +759,14 @@ def run(args) -> int:
         old, new = load_programs(old_dir, new_dir, cfg, globs, exclude or None, args.extern_model, args.jobs)
         summary["analyzed"] = {"old": len(old.tus), "new": len(new.tus)}
         log("3/5 변경 영향 분석(전방 슬라이싱) 중...")
+        rules, rules_note = _load_rules(args.rules)
+        if rules_note:
+            warnings.append(rules_note)
+        log("    보안 취약점 분석 (CPG · Taint · Symbolic Execution)...")
         analysis = run_analysis(old, new, cfg, k=args.context_depth, entries=args.entry, isr=args.isr,
-                                sil_cycles=args.cycles)
+                                sil_cycles=args.cycles, rules=rules, symbolic=not args.no_symbolic,
+                                sym_paths=args.sym_paths, sym_budget=args.sym_budget)
+        summary["outputs"] += security_outputs(analysis, out / "security", new_dir, cfg, rules, args)
 
         log("4/5 의존성 비교 중...")
         t_old = deps_mod.dependency_table(old, args.entry, args.isr)
@@ -689,7 +804,7 @@ def run(args) -> int:
         written = report.write_outputs(analysis, out / "impact", set(args.format.split(",")),
                                        sil_template=bool(args.scenario or args.explore))
         summary["outputs"] = [str(p) for p in written] + summary["outputs"]
-        summary["analysis"] = analysis
+        summary["analysis"] = public(analysis)
 
     summary["elapsed"] = time.time() - t0
     summary["outputs"] = [str(out / "summary.md"), str(out / "summary.json")] + summary["outputs"]
@@ -746,6 +861,19 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 1, help="병렬 파싱 프로세스 수")
     a.add_argument("--fail-on-impact", action="store_true", help="영향 항목이 있으면 종료 코드 3")
     a.add_argument("-q", "--quiet", action="store_true", help="터미널 요약 생략")
+
+    sec = ap.add_argument_group("보안 취약점 분석 (CPG + Taint + Symbolic Execution)")
+    sec.add_argument("--rules", help="Source·Sink·보안 검사 규칙 (YAML·JSON). 기본: config/security_rules.yaml")
+    sec.add_argument("--no-symbolic", action="store_true", help="기호 실행(z3) 생략")
+    sec.add_argument("--sym-paths", type=int, default=64, help="위험 연산 하나당 기호 실행 최대 경로 수 (기본 64)")
+    sec.add_argument("--sym-budget", type=float, default=180.0, help="기호 실행 전체 시간 한도(초, 기본 180)")
+    sec.add_argument("--cpg-export", choices=["impact", "all", "none"], default="impact",
+                     help="CPG JSON 내보내기 범위 (기본 impact: 영향 함수만)")
+    sec.add_argument("--joern", action="store_true", help="Joern 설치 시 생성한 taint.sc 실행 (교차 검증)")
+    sec.add_argument("--codeql", action="store_true", help="CodeQL 설치 시 DB 생성·질의 실행 (--codeql-build 필요)")
+    sec.add_argument("--codeql-build", help="CodeQL DB 생성용 빌드 명령 (예: \"make clean all\")")
+    sec.add_argument("--klee", action="store_true", help="clang·KLEE 설치 시 생성한 하네스로 반례 재현")
+    sec.add_argument("--klee-include", help="klee/klee.h 가 있는 폴더")
 
     x = ap.add_argument_group("실행 확인 (SIL, gcc 필요)")
     x.add_argument("--explore", action="store_true", help="결과가 달라지는 입력·상태 자동 탐색")
