@@ -244,5 +244,41 @@ class FolderOutputsTests(unittest.TestCase):
         self.assertIn("CWE-787", (out / "report.html").read_text(encoding="utf-8"))
 
 
+class ChangeComparisonTests(unittest.TestCase):
+    """Source–Sink 경로 변화, 바뀐 조건의 영향, 버퍼·입력 범위 변화, 변경 전후 안전 속성 검증."""
+    BASE = DIAG.replace("{LIMIT}", "8")
+
+    def one(self, old, new):
+        r = analyze({"d.c": old}, {"d.c": new})
+        return next(x for x in r["risks"] if x["kind"] == "length")
+
+    @needs_z3
+    def test_relaxed_condition_range_and_safety_change(self):
+        f = self.one(self.BASE, DIAG.replace("{LIMIT}", "64"))
+        self.assertEqual(f["how"], "실행 조건 변경")
+        self.assertEqual(f["taint"]["change"], "기존 경로 유지")
+        self.assertEqual(f["bounds"]["change"], "버퍼 8바이트 · 허용 len ≤ 8 → len ≤ 64")
+        self.assertEqual(f["baseline"]["old_state"], "holds")
+        self.assertEqual(f["symbolic"]["result"], "violated")
+
+    @needs_z3
+    def test_buffer_shrink_without_initializer(self):
+        old = self.BASE.replace("uint8_t buffer[8] = {0};", "uint8_t buffer[8];")
+        f = self.one(old, old.replace("buffer[8];", "buffer[4];"))
+        self.assertEqual(f["status_code"], "NEW_REGRESSION")
+        self.assertEqual(f["how"], "자료형·크기 변경")
+        self.assertIn("버퍼 8바이트 → 버퍼 4바이트", f["bounds"]["change"])
+
+    @needs_z3
+    def test_new_source_to_sink_path(self):
+        new = DIAG.replace("{LIMIT}", "64")
+        old = new.replace("memcpy(buffer, rx, len);", "memcpy(buffer, rx, 4U);")
+        f = self.one(old, new)
+        self.assertEqual(f["taint"]["change"], "신규 경로 (변경 전에는 외부 입력이 닿지 않음)")
+        self.assertEqual(f["baseline"]["old_state"], "holds")
+        self.assertIn("상수 4 → len ≤ 64", f["bounds"]["change"])
+        self.assertEqual(f["status_code"], "NEW_REGRESSION")
+
+
 if __name__ == "__main__":
     unittest.main()

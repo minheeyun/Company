@@ -55,7 +55,7 @@ KIND_RISK = {
     "fptr": "엉뚱한 함수 실행",
 }
 _KIND_ORDER = ["index", "div", "length", "deref", "fptr", "shift", "narrow", "loop"]
-HOW_ORDER = ["값 전달", "변경된 연산", "실행 조건 변경", "추가된 연산", "영향 범위 안의 연산"]
+HOW_ORDER = ["값 전달", "변경된 연산", "실행 조건 변경", "자료형·크기 변경", "추가된 연산", "영향 범위 안의 연산"]
 CERTAIN, CANDIDATE = "확실한 위험", "위험 후보"
 
 # 메모리 복사·초기화 함수: 마지막 인자를 길이로 본다
@@ -703,6 +703,10 @@ def find_risks(ctx, old: Program, rules=None) -> list[dict]:
                 path = [Hit(p, None, ("seed", ""), hits[p].order if p in hits else 0),
                         Hit(m, p, ("control", lab), hits[m].order)]
                 evidence = evidence or f"바뀐 조건 `{prog.nodes[p].text}` 바로 아래의 연산"
+            elif m in seeds and (ch is None or ch.kind == "type_changed") and n.func in old.funcs:
+                # 자료형 변경(배열·버퍼 크기, 구조체)으로 시작점이 된 연산
+                how, path = "자료형·크기 변경", [hits[m]]
+                evidence = evidence or "피연산자나 대상 버퍼의 자료형·크기가 바뀜"
             elif m in seeds and (ch is None or ch.kind in ("added", "func_added")):
                 how, path = "추가된 연산", [hits[m]]
             elif verdict == "certain":

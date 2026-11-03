@@ -97,22 +97,108 @@ def _state(prog: Program, nid: int, sk, seeds: set[int], symbolic: bool, budget:
     return ("violated" if verdict == "certain" else "unknown"), ev, sym
 
 
-def _counterpart(prog: Program, func_key: str, sk, rules):
+def _bounds(prog: Program, nid: int, sk, seeds: set[int]) -> dict:
+    """위험 연산의 한계(배열·버퍼 크기 등)와, 감싸는 조건·자료형이 허용하는 피연산자 범위."""
+    from .analysis import _guards
+    from .diff import INF, fmt_set
+    from .taint import _allowed, _strip
+    from .cexpr import gen
+
+    E = _Env(prog, prog.nodes[nid])
+    limit = {"index": f"배열 크기 {sk.dim}" if sk.dim is not None else "배열 크기 모름",
+             "length": f"버퍼 {sk.dim}바이트" if sk.dim is not None else "버퍼 크기 모름",
+             "shift": f"{sk.width or 32}비트", "div": "0 이면 안 됨",
+             "narrow": f"대상 범위 {sk.target[0]}..{sk.target[1]}" if sk.target else ""}.get(sk.kind, "")
+    if sk.kind in ("deref", "fptr", "loop"):
+        return {"limit": limit, "input_range": "", "limit_value": None}
+    op = sk.operand
+    var = gen(_strip(op))
+    c = E.const(op)
+    if c is not None:
+        rng = f"상수 {c}"
+    else:
+        r = E.rng(op)
+        dom = (r[0], r[1]) if r else (-INF, INF)
+        allowed, _, _ = _allowed(prog, _guards(prog, nid), op, dom, seeds)
+        if allowed is not None:
+            rng = fmt_set(var, allowed, dom)
+        elif r:
+            rng = f"{var}: 자료형 범위 {int(r[0])}..{int(r[1])} (감싸는 검사 없음)"
+        else:
+            rng = f"{var}: 범위 모름"
+    return {"limit": limit, "input_range": rng, "limit_value": sk.dim if sk.kind in ("index", "length") else None}
+
+
+def _range_change(new_b: dict | None, old_b: dict | None) -> str:
+    if not new_b:
+        return ""
+    if not old_b:
+        return f"{new_b['limit']} · 허용 {new_b['input_range']} (변경 전 없음)"
+    parts = []
+    if old_b["limit"] != new_b["limit"]:
+        parts.append(f"{old_b['limit']} → {new_b['limit']}")
+    else:
+        parts.append(new_b["limit"])
+    if old_b["input_range"] != new_b["input_range"]:
+        parts.append(f"허용 {old_b['input_range']} → {new_b['input_range']}")
+    elif new_b["input_range"]:
+        parts.append(f"허용 {new_b['input_range']} (같음)")
+    return " · ".join(p for p in parts if p)
+
+
+def _path_change(new_flow: bool, old_flow: bool | None) -> str:
+    if old_flow is None:
+        return "신규 경로 (변경 전에는 이 연산이 없음)" if new_flow else "없음"
+    if new_flow and not old_flow:
+        return "신규 경로 (변경 전에는 외부 입력이 닿지 않음)"
+    if new_flow and old_flow:
+        return "기존 경로 유지"
+    if old_flow and not new_flow:
+        return "경로 사라짐 (변경 전에만 외부 입력이 닿음)"
+    return "없음"
+
+
+def _anchor(sk) -> str:
+    """피연산자가 바뀌어도 '같은 연산'으로 볼 기준: 호출 함수·목적지, 배열, 대입 대상 등."""
+    from pycparser import c_ast
+    e = sk.expr
+    if isinstance(e, c_ast.FuncCall):
+        args = e.args.exprs if e.args else []
+        return f"call:{norm(e.name)}:{norm(args[0]) if args else ''}"
+    if isinstance(e, c_ast.ArrayRef):
+        return f"index:{norm(e.name)}"
+    if isinstance(e, c_ast.BinaryOp):
+        return f"{e.op}:{norm(e.left)}"
+    if isinstance(e, c_ast.Assignment):
+        return f"assign:{norm(e.lvalue)}"
+    if isinstance(e, c_ast.Decl):
+        return f"decl:{e.name}"
+    return f"{sk.kind}:{norm(e)}"
+
+
+def _counterpart(prog: Program, func_key: str, sk, rules, line: int | None = None):
+    """다른 버전의 같은 함수에서 같은 위험 연산: 피연산자가 같은 것 → 같은 대상(호출·배열·대입)인 것 순."""
     f = prog.funcs.get(func_key)
     if f is None:
         return None
-    want_op, want_expr = norm(sk.operand), norm(sk.expr)
+    want_op, want_expr, want_anchor = norm(sk.operand), norm(sk.expr), _anchor(sk)
     best = None
     for nid in f.nodes:
         n = prog.nodes[nid]
         if n.dead or not n.visible:
             continue
         for s2 in sinks_of(prog, n, rules):
-            if s2.kind != sk.kind or norm(s2.operand) != want_op:
+            if s2.kind != sk.kind:
                 continue
-            score = 0 if norm(s2.expr) == want_expr else 1
-            if best is None or score < best[0]:
-                best = (score, nid, s2)
+            if norm(s2.operand) == want_op:
+                score = 0 if norm(s2.expr) == want_expr else 1
+            elif _anchor(s2) == want_anchor:
+                score = 2
+            else:
+                continue
+            dist = abs(n.line - line) if line is not None else 0
+            if best is None or (score, dist) < best[0]:
+                best = ((score, dist), nid, s2)
     return None if best is None else (best[1], best[2])
 
 
@@ -191,7 +277,8 @@ def analyze_security(old: Program, new: Program, cs, hits_new, hits_old, lines, 
         if state == "holds" and verdict != "certain" and sym is None:
             continue
         n = new.nodes[m]
-        cp = _counterpart(old, n.func, sk, rules)
+        cp = _counterpart(old, n.func, sk, rules, n.line)
+        old_ti, old_b = None, None
         if cp is None:
             old_state, old_ev, old_sym, old_loc = "absent", "", None, ""
         else:
@@ -200,14 +287,21 @@ def analyze_security(old: Program, new: Program, cs, hits_new, hits_old, lines, 
             on = old.nodes[onid]
             old_loc = f"{_rel(old, on.file)}:{on.line}"
             matched_old.add((on.file, on.line, osk.kind, norm(osk.operand)))
+            old_ti = taint_info(old, ctx_old, cpg_old, taint_old, onid, osk)
+            old_b = _bounds(old, onid, osk, cs.seeds_old)
+        new_b = _bounds(new, m, sk, cs.seeds_new)
         status = _status(state, old_state)
         if not status:
             continue  # 변경 후 안전이 증명되고 변경 전에도 문제 없음
         ti = taint_info(new, ctx_new, cpg_new, taint_new, m, sk)
         change = ctx_new.change_by_node.get(origin_node)
         f = dict(row)
+        ti["change"] = _path_change(ti["flow_detected"], None if old_ti is None else old_ti["flow_detected"])
+        if old_ti is not None and old_ti["flow_detected"]:
+            ti["old_source"] = f"{old_ti.get('source')}: {old_ti.get('source_label')}"
         f.update({
             "category": "위험 연산",
+            "bounds": {"new": new_b, "old": old_b, "change": _range_change(new_b, old_b)},
             "state": state, "evidence": ev or row["evidence"],
             "proof": ("기호 실행 반례" if sym and sym["result"] == "violated" else
                       "기호 실행으로 안전" if sym and sym["result"] == "holds" else
@@ -240,15 +334,24 @@ def analyze_security(old: Program, new: Program, cs, hits_new, hits_old, lines, 
         old_state, old_ev, old_sym = _state(old, m, sk, cs.seeds_old, use_sym, budget, sym_paths)
         if old_state != "violated":
             continue
-        cp = _counterpart(new, on.func, sk, rules)
+        cp = _counterpart(new, on.func, sk, rules, on.line)
         new_state = "absent"
         if cp is not None:
             new_state, _, _ = _state(new, cp[0], cp[1], cs.seeds_new, use_sym, budget, sym_paths)
         if new_state not in ("holds", "absent"):
             continue
         ti = taint_info(old, ctx_old, cpg_old, taint_old, m, sk)
+        new_ti, new_b = None, None
+        if cp is not None:
+            new_ti = taint_info(new, ctx_new, cpg_new, taint_new, cp[0], cp[1])
+            new_b = _bounds(new, cp[0], cp[1], cs.seeds_new)
+        old_b = _bounds(old, m, sk, cs.seeds_old)
+        ti["change"] = _path_change(bool(new_ti and new_ti["flow_detected"]), ti["flow_detected"]) if new_ti else \
+            ("경로 사라짐 (변경 후 이 연산이 없음)" if ti["flow_detected"] else "없음")
         f = dict(row)
         f.update({
+            "bounds": {"new": new_b, "old": old_b,
+                       "change": _range_change(new_b, old_b) if new_b else f"{old_b['limit']} · 허용 {old_b['input_range']} → (연산 없음)"},
             "category": "위험 연산", "state": "holds", "evidence": old_ev or row["evidence"],
             "proof": "변경 후 " + STATE_KO[new_state], "cwe": cwe_of(sk, ti["flow_detected"]), "taint": ti,
             "symbolic": None, "status_code": "FIXED", "status": STATUS["FIXED"], "level": "Low",

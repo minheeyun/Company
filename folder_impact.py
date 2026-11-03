@@ -333,22 +333,28 @@ def _risk_section(r: dict, num: str) -> list[str]:
         return out + ["", "변경으로 영향받는 위험 연산·보안 검사 조건이 없습니다."]
     out.append("- " + _risk_counts(risks))
     show_cwe = any(x.get("cwe") for x in risks)
-    out += ["", "| ID | 등급 | " + ("CWE | " if show_cwe else "") + "상태 | 위치 | 위험 연산 (피연산자) | 외부 입력 (Taint) | 기호 실행 | 원인 변경 | 검증 방법 |",
-            "|---|---|" + ("---|" if show_cwe else "") + "---|---|---|---|---|---|---|"]
+    out += ["", "| ID | 등급 | " + ("CWE | " if show_cwe else "") + "상태 | 위치 | 위험 연산 (피연산자) | 외부 입력 (Taint) · 경로 변화 | 버퍼·입력 범위 (전 → 후) | 기호 실행 (후 / 전) | 원인 변경 | 검증 방법 |",
+            "|---|---|" + ("---|" if show_cwe else "") + "---|---|---|---|---|---|---|---|"]
     for x in risks[:40]:
         t = x.get("taint") or {}
         src = f"{t.get('source')}: {t.get('source_label')}" if t.get("flow_detected") else "-"
+        if t.get("change") and t.get("change") != "없음":
+            src += f"<br>({t['change']})"
+        rng = (x.get("bounds") or {}).get("change", "") or "-"
+        b = x.get("baseline") or {}
+        old_sym = {"violated": "위반", "holds": "안전", "unknown": "보류"}.get(((b.get("old_symbolic") or {}).get("result")), b.get("old_state_label", ""))
         ch = x.get("change") or {}
         cause = (f"`{_c(_s(ch.get('before') or '(없음)', 50))}` → `{_c(_s(ch.get('after') or '(삭제)', 50))}`<br>"
                  f"{_c(ch.get('file', ''))}:{ch.get('line', '')}") if ch else f"`{_c(x['origin']['func'])}`"
         lvl = f"**{x['level']}**" if x["level"] == "High" else x["level"]
         cw = f"{x.get('cwe', '')} | " if show_cwe else ""
         out.append(f"| {x['id']} | {lvl} | {cw}{x['status']} | `{_c(x['func'])}`<br>{_c(x['file'])}:{x['line']} | "
-                   f"`{_c(_s(x['expr'], 80))}` (`{_c(_s(x['operand'], 40))}`)<br>{_c(x['kind_label'])} | {_c(src)} | "
-                   f"{_c(_s(_sym_text(x), 80))} | {cause} | {_c(_s(x.get('verification', ''), 160))} |")
+                   f"`{_c(_s(x['expr'], 80))}` (`{_c(_s(x['operand'], 40))}`)<br>{_c(x['kind_label'])} | {src.replace('|', '¦')} | "
+                   f"{_c(_s(rng, 140))} | {_c(_s(_sym_text(x), 70))}<br>변경 전: {_c(old_sym)} | {cause} | "
+                   f"{_c(_s(x.get('verification', ''), 160))} |")
     if len(risks) > 40:
         out.append(f"| … | 외 {len(risks) - 40}개 ([`report.html`](report.html) '보안 취약점' 탭, "
-                   "[`security/vulnerability_report.json`](security/vulnerability_report.json)) |" + " |" * (8 if show_cwe else 7))
+                   "[`security/vulnerability_report.json`](security/vulnerability_report.json)) |" + " |" * (9 if show_cwe else 8))
     tools = sec.get("tools", {})
     if tools:
         out += ["", "- 외부 도구 입력: Joern `security/joern/taint.sc`, CodeQL `security/codeql/ChangeTaint.ql`, "
@@ -566,7 +572,7 @@ def html_payload(s: dict) -> dict:
         risks.append({**{k: x.get(k) for k in ("severity", "kind", "kind_label", "risk", "how", "func", "file", "line", "src",
                                               "expr", "operand", "values", "evidence", "conditions", "id", "level", "cwe",
                                               "cwe_name", "status", "status_code", "state", "proof", "category",
-                                              "verification", "change", "symbolic", "baseline", "external",
+                                              "verification", "change", "symbolic", "baseline", "external", "bounds",
                                               "klee_harness")},
                       "taint": {**{k: v for k, v in (x.get("taint") or {}).items() if k != "path"},
                                 "path": [{"arrow": report._arrow(st["edge"]), "func": st["func"], "file": st["file"],

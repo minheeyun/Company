@@ -312,7 +312,15 @@ def _risks_section(risks: list[dict]) -> list[str]:
             out.append(f"- 기호 실행: {sym.get('result')} — 속성 `{sym.get('property')}` · {sym.get('detail', '')}")
         b = x.get("baseline") or {}
         if b:
-            out.append(f"- 변경 전: {b.get('old_state_label', '')} {b.get('old_location', '')} {_cell(b.get('old_evidence', ''))}")
+            os_ = (b.get("old_symbolic") or {}).get("result") or b.get("old_state_label", "")
+            ns_ = (sym or {}).get("result") or x.get("state", "")
+            out.append(f"- 안전 속성 검증 (변경 전 → 후): {os_} → {ns_} · 변경 전 {b.get('old_location', '')} {_cell(b.get('old_evidence', ''))}")
+        t0 = x.get("taint") or {}
+        if t0.get("change"):
+            out.append(f"- Source→Sink 경로 변화: {t0['change']}")
+        bd = x.get("bounds") or {}
+        if bd.get("change"):
+            out.append(f"- 버퍼·입력 범위 (변경 전 → 후): {_cell(bd['change'])}")
         out.append(f"- 검증 방법: {_cell(x.get('verification', ''))}")
         out.append("- 근거 경로 (변경 → 위험 연산):")
         n = 0

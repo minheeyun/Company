@@ -310,10 +310,19 @@ function riskDetail(r) {
     + ((r.cpg || {}).control_dependency_changed ? " · 제어 의존 변경" : "")}));
   kv.push(el("div", {text: "Taint"}), el("div", {}, [t.flow_detected ? frag([el("b", {text: "외부 입력 도달 "}), code(t.source + ": " + t.source_label), " → ", code(t.value || r.operand)])
     : el("span", {class: "muted", text: "규칙의 외부 입력(Source)에서 이 피연산자까지 데이터 흐름 없음"})]));
+  if (t.change) kv.push(el("div", {text: "Source→Sink 경로 변화"}), el("div", {}, [el("b", {text: t.change}), t.old_source ? el("span", {class: "small muted", text: "  변경 전 출발점 " + t.old_source}) : null]));
+  var bd = r.bounds || {};
+  if (bd.change) kv.push(el("div", {text: "버퍼·입력 범위"}), el("div", {}, [el("b", {text: bd.change}),
+    el("div", {class: "small muted", text: "변경 후: " + ((bd.new || {}).limit || "-") + " · 허용 " + ((bd.new || {}).input_range || "-")
+      + (bd.old ? "   |   변경 전: " + bd.old.limit + " · 허용 " + bd.old.input_range : "   |   변경 전: 해당 연산 없음")})]));
   kv.push(el("div", {text: "기호 실행"}), el("div", {}, [el("b", {text: symText(r)}), s ? el("span", {class: "small muted", text: "  속성 " + s.property + " · " + (s.detail || "") + " · " + s.engine}) : null]));
   kv.push(el("div", {text: "근거"}), el("div", {text: r.evidence || "-"}));
-  kv.push(el("div", {text: "변경 전 비교"}), el("div", {text: (b.old_state_label || "-") + (b.old_location ? " (" + b.old_location + ")" : "")
-    + (b.old_evidence ? " — " + b.old_evidence : "") + (b.old_symbolic && b.old_symbolic.result ? " · 기호 실행 " + b.old_symbolic.result : "")}));
+  var stKo = {violated: "위반 (반례 있음)", holds: "안전", unknown: "판정 보류"};
+  kv.push(el("div", {text: "안전 속성 검증 (전 → 후)"}), el("div", {}, [
+    el("b", {text: "변경 전 " + (b.old_symbolic ? (stKo[b.old_symbolic.result] || b.old_symbolic.result) : (b.old_state_label || "-"))
+      + "  →  변경 후 " + (s ? (stKo[s.result] || s.result) : ({violated: "위반", holds: "안전", unknown: "판정 보류"}[r.state] || r.state))}),
+    el("div", {class: "small muted", text: (b.old_location ? "변경 전 위치 " + b.old_location + " · " : "") + (b.old_evidence || "")
+      + (b.old_symbolic && b.old_symbolic.counterexample ? " · 변경 전 반례 " + Object.keys(b.old_symbolic.counterexample).map(function (k) { return k + " = " + b.old_symbolic.counterexample[k]; }).join(", ") : "")})]));
   kv.push(el("div", {text: "검증 방법"}), el("div", {}, [el("b", {text: r.verification || "-"}), r.klee_harness ? el("div", {class: "small muted", text: "KLEE 하네스: " + r.klee_harness}) : null]));
   if (r.external) kv.push(el("div", {text: "외부 도구"}), el("div", {text: Object.keys(r.external).map(function (k) { return k + (r.external[k] ? " 경로 확인" : " 경로 없음"); }).join(" · ")}));
   return el("div", {}, [
@@ -335,6 +344,7 @@ function riskTable(rows) {
       showCwe ? {name: "cwe", label: "CWE", options: uniq(rows.map(function (r) { return r.cwe; })), test: function (r, v) { return r.cwe === v; }}
               : {name: "kind", label: "위험 종류", options: uniq(rows.map(function (r) { return r.kind_label; })), test: function (r, v) { return r.kind_label === v; }},
       {name: "taint", label: "외부 입력", options: ["도달", "없음"], test: function (r, v) { return !!(r.taint || {}).flow_detected === (v === "도달"); }},
+      {name: "pchg", label: "경로 변화", options: uniq(rows.map(function (r) { return (r.taint || {}).change || "없음"; })), test: function (r, v) { return ((r.taint || {}).change || "없음") === v; }},
       {name: "sym", label: "기호 실행", options: ["위반 (반례 있음)", "안전", "판정 보류", "미실행"], test: function (r, v) {
         var s = r.symbolic ? ({violated: "위반 (반례 있음)", holds: "안전", unknown: "판정 보류"}[r.symbolic.result]) : "미실행"; return s === v; }},
       {name: "origin", label: "원인 변경", options: uniq(rows.map(function (r) { return r.origin; })), test: function (r, v) { return r.origin === v; }}
@@ -346,7 +356,9 @@ function riskTable(rows) {
                                                                : frag([el("b", {text: r.kind_label}), el("br"), el("span", {class: "small muted", text: r.risk})]); }},
       {label: "위치", render: function (r) { return frag([code(r.func), el("br"), loc(r.file, r.line)]); }},
       {label: "위험 연산 (피연산자)", render: function (r) { return frag([code(short(r.expr, 110)), el("br"), el("span", {class: "small muted", text: "피연산자 "}), code(short(r.operand, 70))]); }},
-      {label: "외부 입력 (Taint)", render: function (r) { var t = r.taint || {}; return t.flow_detected ? frag([el("b", {text: t.source}), el("br"), el("span", {class: "small", text: t.source_label})]) : el("span", {class: "muted", text: "-"}); }},
+      {label: "외부 입력 (Taint)", render: function (r) { var t = r.taint || {}; return frag([t.flow_detected ? frag([el("b", {text: t.source}), el("br"), el("span", {class: "small", text: t.source_label})]) : el("span", {class: "muted", text: "-"}),
+        t.change && t.change !== "없음" ? el("div", {class: "small muted", text: t.change}) : null]); }},
+      {label: "버퍼·입력 범위 (전 → 후)", render: function (r) { return el("span", {class: "small", text: short((r.bounds || {}).change || "-", 120)}); }},
       {label: "기호 실행", render: function (r) { return el("span", {class: "small", text: short(symText(r), 90)}); }},
       {label: "원인 변경", render: function (r) { var ch = r.change; return ch ? frag([el("span", {class: "code old", text: short(ch.before || "(없음)", 40)}), " → ",
         el("span", {class: "code new", text: short(ch.after || "(삭제)", 40)}), el("br"), loc(ch.file, ch.line)]) : frag([code(r.origin), el("br"), loc(r.origin_file, r.origin_line)]); }},
