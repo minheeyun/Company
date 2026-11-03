@@ -87,7 +87,7 @@ class FolderImpactTests(unittest.TestCase):
         self.assertIn(("Drv_Set", "g_reg"), {(i["func"], i["name"]) for i in data["analysis"]["items"]})
         self.assertNotIn("</script", data["analysis"]["items"][0]["src"])
         self.assertIn("risks", data["analysis"])
-        self.assertIn("변경 기반 보안 취약점", md)
+        self.assertIn("변경 기반 보안 위험", md)
         self.assertTrue((self.out / "deps" / "deps_access_new.csv").is_file())
 
     def test_dependency_diff(self):

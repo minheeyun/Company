@@ -285,15 +285,18 @@ def _risks_section(risks: list[dict]) -> list[str]:
     if not risks:
         return out + ["변경으로 영향받는 위험 연산·보안 검사 조건이 없습니다."]
     show_cwe = any(x.get("cwe") for x in risks)
-    out += ["| ID | 등급 | " + ("CWE | " if show_cwe else "") + "상태 | 위치 | 위험 연산 | 피연산자 | 외부 입력 | 기호 실행 | 근거 |",
-            "|---|---|" + ("---|" if show_cwe else "") + "---|---|---|---|---|---|---|"]
+    out += ["상태가 '기존 존재'·'해결'인 항목은 이번 변경으로 생긴 위험이 아니므로 검토 화면(summary.md·report.html 기본 화면)에서는 뺍니다. "
+            "관계 '직접' = 변경 함수 안의 위험 연산, '전파' = 값 전달·자료형 변경 경로로 다른 함수에 닿은 위험.", "",
+            "| ID | 상태 | 등급 | 관계 | 검증 수준 | " + ("CWE | " if show_cwe else "") + "위치 | 위험 연산 | 피연산자 | 외부 입력 | 기호 실행 | 근거 |",
+            "|---|---|---|---|---|" + ("---|" if show_cwe else "") + "---|---|---|---|---|---|"]
     for x in risks:
         t = x.get("taint") or {}
         sym = x.get("symbolic") or {}
         cex = ", ".join(f"{k}={v}" for k, v in (sym.get("counterexample") or {}).items())
         symt = (sym.get("result", "") + (f" ({cex})" if cex else "")) if sym else (x.get("proof") or "-")
         cw = f"{x.get('cwe', '')} | " if show_cwe else ""
-        out.append(f"| {x.get('id', '')} | {x.get('level', '')} | {cw}{x.get('status', '')} | "
+        out.append(f"| {x.get('id', '')} | {x.get('status', '')} | {x.get('level', '')} | {x.get('relation', '')} | "
+                   f"{x.get('verification_level', '')} | {cw}"
                    f"`{_cell(x['func'])}` {x['file']}:{x['line']} | {_code(x['expr'])} | {_code(x['operand'])} | "
                    f"{_cell(t.get('source', '-') if t.get('flow_detected') else '-')} | {_cell(symt)} | {_cell(x['evidence'])} |")
     out += ["", "### 항목별 근거", ""]

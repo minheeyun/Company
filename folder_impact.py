@@ -292,15 +292,11 @@ def change_groups(r: dict) -> tuple[list[dict], dict[tuple[str, str], dict]]:
 def _risk_counts(risks: list[dict]) -> str:
     if not risks:
         return "없음"
-    lv = defaultdict(int)
+    n = defaultdict(int)
     for x in risks:
-        if x.get("status_code") != "FIXED":
-            lv[x.get("level", "Low")] += 1
-    st = defaultdict(int)
-    for x in risks:
-        st[x.get("status", "")] += 1
-    head = " · ".join(f"**{k} {lv[k]}**" if k == "High" and lv[k] else f"{k} {lv[k]}" for k in ("High", "Medium", "Low"))
-    return head + " (" + " · ".join(f"{k} {v}" for k, v in st.items() if k) + ")"
+        n[x.get("status_code", "")] += 1
+    head = f"**신규 위험 {n['NEW_REGRESSION']}개**" if n["NEW_REGRESSION"] else "신규 위험 0개"
+    return (f"{head} · 판정 보류 {n['PENDING']}개 · (기본 화면에서 뺀) 기존 존재 {n['EXISTING']}개 · 해결 {n['FIXED']}개")
 
 
 def _path_short(path: list[dict]) -> str:
@@ -320,41 +316,50 @@ def _sym_text(x: dict) -> str:
 
 
 def _risk_section(r: dict, num: str) -> list[str]:
-    risks = r.get("risks", [])
+    allr = r.get("risks", [])
+    risks = [x for x in allr if x.get("status_code") in ("NEW_REGRESSION", "PENDING")]
     sec = r.get("security", {})
     eng = sec.get("engine", {})
-    out = ["", f"### {num}. 변경 기반 보안 취약점 (CPG + Taint + Symbolic Execution)", "",
-           "변경점에서 CPG(제어·데이터 의존)를 따라 영향이 닿는 위험 연산을 찾고, 규칙의 외부 입력(Source)이 그 피연산자에 "
-           "도달하는지(Taint), 안전 속성을 어기는 입력이 있는지(기호 실행)를 확인한 뒤 변경 전 코드와 비교했습니다. "
-           "상태: **신규 발생**(이번 변경으로 생김) · 기존 존재 · 해결 · 판정 보류.", "",
+    out = ["", f"### {num}. 변경 기반 보안 위험 (CPG + Taint + Symbolic Execution)", "",
+           "변경된 함수의 위험 연산을 먼저(관계 '직접'), 다른 함수로 전파된 위험은 값 전달·자료형 변경처럼 의존 경로가 분명할 때만(관계 '전파') "
+           "표시합니다. 이미 있던 위험(기존 존재)과 해결된 위험은 이 표에서 뺐습니다. 함수 호출·변수 읽기쓰기 변화는 3절 '의존성 변화'(영향 분석)이며 "
+           "보안 위험으로 보지 않습니다. **보안 위험** = 안전 속성 위반이 증명된 것, **판정 보류** = 위반을 증명하지 못한 후보.", "",
+           "- 검증 수준: **기호 실행 반례 발견**(z3 가 위반 입력을 찾음) > **정적 규칙 위반**(상수·바뀐 조건 구간으로 증명) > "
+           "**Taint 경로 발견**(외부 입력이 닿음, 위반 미증명) > **검증 불충분**",
            f"- 엔진: CPG {eng.get('cpg', '-')} · Taint {eng.get('taint', '-')} · 기호 실행 {eng.get('symbolic', '-')} · "
-           f"규칙 {eng.get('rules', '-')}"]
+           f"규칙 {eng.get('rules', '-')}",
+           "- " + (_risk_counts(allr) if allr else "보안 항목 없음")]
     if not risks:
-        return out + ["", "변경으로 영향받는 위험 연산·보안 검사 조건이 없습니다."]
-    out.append("- " + _risk_counts(risks))
+        return out + ["", "변경으로 새로 생긴 위험이나 판정 보류 후보가 없습니다."]
     show_cwe = any(x.get("cwe") for x in risks)
-    out += ["", "| ID | 등급 | " + ("CWE | " if show_cwe else "") + "상태 | 위치 | 위험 연산 (피연산자) | 외부 입력 (Taint) · 경로 변화 | 버퍼·입력 범위 (전 → 후) | 기호 실행 (후 / 전) | 원인 변경 | 검증 방법 |",
-            "|---|---|" + ("---|" if show_cwe else "") + "---|---|---|---|---|---|---|---|"]
+    out += ["", "| ID | 상태 | 등급 | 관계 | 검증 수준 | " + ("CWE | " if show_cwe else "") +
+            "위치 | 위험 연산 (피연산자) | 외부 입력 · 경로 변화 | 버퍼·입력 범위 (전 → 후) | 원인 변경 | 검증 방법 |",
+            "|---|---|---|---|---|" + ("---|" if show_cwe else "") + "---|---|---|---|---|---|"]
     for x in risks[:40]:
         t = x.get("taint") or {}
         src = f"{t.get('source')}: {t.get('source_label')}" if t.get("flow_detected") else "-"
         if t.get("change") and t.get("change") != "없음":
             src += f"<br>({t['change']})"
         rng = (x.get("bounds") or {}).get("change", "") or "-"
-        b = x.get("baseline") or {}
-        old_sym = {"violated": "위반", "holds": "안전", "unknown": "보류"}.get(((b.get("old_symbolic") or {}).get("result")), b.get("old_state_label", ""))
         ch = x.get("change") or {}
         cause = (f"`{_c(_s(ch.get('before') or '(없음)', 50))}` → `{_c(_s(ch.get('after') or '(삭제)', 50))}`<br>"
                  f"{_c(ch.get('file', ''))}:{ch.get('line', '')}") if ch else f"`{_c(x['origin']['func'])}`"
         lvl = f"**{x['level']}**" if x["level"] == "High" else x["level"]
+        st = f"**{x['status']}**" if x["status_code"] == "NEW_REGRESSION" else x["status"]
+        vl = x.get("verification_level", "")
+        sym = x.get("symbolic") or {}
+        if sym.get("counterexample") and sym.get("result") == "violated":
+            vl += ": " + ", ".join(f"{k} = {v}" for k, v in sym["counterexample"].items())
+        rel = x.get("relation", "")
+        if rel == "전파":
+            rel += f"<br>← `{_c(x['origin']['func'])}`"
         cw = f"{x.get('cwe', '')} | " if show_cwe else ""
-        out.append(f"| {x['id']} | {lvl} | {cw}{x['status']} | `{_c(x['func'])}`<br>{_c(x['file'])}:{x['line']} | "
+        out.append(f"| {x['id']} | {st} | {lvl} | {rel} | {_c(_s(vl, 80))} | {cw}`{_c(x['func'])}`<br>{_c(x['file'])}:{x['line']} | "
                    f"`{_c(_s(x['expr'], 80))}` (`{_c(_s(x['operand'], 40))}`)<br>{_c(x['kind_label'])} | {src.replace('|', '¦')} | "
-                   f"{_c(_s(rng, 140))} | {_c(_s(_sym_text(x), 70))}<br>변경 전: {_c(old_sym)} | {cause} | "
-                   f"{_c(_s(x.get('verification', ''), 160))} |")
+                   f"{_c(_s(rng, 140))} | {cause} | {_c(_s(x.get('verification', ''), 160))} |")
     if len(risks) > 40:
-        out.append(f"| … | 외 {len(risks) - 40}개 ([`report.html`](report.html) '보안 취약점' 탭, "
-                   "[`security/vulnerability_report.json`](security/vulnerability_report.json)) |" + " |" * (9 if show_cwe else 8))
+        out.append(f"| … | 외 {len(risks) - 40}개 ([`report.html`](report.html) '변경 검토' 탭, "
+                   "[`security/vulnerability_report.json`](security/vulnerability_report.json)) |" + " |" * (10 if show_cwe else 9))
     tools = sec.get("tools", {})
     if tools:
         out += ["", "- 외부 도구 입력: Joern `security/joern/taint.sc`, CodeQL `security/codeql/ChangeTaint.ql`, "
@@ -373,15 +378,14 @@ def _impact_sections(r: dict) -> list[str]:
                         else f"`{_c(_s(c['new'] or c['old']))}`" for c in g["changes"][:2]]
 
     out += ["### 2-1. 변경된 함수별 요약", "",
-            "| 변경 함수 | 파일 | 변경 내용 | 영향 함수 | 영향 변수·출력 | 보안 취약점 | 우선 확인할 영향 |", "|---|---|---|---|---|---|---|"]
+            "| 변경 함수 | 파일 | 변경 내용 | 영향 함수 | 영향 변수·출력 | 보안 위험 (신규·보류) | 우선 확인할 영향 |", "|---|---|---|---|---|---|---|"]
     for (func, file), g in sorted(groups.items(), key=lambda x: (x[0][1], x[0][0])):
         kinds = " · ".join(f"{k} {v}" for k, v in g["kinds"].items())
         top = _ranked(g["items"], shared)[:4]
         tops = "<br>".join(f"{_PRIORITY[_priority(it, shared)]}: `{_c(it['name'])}`" for it in top) or "-"
-        lv = defaultdict(int)
-        for x in g["risks"]:
-            lv[x.get("level", "Low")] += 1
-        rk = " · ".join((f"**{k} {lv[k]}**" if k == "High" else f"{k} {lv[k]}") for k in ("High", "Medium", "Low") if lv[k]) or "-"
+        nn = sum(1 for x in g["risks"] if x.get("status_code") == "NEW_REGRESSION")
+        npd = sum(1 for x in g["risks"] if x.get("status_code") == "PENDING")
+        rk = " · ".join(p for p in ((f"**신규 {nn}**" if nn else ""), (f"보류 {npd}" if npd else "")) if p) or "-"
         out.append(f"| `{_c(func)}` | {_c(file)} | {kinds}<br>{'<br>'.join(g['samples'])} | {len(g['funcs'])} | "
                    f"{len(g['items'])} | {rk} | {tops} |")
     out += _risk_section(r, "2-2")
@@ -469,14 +473,14 @@ def render_summary(s: dict) -> str:
     else:
         st = r["stats"]
         out.append(f"변경 지점 **{len(r['changes'])}개** · 영향 함수 **{st['affected_functions']}개** · "
-                   f"영향 변수·출력 **{len(r['items'])}개** · 보안 취약점: {_risk_counts(r.get('risks', []))} — "
+                   f"영향 변수·출력 **{len(r['items'])}개** · 보안: {_risk_counts(r.get('risks', []))} — "
                    "상세: [`impact/impact_report.md`](impact/impact_report.md)")
         out.append("")
         out += _impact_sections(r)
 
     d = s.get("deps_diff")
     if d is not None:
-        out += ["", "## 3. 함수·변수 의존성 변화 (읽기·쓰기·호출)", "",
+        out += ["", "## 3. 함수·변수 의존성 변화 (읽기·쓰기·호출 — 영향 분석, 취약점 아님)", "",
                 "변경 전후 버전 각각의 함수별 읽기·쓰기 변수와 호출 대상을 비교한 결과입니다. "
                 "전체 표: [`deps/deps_new.md`](deps/deps_new.md), [`deps/deps_old.md`](deps/deps_old.md)", ""]
         if d["functions"]:
@@ -573,6 +577,8 @@ def html_payload(s: dict) -> dict:
                                               "expr", "operand", "values", "evidence", "conditions", "id", "level", "cwe",
                                               "cwe_name", "status", "status_code", "state", "proof", "category",
                                               "verification", "change", "symbolic", "baseline", "external", "bounds",
+                                              "relation", "relation_label", "verification_level", "verification_flags",
+                                              "kind_of_result",
                                               "klee_harness")},
                       "taint": {**{k: v for k, v in (x.get("taint") or {}).items() if k != "path"},
                                 "path": [{"arrow": report._arrow(st["edge"]), "func": st["func"], "file": st["file"],

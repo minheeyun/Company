@@ -280,5 +280,68 @@ class ChangeComparisonTests(unittest.TestCase):
         self.assertEqual(f["status_code"], "NEW_REGRESSION")
 
 
+class ReviewClassificationTests(unittest.TestCase):
+    """① 직접·전파 구분 ② 기존 위험 분리 ③ 의존성 변화와 구분 ④ 검증 수준."""
+    SRC = """
+    typedef unsigned char uint8_t; typedef unsigned int uint32_t;
+    void *memcpy(void *d, const void *s, unsigned int n);
+    void Log_Write(uint8_t v);
+    uint8_t g_idx; uint8_t g_tab[10]; uint32_t g_out;
+    int process_diag(const uint8_t *rx, uint32_t len)
+    {
+        uint8_t buffer[8] = {0};
+        if (len <= {LIMIT}U)
+        {
+            memcpy(buffer, rx, len);
+            g_idx = buffer[0];{EXTRA}
+            return buffer[0];
+        }
+        return -1;
+    }
+    void Other(void) { g_out = g_tab[g_idx]; }
+    """
+
+    def run_case(self, extra=""):
+        old = self.SRC.replace("{LIMIT}", "8").replace("{EXTRA}", "")
+        new = self.SRC.replace("{LIMIT}", "64").replace("{EXTRA}", extra)
+        return analyze({"d.c": old}, {"d.c": new})
+
+    @needs_z3
+    def test_direct_and_propagated_and_existing(self):
+        r = self.run_case()
+        by = {(x["func"], x["kind"]): x for x in r["risks"]}
+        d = by[("process_diag", "length")]
+        self.assertEqual((d["relation"], d["status_code"], d["verification_level"], d["kind_of_result"]),
+                         ("직접", "NEW_REGRESSION", "기호 실행 반례 발견", "보안 위험"))
+        p = by[("Other", "index")]
+        self.assertEqual(p["relation"], "전파")
+        self.assertEqual(p["status_code"], "EXISTING")  # 변경 전에도 g_idx 는 0..255 → 기존 위험
+        self.assertLess(r["risks"].index(d), r["risks"].index(p))
+
+    def test_call_change_alone_is_not_a_risk(self):
+        r = self.run_case("\n            Log_Write(buffer[0]);")
+        self.assertFalse([x for x in r["risks"] if x["kind"] in ("fptr",) or "Log_Write" in x["expr"]])
+
+    def test_verification_levels(self):
+        saved = symexec.z3
+        try:
+            symexec.z3 = None
+            r = self.run_case()
+        finally:
+            symexec.z3 = saved
+        d = next(x for x in r["risks"] if x["kind"] == "length")
+        self.assertEqual(d["verification_level"], "정적 규칙 위반")
+        src = """
+        typedef unsigned char U8;
+        U8 g_tab[10]; U8 g_out;
+        unsigned char Rte_Read_Idx(U8 *v);
+        void Task(void) { U8 v = 0U; (void)Rte_Read_Idx(&v); g_out = g_tab[v % {M}U]; }
+        """
+        r = analyze({"a.c": src.replace("{M}", "10")}, {"a.c": src.replace("{M}", "12")})
+        f = next(x for x in r["risks"] if x["kind"] == "index")
+        self.assertTrue(f["verification_flags"]["taint"])
+        self.assertIn(f["verification_level"], ("기호 실행 반례 발견", "정적 규칙 위반") if symexec.available() else ("Taint 경로 발견",))
+
+
 if __name__ == "__main__":
     unittest.main()

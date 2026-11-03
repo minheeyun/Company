@@ -302,7 +302,7 @@ def analyze_security(old: Program, new: Program, cs, hits_new, hits_old, lines, 
         f.update({
             "category": "위험 연산",
             "bounds": {"new": new_b, "old": old_b, "change": _range_change(new_b, old_b)},
-            "state": state, "evidence": ev or row["evidence"],
+            "state": state, "evidence": ev or row["evidence"], "static_rule": verdict == "certain",
             "proof": ("기호 실행 반례" if sym and sym["result"] == "violated" else
                       "기호 실행으로 안전" if sym and sym["result"] == "holds" else
                       "상수·조건 구간 증명" if state == "violated" else ""),
@@ -353,6 +353,7 @@ def analyze_security(old: Program, new: Program, cs, hits_new, hits_old, lines, 
             "bounds": {"new": new_b, "old": old_b,
                        "change": _range_change(new_b, old_b) if new_b else f"{old_b['limit']} · 허용 {old_b['input_range']} → (연산 없음)"},
             "category": "위험 연산", "state": "holds", "evidence": old_ev or row["evidence"],
+            "static_rule": not (old_sym and old_sym.get("result") == "violated"),
             "proof": "변경 후 " + STATE_KO[new_state], "cwe": cwe_of(sk, ti["flow_detected"]), "taint": ti,
             "symbolic": None, "status_code": "FIXED", "status": STATUS["FIXED"], "level": "Low",
             "baseline": {"old_state": "violated", "old_state_label": STATE_KO["violated"],
@@ -366,6 +367,7 @@ def analyze_security(old: Program, new: Program, cs, hits_new, hits_old, lines, 
         findings.append(f)
 
     findings += _check_findings(new, old, cs, ctx_new, ctx_old, cpg_new, cpg_old, taint_new, taint_old, rules, findings)
+    findings = _classify(findings, new, old, cs)
     findings.sort(key=_rank)
     for i, f in enumerate(findings, 1):
         f["id"] = f"V{i}"
@@ -476,9 +478,53 @@ def _check_findings(new, old, cs, ctx_new, ctx_old, cpg_new, cpg_old, taint_new,
     return out
 
 
+VERIFY_LEVELS = ["기호 실행 반례 발견", "정적 규칙 위반", "Taint 경로 발견", "검증 불충분"]
+# 다른 함수로 전파된 위험은 명확한 의존 경로가 있을 때만 남긴다: 값이 실제로 전달되었거나(값 전달),
+# 변경된 자료형·버퍼 크기 자체를 쓰는 연산(자료형·크기 변경)
+_CLEAR_PATH = ("값 전달", "자료형·크기 변경")
+
+
+def _classify(findings: list[dict], new: Program, old: Program, cs) -> list[dict]:
+    """변경 함수와의 관계(직접·전파), 검증 수준, 보안 위험·판정 보류 구분을 붙인다."""
+    changed = {new.func_display(k) for k in cs.changed_funcs if k in new.funcs} | \
+              {old.func_display(k) for k in cs.changed_funcs if k in old.funcs}
+    out = []
+    for f in findings:
+        direct = f["func"] in changed
+        if not direct and f["category"] == "위험 연산" and f.get("how") not in _CLEAR_PATH:
+            continue  # 의존 경로가 분명하지 않은 전파 위험은 보고하지 않음
+        f["relation"] = "직접" if direct else "전파"
+        f["relation_label"] = ("변경 함수 안의 위험 연산" if direct else
+                               f"다른 함수로 전파 ({f.get('how', '')} 경로: {f['origin']['func']} → {f['func']})")
+        sym = f.get("symbolic") or {}
+        old_sym = (f.get("baseline") or {}).get("old_symbolic") or {}
+        if f["status_code"] == "FIXED":
+            sym = old_sym
+        if sym.get("result") == "violated":
+            lv = "기호 실행 반례 발견"
+        elif f.get("static_rule") and f["state"] in ("violated",) or (f["status_code"] == "FIXED" and f.get("static_rule")):
+            lv = "정적 규칙 위반"
+        elif (f.get("taint") or {}).get("flow_detected"):
+            lv = "Taint 경로 발견"
+        else:
+            lv = "검증 불충분"
+        f["verification_level"] = lv
+        f["verification_flags"] = {
+            "taint": bool((f.get("taint") or {}).get("flow_detected")),
+            "static_rule": bool(f.get("static_rule")) and f["state"] == "violated",
+            "symbolic": sym.get("result") or "미실행",
+        }
+        # ③ 보안 위험 = 안전 속성(검증 조건) 위반이 증명된 것. 그 밖의 후보·조건 변경은 '판정 보류'로 둔다
+        f["kind_of_result"] = "보안 위험" if f["state"] == "violated" or f["status_code"] == "FIXED" else "판정 보류"
+        out.append(f)
+    return out
+
+
 def _rank(f: dict) -> tuple:
-    return (_STATUS_ORDER.get(f["status_code"], 9) if f["status_code"] == "FIXED" else 0,
-            _LEVEL_ORDER.get(f["level"], 3), 0 if f["state"] == "violated" else 1,
+    return (_STATUS_ORDER.get(f["status_code"], 9) if f["status_code"] in ("FIXED", "EXISTING") else 0,
+            0 if f.get("relation") == "직접" else 1,
+            _LEVEL_ORDER.get(f["level"], 3),
+            VERIFY_LEVELS.index(f.get("verification_level", "검증 불충분")),
             _STATUS_ORDER.get(f["status_code"], 9), f["file"], f["line"])
 
 

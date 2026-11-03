@@ -75,9 +75,10 @@ h2 { font-size: 18px; margin: 0 0 4px; }
 .box ul { margin: 0; padding-left: 20px; }
 .warn { border-left: 4px solid var(--p1); }
 .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
-.toolbar input, .toolbar select { font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px;
+.toolbar input[type=search], .toolbar select { font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px;
   background: var(--panel); color: var(--text); }
-.toolbar input { min-width: 260px; }
+.toolbar input[type=search] { min-width: 260px; }
+.toolbar label { display: inline-flex; align-items: center; gap: 4px; }
 .toolbar .count { color: var(--muted); font-size: 13px; }
 .toolbar .clear { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--accent);
   border-radius: 6px; padding: 4px 10px; cursor: pointer; }
@@ -112,8 +113,23 @@ ol.path li { margin: 2px 0; }
 .det h4:first-child { margin-top: 0; }
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: 2px 14px; }
 .kv div:nth-child(odd) { color: var(--muted); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; border-right: 1px solid var(--line); background: var(--panel); color: var(--text); padding: 6px 14px; cursor: pointer; font: inherit; }
+.seg button:last-child { border-right: 0; }
+.seg button.on { background: var(--accent); color: #fff; font-weight: 600; }
+.fileblk { display: block; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; margin-bottom: 14px; padding: 4px 14px 10px; }
+.fh { padding: 10px 2px 8px; border-bottom: 1px solid var(--line); margin-bottom: 6px; }
+details.fn { border-bottom: 1px dashed var(--line); padding: 6px 2px; }
+details.fn:last-child { border-bottom: 0; }
+details.fn > summary { cursor: pointer; padding: 4px 0; }
+details.more-d > summary { cursor: pointer; color: var(--accent); font-size: 13px; margin: 4px 0; }
+table.ct { width: auto; max-width: 100%; }
+table.ct td { padding: 3px 10px 3px 0; border: 0; }
+.rcard { border: 1px solid var(--line); border-left: 4px solid var(--p1); border-radius: 6px; padding: 8px 12px; margin: 6px 0; background: var(--bg); }
+.rcard.new { border-left-color: var(--p0); }
+.rf div { margin-top: 2px; }
 #theme { margin-left: auto; border: 0; background: none; color: var(--muted); cursor: pointer; font: inherit; padding: 10px; }
-@media (max-width: 700px) { main { padding: 14px 16px 40px; } header { padding: 14px 16px 10px; } .toolbar input { min-width: 0; width: 100%; } }
+@media (max-width: 700px) { main { padding: 14px 16px 40px; } header { padding: 14px 16px 10px; } .toolbar input[type=search] { min-width: 0; width: 100%; } }
 </style>
 </head>
 <body>
@@ -297,7 +313,10 @@ function riskDetail(r) {
                                   : el("div", {class: "muted", text: "모든 실행 (조건 없음)"});
   var t = r.taint || {}, s = r.symbolic, b = r.baseline || {}, ch = r.change;
   var kv = [
-    el("div", {text: "판정"}), el("div", {}, [sev(r), " ", stat(r), r.cwe ? el("b", {text: " " + r.cwe + " " + (r.cwe_name || "")}) : null]),
+    el("div", {text: "판정"}), el("div", {}, [sev(r), " ", stat(r), " ", el("b", {text: r.kind_of_result || ""}), r.cwe ? el("b", {text: " " + r.cwe + " " + (r.cwe_name || "")}) : null]),
+    el("div", {text: "검증 수준"}), el("div", {}, [vlev(r), el("span", {class: "small muted", text: "  Taint 경로 " + ((r.verification_flags || {}).taint ? "있음" : "없음")
+      + " · 정적 규칙 위반 " + ((r.verification_flags || {}).static_rule ? "있음" : "없음") + " · 기호 실행 " + ((r.verification_flags || {}).symbolic || "미실행")})]),
+    el("div", {text: "변경 함수와의 관계"}), el("div", {text: r.relation_label || r.relation || "-"}),
     el("div", {text: "위험"}), el("div", {}, [el("b", {text: r.kind_label}), " — " + r.risk]),
     el("div", {text: "위치"}), el("div", {}, [code(r.func), " ", loc(r.file, r.line)]),
     el("div", {text: "문장"}), el("div", {}, [code(r.src || r.expr)]),
@@ -391,215 +410,200 @@ function head(pane, title, desc) {
   if (desc) pane.appendChild(el("p", {class: "desc", text: desc}));
 }
 
-/* 1. 개요 */
-addTab("overview", "개요", null, function (p) {
-  var m = D.meta, fc = D.file_counts;
-  head(p, "개요", "분석 조건과 결과 규모입니다. 카드를 누르면 해당 항목으로 이동합니다.");
-  var cards = [
-    ["수정된 파일", fc.modified + fc.added + fc.removed, "files"]
-  ];
-  if (A) {
-    var nkey = A.items.filter(function (i) { return i.key; }).length;
-    cards = cards.concat([
-      ["변경 지점", A.stats.changes, "changes"], ["변경된 함수", A.groups.length, "groups"],
-      ["우선 확인할 영향", nkey, "key"], ["영향 함수", A.stats.affected_functions, "all"],
-      ["영향 변수·출력", A.stats.items, "all"]
-    ]);
-    if (A.notes.length) cards.push(["동작 변화 없음", A.notes.length, "notes"]);
-    var nh = A.risks.filter(function (r) { return r.level === "High" && r.status_code !== "FIXED"; }).length;
-    var nnew = A.risks.filter(function (r) { return r.status_code === "NEW_REGRESSION"; }).length;
-    cards.splice(3, 0, ["보안 취약점 High", nh, "risks", nh ? "alert" : ""], ["신규 발생 취약점", nnew, "risks", nnew ? "alert" : ""],
-      ["보안 분석 항목 전체", A.risks.length, "risks"]);
-  }
-  p.appendChild(el("div", {class: "cards"}, cards.map(function (c) {
-    return el("div", {class: "card link " + (c[3] || ""), onclick: function () { if (panes[c[2]]) show(c[2]); }}, [el("div", {class: "v", text: c[1]}), el("div", {class: "k", text: c[0]})]);
-  })));
-  var inc = "자동 " + D.include.auto + "개" + (D.include.user ? " + 지정 " + D.include.user + "개" : "") + (D.include.cc ? " · compile_commands.json" : "");
-  p.appendChild(el("div", {class: "box"}, [el("h3", {text: "분석 조건"}), el("div", {class: "kv"}, [
-    el("div", {text: "변경 전"}), el("div", {}, [code(m.old_dir)]),
-    el("div", {text: "변경 후"}), el("div", {}, [code(m.new_dir)]),
-    el("div", {text: "실행"}), el("div", {text: m.time + " · 소요 " + Number(m.elapsed || 0).toFixed(1) + "초"}),
-    el("div", {text: "분석 범위"}), el("div", {text: (m.scope_reason || []).join(", ") + " → 변경 전 " + m.analyzed.old + "개 / 변경 후 " + m.analyzed.new + "개 파일"}),
-    el("div", {text: "include 경로"}), el("div", {text: inc})
-  ])]));
-  if (A && A.groups.length) {
-    var byPrio = [0, 0, 0, 0];
-    A.items.forEach(function (i) { if (i.key) byPrio[i.prio]++; });
-    p.appendChild(el("div", {class: "box"}, [el("h3", {text: "우선 확인할 영향 구성"}),
-      frag(byPrio.map(function (n, i) { return n ? frag([tag(i), " " + n + "개   "]) : null; })),
-      el("p", {class: "small muted", text: "같은 함수의 같은 대상은 하나로 합쳐 셉니다. 나머지 상태 변수 영향은 '전체 영향 목록'에 있습니다."})]));
-  }
-  var warns = (m.warnings || []).slice();
-  if (A && Object.keys(A.excluded.parse_errors || {}).length) warns.push("파싱하지 못해 분석에서 빠진 파일 " + Object.keys(A.excluded.parse_errors).length + "개 ('분석 범위와 주의' 탭)");
-  if (warns.length) p.appendChild(el("div", {class: "box warn"}, [el("h3", {text: "주의"}), el("ul", {}, warns.map(function (w) { return el("li", {text: w}); }))]));
-});
+/* ---------- 변경 검토 (기본 화면) ---------- */
+var VL = {"기호 실행 반례 발견": "t0", "정적 규칙 위반": "t1", "Taint 경로 발견": "t2", "검증 불충분": "t4"};
+function vlev(r) { return el("span", {class: "tag " + (VL[r.verification_level] || "t4"), title: "검증 수준", text: r.verification_level || "검증 불충분"}); }
+var MODES = [
+  ["new", "신규 위험", "변경으로 새로 생긴 위험 (변경 후 안전 속성 위반 증명, 변경 전 안전·없음)"],
+  ["priority", "우선 검토", "신규 위험 + 변경 함수 안에서 외부 입력이 닿거나 보안 조건이 바뀐 판정 보류 후보"],
+  ["all", "전체 변경점", "변경된 모든 파일·함수·변경점과 의존성 변화"],
+  ["pending", "판정 보류", "위반을 증명하지 못한 후보 (검증 불충분·Taint 경로만 발견)"]
+];
 
-/* 2. 파일 변경 */
-addTab("files", "파일 변경", D.files.length, function (p) {
-  var fc = D.file_counts;
-  head(p, "파일 변경 (*.c, *.h)", "추가 " + fc.added + " · 삭제 " + fc.removed + " · 수정 " + fc.modified + " · 동일 " + fc.unchanged + " (줄바꿈 CRLF/LF 차이는 무시)");
-  var t = new Table({rows: D.files, search: function (r) { return r.file; }, placeholder: "파일 이름 검색",
-    filters: [{name: "st", label: "상태", options: uniq(D.files.map(function (r) { return r.status; })), test: function (r, v) { return r.status === v; }}],
-    columns: [{label: "상태", render: function (r) { return r.status; }, cls: "nowrap"}, {label: "파일", render: function (r) { return code(r.file); }}]});
-  p.appendChild(t.node);
-  var dup = D.meta.duplicate_headers || {};
-  if (Object.keys(dup).length) p.appendChild(el("div", {class: "box warn", style: "margin-top:14px"}, [el("h3", {text: "같은 이름의 헤더가 여러 폴더에 있음"}),
-    el("p", {class: "small muted", text: "자동 include 순서(루트 → 폴더 이름순)에 따라 다른 헤더가 쓰일 수 있습니다. 필요하면 -I 나 --compile-commands 로 지정하세요."}),
-    el("ul", {}, Object.keys(dup).map(function (k) { return el("li", {}, [code(k), ": " + dup[k].join(", ")]); }))]));
+function model() {
+  var files = {}, order = [];
+  function file(name) {
+    if (!files[name]) { files[name] = {file: name, status: "", funcs: {}, forder: []}; order.push(name); }
+    return files[name];
+  }
+  function fn(fname, func) {
+    var f = file(fname);
+    if (!f.funcs[func]) { f.funcs[func] = {func: func, file: fname, changes: [], direct: [], prop: [], deps: null, lo: 1e9, hi: 0}; f.forder.push(func); }
+    return f.funcs[func];
+  }
+  (D.files || []).forEach(function (x) { file(x.file).status = x.status; });
+  if (A) {
+    A.changes.forEach(function (c) { var b = fn(c.file, c.func); b.changes.push(c); b.lo = Math.min(b.lo, c.line); b.hi = Math.max(b.hi, c.line); });
+    A.risks.forEach(function (r) {
+      if (r.relation === "전파") { fn(r.origin_file, r.origin).prop.push(r); }
+      else { var f = files[r.file] && files[r.file].funcs[r.func] ? files[r.file].funcs[r.func] : fn(r.origin_file, r.origin); f.direct.push(r); }
+    });
+  }
+  var deps = {};
+  ((D.deps || {}).functions || []).forEach(function (row) { deps[row.func] = row; });
+  order.forEach(function (n) { files[n].forder.forEach(function (k) { var b = files[n].funcs[k]; if (deps[k]) { b.deps = deps[k]; deps[k].used = true; } }); });
+  var restDeps = Object.keys(deps).filter(function (k) { return !deps[k].used; }).map(function (k) { return deps[k]; });
+  order.sort(function (x, y) {
+    var cx = /\.c$/i.test(x) ? 0 : 1, cy = /\.c$/i.test(y) ? 0 : 1;
+    return cx - cy || (x < y ? -1 : x > y ? 1 : 0);
+  });
+  return {files: files, order: order, restDeps: restDeps};
+}
+
+function riskVisible(r, st) {
+  var old = r.status_code === "EXISTING" || r.status_code === "FIXED";
+  if (old) return st.showOld;
+  if (st.mode === "new") return r.status_code === "NEW_REGRESSION";
+  if (st.mode === "pending") return r.status_code === "PENDING";
+  if (st.mode === "priority") return r.status_code === "NEW_REGRESSION" ||
+    (r.status_code === "PENDING" && r.relation === "직접" && ((r.taint || {}).flow_detected || r.category === "보안 조건 변경" || r.level === "High"));
+  return true;
+}
+
+function riskCard(r) {
+  var ch = r.change, bd = r.bounds || {}, t = r.taint || {};
+  var head = el("div", {class: "rh"}, [sev(r), " ", stat(r), " ", vlev(r), " ", el("b", {text: r.kind_label}), " ",
+    code(short(r.expr, 100)), " ", loc(r.file, r.line), r.relation === "전파" ? el("span", {class: "small muted", text: "  ← " + r.origin + "에서 전파"}) : null]);
+  var facts = [];
+  if (ch) facts.push(frag([el("span", {class: "muted", text: "원인 변경 "}), el("span", {class: "code old", text: short(ch.before || "(없음)", 60)}), " → ", el("span", {class: "code new", text: short(ch.after || "(삭제)", 60)})]));
+  if (bd.change) facts.push(frag([el("span", {class: "muted", text: "범위 "}), bd.change]));
+  if (t.flow_detected) facts.push(frag([el("span", {class: "muted", text: "외부 입력 "}), t.source + " (" + (t.change || "") + ")"]));
+  if (r.symbolic && r.symbolic.result === "violated") facts.push(frag([el("span", {class: "muted", text: "반례 "}), symText(r)]));
+  else if (r.evidence) facts.push(frag([el("span", {class: "muted", text: "근거 "}), short(r.evidence, 140)]));
+  var det = el("details", {class: "more-d"}, [el("summary", {text: "상세 (조건·근거 경로·검증 방법)"}), riskDetail(r)]);
+  return el("div", {class: "rcard " + (r.status_code === "NEW_REGRESSION" ? "new" : "")}, [head,
+    el("div", {class: "rf small"}, facts.map(function (x) { return el("div", {}, [x]); })), det]);
+}
+
+function depBlock(row) {
+  function part(label, add, del) {
+    if (!(add || []).length && !(del || []).length) return null;
+    return el("div", {}, [el("span", {class: "muted", text: label + " "}),
+      (add || []).length ? el("span", {class: "new", text: "+ " + add.join(", ") + "  "}) : null,
+      (del || []).length ? el("span", {class: "old", text: "− " + del.join(", ")}) : null]);
+  }
+  if (row.status !== "변경") {
+    return el("div", {class: "small"}, [el("b", {text: "함수 " + row.status + " "}),
+      part("호출", row.status === "추가" ? row.calls : [], row.status === "삭제" ? row.calls : []),
+      part("읽기", row.status === "추가" ? row.reads : [], row.status === "삭제" ? row.reads : []),
+      part("쓰기", row.status === "추가" ? row.writes : [], row.status === "삭제" ? row.writes : [])]);
+  }
+  return el("div", {class: "small"}, [part("호출", row.calls_added, row.calls_removed), part("읽기", row.reads_added, row.reads_removed),
+    part("쓰기", row.writes_added, row.writes_removed)]);
+}
+
+function changeRows(list) {
+  return el("table", {class: "ct"}, [el("tbody", {}, list.map(function (c) {
+    return el("tr", {}, [el("td", {class: "nowrap"}, [loc("", c.line)]), el("td", {class: "nowrap small"}, [c.kind]),
+      el("td", {}, [change(c), c.detail ? el("div", {class: "small muted", text: c.detail}) : null])]);
+  }))]);
+}
+
+addTab("review", "변경 검토", null, function (p) {
+  var M = model(), st = {mode: "new", showOld: false, q: ""};
+  var all = A ? A.risks : [];
+  function cnt(f) { return all.filter(f).length; }
+  var nNew = cnt(function (r) { return r.status_code === "NEW_REGRESSION"; });
+  var nPend = cnt(function (r) { return r.status_code === "PENDING"; });
+  var nOld = cnt(function (r) { return r.status_code === "EXISTING" || r.status_code === "FIXED"; });
+  var nFn = 0; M.order.forEach(function (n) { nFn += M.files[n].forder.length; });
+  if (!nNew) st.mode = cnt(function (r) { return riskVisible(r, {mode: "priority"}); }) ? "priority" : "all";
+  head(p, "변경 검토", "변경된 .c 파일별로 바뀐 함수와 변경점을 보여 주고, 그 함수와 직접 연결된 보안 위험을 먼저 표시합니다. 다른 함수로 전파된 위험은 의존 경로가 분명할 때만 따로 표시하고, "
+    + "함수 호출·변수 읽기쓰기의 추가·삭제는 '의존성 변화'(영향 분석)로 구분해 취약점과 섞지 않습니다. 이미 있던 위험은 기본 화면에서 뺐습니다.");
+  p.appendChild(el("div", {class: "cards"}, [
+    ["변경 파일", D.files.length], ["변경 함수", nFn], ["신규 위험", nNew, nNew ? "alert" : ""],
+    ["우선 검토", cnt(function (r) { return riskVisible(r, {mode: "priority"}); })], ["판정 보류", nPend], ["기존·해결 (숨김)", nOld]
+  ].map(function (c) { return el("div", {class: "card " + (c[2] || "")}, [el("div", {class: "v", text: c[1]}), el("div", {class: "k", text: c[0]})]); })));
+  p.appendChild(el("div", {class: "box small"}, [el("b", {text: "검증 수준  "}),
+    frag(["기호 실행 반례 발견", "정적 규칙 위반", "Taint 경로 발견", "검증 불충분"].map(function (k) { return frag([vlev({verification_level: k}), " "]); })),
+    el("span", {class: "muted", text: " — 반례: z3가 위반 입력을 찾음 · 정적 규칙: 상수·바뀐 조건 구간으로 위반 증명 · Taint: 외부 입력이 위험 피연산자에 닿음(위반 미증명) · 불충분: 근거 부족"}),
+    el("div", {class: "muted", text: "엔진: " + ((A && A.security && A.security.engine) ? ("CPG " + A.security.engine.cpg + " · Taint " + A.security.engine.taint + " · 기호 실행 " + A.security.engine.symbolic) : "-")})]));
+  var bar = el("div", {class: "seg"});
+  var btns = MODES.map(function (m) {
+    var b = el("button", {title: m[2], text: m[1], onclick: function () { st.mode = m[0]; draw(); }});
+    bar.appendChild(b); return [m[0], b];
+  });
+  var chk = el("input", {type: "checkbox", id: "showold"});
+  chk.addEventListener("change", function () { st.showOld = chk.checked; draw(); });
+  var q = el("input", {type: "search", placeholder: "파일·함수 검색"});
+  q.addEventListener("input", function () { st.q = q.value.toLowerCase(); draw(); });
+  p.appendChild(el("div", {class: "toolbar"}, [bar, el("label", {class: "small"}, [chk, " 기존·해결 위험도 표시"]), q]));
+  var desc = el("p", {class: "small muted"});
+  var body = el("div");
+  p.appendChild(desc); p.appendChild(body);
+
+  function draw() {
+    btns.forEach(function (x) { x[1].classList.toggle("on", x[0] === st.mode); });
+    desc.textContent = MODES.filter(function (m) { return m[0] === st.mode; })[0][2];
+    body.textContent = "";
+    var shown = 0;
+    M.order.forEach(function (fname) {
+      var F = M.files[fname];
+      var blocks = [];
+      F.forder.forEach(function (k) {
+        var b = F.funcs[k];
+        if (st.q && (fname + " " + k).toLowerCase().indexOf(st.q) < 0) return;
+        var dv = b.direct.filter(function (r) { return riskVisible(r, st); });
+        var pv = b.prop.filter(function (r) { return riskVisible(r, st); });
+        if (st.mode !== "all" && !dv.length && !pv.length) return;
+        var badges = [];
+        var nn = b.direct.concat(b.prop).filter(function (r) { return r.status_code === "NEW_REGRESSION"; }).length;
+        var np = b.direct.concat(b.prop).filter(function (r) { return r.status_code === "PENDING"; }).length;
+        if (nn) badges.push(el("span", {class: "sev c", text: "신규 위험 " + nn}));
+        if (np) badges.push(el("span", {class: "sev u", text: "판정 보류 " + np}));
+        if (b.deps) badges.push(el("span", {class: "tag t3", text: "의존성 변화"}));
+        var range = b.changes.length ? (b.lo === b.hi ? "라인 " + b.lo : "라인 " + b.lo + "–" + b.hi) : "";
+        var kids = [el("summary", {}, [el("b", {}, [code(k)]), " ", el("span", {class: "small muted", text: range + (b.changes.length ? " · 변경점 " + b.changes.length + "곳" : "")}), " "].concat(badges.map(function (x) { return frag([x, " "]); })))];
+        if (b.changes.length) {
+          kids.push(el("h4", {text: "변경점"}));
+          kids.push(changeRows(b.changes.slice(0, 8)));
+          if (b.changes.length > 8) kids.push(el("details", {class: "more-d"}, [el("summary", {text: "나머지 변경점 " + (b.changes.length - 8) + "곳"}), changeRows(b.changes.slice(8))]));
+        }
+        if (dv.length) { kids.push(el("h4", {text: "이 함수의 보안 위험 · 후보 (직접 연결)"})); dv.forEach(function (r) { kids.push(riskCard(r)); }); }
+        if (pv.length) { kids.push(el("h4", {text: "다른 함수로 전파된 위험 (의존 경로 확보)"})); pv.forEach(function (r) { kids.push(riskCard(r)); }); }
+        if (b.deps && (st.mode === "all" || dv.length || pv.length)) {
+          kids.push(el("h4", {text: "의존성 변화 (영향 분석 — 취약점 아님)"}));
+          kids.push(depBlock(b.deps));
+        }
+        var d = el("details", {class: "fn"}, kids);
+        if (st.mode !== "all" || dv.length || pv.length) d.open = true;
+        blocks.push(d);
+      });
+      if (!blocks.length && !(st.mode === "all" && !st.q)) return;
+      shown++;
+      var nRisk = 0;
+      F.forder.forEach(function (k) { nRisk += F.funcs[k].direct.concat(F.funcs[k].prop).filter(function (r) { return riskVisible(r, st); }).length; });
+      body.appendChild(el("section", {class: "fileblk on"}, [
+        el("div", {class: "fh"}, [el("b", {}, [code(fname)]), " ", el("span", {class: "small muted", text: (F.status || "") + " · 변경 함수 " + F.forder.length + "개" + (nRisk ? " · 표시된 위험 " + nRisk + "개" : "")})]),
+        blocks.length ? frag(blocks) : el("div", {class: "small muted", text: "함수 단위 변경 없음 (주석·공백·선언만 바뀌었거나, 이 파일을 쓰는 .c 쪽에 변경점이 표시됨)"})
+      ]));
+    });
+    if (st.mode === "all" && M.restDeps.length) {
+      body.appendChild(el("section", {class: "fileblk on"}, [el("div", {class: "fh"}, [el("b", {text: "변경점 없이 의존성만 바뀐 함수"})]),
+        frag(M.restDeps.map(function (row) { return el("details", {class: "fn"}, [el("summary", {}, [code(row.func), " ", el("span", {class: "tag t3", text: "의존성 변화"})]), depBlock(row)]); }))]));
+    }
+    if (st.mode === "all" && A && A.notes.length) {
+      body.appendChild(el("details", {class: "fn"}, [el("summary", {text: "동작 변화 없음으로 본 변경 " + A.notes.length + "개"}),
+        el("ul", {class: "small"}, A.notes.map(function (n) { return el("li", {text: n}); }))]));
+    }
+    if (!shown) body.appendChild(el("p", {class: "muted", text: st.mode === "new" ? "변경으로 새로 생긴 위험이 없습니다. '우선 검토'나 '판정 보류'에서 후보를 확인하세요." : "표시할 항목이 없습니다."}));
+  }
+  draw();
 });
 
 if (A) {
   var allTable = null;
-  /* 3. 변경 함수별 요약 */
-  addTab("groups", "변경 함수별 요약", A.groups.length, function (p) {
-    head(p, "변경된 함수별 요약", "바뀐 함수마다 변경 내용과 그 변경이 닿는 영향을 묶었습니다. 행을 누르면 변경 위치 전체와 우선 확인할 영향이 펼쳐집니다.");
-    var t = new Table({rows: A.groups,
-      search: function (g) { return [g.func, g.file].concat(g.changes.map(function (i) { return A.changes[i].old + " " + A.changes[i].new; })).join(" "); },
-      placeholder: "함수·파일·코드 검색",
-      filters: [
-        {name: "file", label: "파일", options: uniq(A.groups.map(function (g) { return g.file; })), test: function (g, v) { return g.file === v; }},
-        {name: "kind", label: "변경 종류", options: uniq([].concat.apply([], A.groups.map(function (g) { return Object.keys(g.kinds); }))), test: function (g, v) { return !!g.kinds[v]; }},
-        {name: "imp", label: "영향", options: ["우선 확인할 영향 있음", "영향 없음"], test: function (g, v) { return (g.top.length > 0) === (v === "우선 확인할 영향 있음"); }},
-        {name: "risk", label: "보안 취약점", options: ["High 있음", "신규 발생 있음", "취약점 있음", "취약점 없음"], test: function (g, v) {
-          if (v === "취약점 없음") return !g.risks.length;
-          if (v === "취약점 있음") return g.risks.length > 0;
-          if (v === "신규 발생 있음") return g.risks.some(function (i) { return A.risks[i].status_code === "NEW_REGRESSION"; });
-          return g.risks.some(function (i) { return A.risks[i].level === "High"; }); }}
-      ],
-      columns: [
-        {label: "변경 함수", render: function (g) { return frag([code(g.func), el("br"), loc(g.file)]); }},
-        {label: "변경 내용", render: function (g) {
-          var k = Object.keys(g.kinds).map(function (x) { return x + " " + g.kinds[x]; }).join(" · ");
-          return el("div", {}, [el("div", {class: "small muted", text: k})].concat(g.changes.slice(0, 2).map(function (i) { return el("div", {}, [change(A.changes[i])]); }))
-            .concat(g.changes.length > 2 ? [el("div", {class: "small muted", text: "외 " + (g.changes.length - 2) + "곳 (눌러서 보기)"})] : []));
-        }},
-        {label: "영향 함수", render: function (g) { return String(g.n_funcs); }, cls: "nowrap"},
-        {label: "영향 변수·출력", render: function (g) { return String(g.items.length); }, cls: "nowrap"},
-        {label: "보안 취약점", render: function (g) {
-          if (!g.risks.length) return el("span", {class: "muted", text: "-"});
-          var lv = {High: 0, Medium: 0, Low: 0};
-          g.risks.forEach(function (i) { lv[A.risks[i].level] = (lv[A.risks[i].level] || 0) + 1; });
-          return frag(["High", "Medium", "Low"].map(function (k) { return lv[k] ? frag([el("span", {class: "sev " + (k === "High" ? "c" : k === "Medium" ? "u" : "l"), text: k + " " + lv[k]}), " "]) : null; }));
-        }, cls: "nowrap"},
-        {label: "우선 확인할 영향", render: function (g) {
-          if (!g.top.length) return el("span", {class: "muted", text: "-"});
-          return el("div", {}, g.top.map(function (i) { var it = A.items[i]; return el("div", {}, [tag(it.prio), " ", code(it.name)]); }));
-        }}
-      ],
-      detail: function (g) {
-        var key = g.items.map(function (i) { return A.items[i]; }).filter(function (it) { return it.key; }).slice(0, 30);
-        var d = el("div", {}, [
-          el("h4", {text: "변경 위치 " + g.changes.length + "곳"}),
-          el("ol", {class: "path"}, g.changes.map(function (i) { var c = A.changes[i];
-            return el("li", {}, [loc(c.file, c.line), " ", el("b", {text: c.kind}), " ", change(c), c.detail ? el("span", {class: "small muted", text: "  — " + c.detail}) : null]); })),
-          el("h4", {text: "우선 확인할 영향" + (key.length ? " (상위 " + key.length + "개)" : "")}),
-          key.length ? el("ul", {}, key.map(function (it) { return el("li", {}, [tag(it.prio), " ", code(it.func), " → ", code(it.name), el("span", {class: "small muted", text: "  " + it.how_kind})]); }))
-                     : el("div", {class: "muted", text: "외부 출력·레지스터·공유 변수·반환값에 닿는 영향이 없습니다."})
-        ]);
-        if (g.risks.length) {
-          d.insertBefore(el("ul", {}, g.risks.slice(0, 20).map(function (i) { var r = A.risks[i];
-            return el("li", {}, [el("b", {text: r.id + " "}), sev(r), " ", stat(r), " ", el("b", {text: (r.cwe ? r.cwe + " " : "") + r.kind_label}), " ", code(r.func), " ", loc(r.file, r.line), " ", code(short(r.expr, 90)),
-              el("span", {class: "small muted", text: "  " + symText(r)})]); })), d.childNodes[2]);
-          d.insertBefore(el("h4", {text: "보안 취약점 " + g.risks.length + "개"}), d.childNodes[2]);
-        }
-        if (g.items.length) d.appendChild(el("p", {}, [el("button", {class: "lnk", text: "이 변경의 영향 " + g.items.length + "개 모두 보기 →",
-          onclick: function () { show("all"); allTable.set("originKey", g.func + "|" + g.file, "원인 변경: " + g.func); }})]));
-        return d;
-      }});
-    p.appendChild(t.node);
-  });
-
-  /* 보안 취약점 */
-  addTab("risks", "보안 취약점", A.risks.length, function (p) {
-    var sec = A.security || {}, eng = sec.engine || {}, tools = sec.tools || {};
-    head(p, "변경 기반 보안 취약점 (CPG + Taint + Symbolic Execution)", "변경점에서 CPG(제어·데이터 의존)를 따라 영향이 닿는 위험 연산을 찾고, 규칙의 외부 입력(Source)이 그 피연산자에 도달하는지(Taint), "
-      + "안전 속성을 어기는 입력이 있는지(기호 실행)를 확인한 뒤 변경 전 코드와 비교했습니다. 행을 누르면 원인 변경·CPG·Taint·기호 실행·변경 전 비교·검증 방법과 두 근거 경로가 펼쳐집니다.");
-    var counts = (sec.summary || {}).by_status || {};
-    var lv = (sec.summary || {}).by_level || {};
-    p.appendChild(el("div", {class: "cards"}, [
-      el("div", {class: "card" + (lv.High ? " alert" : "")}, [el("div", {class: "v", text: lv.High || 0}), el("div", {class: "k", text: "High"})]),
-      el("div", {class: "card"}, [el("div", {class: "v", text: lv.Medium || 0}), el("div", {class: "k", text: "Medium"})]),
-      el("div", {class: "card"}, [el("div", {class: "v", text: lv.Low || 0}), el("div", {class: "k", text: "Low"})])
-    ].concat(Object.keys(counts).map(function (k) {
-      return el("div", {class: "card" + (k === "신규 발생" && counts[k] ? " alert" : "")}, [el("div", {class: "v", text: counts[k]}), el("div", {class: "k", text: k})]);
-    }))));
-    var tl = [];
-    if (tools.cpg) tl.push("CPG JSON: security/cpg.json (함수 " + tools.cpg.methods + "개, 노드 " + tools.cpg.nodes + "개, 간선 " + tools.cpg.edges + "개)");
-    if (tools.joern) tl.push("Joern: " + (tools.joern.ran ? "실행함 (경로 " + tools.joern.flows.length + "개)" : (tools.joern.note || "")) + " — security/joern/taint.sc");
-    if (tools.codeql) tl.push("CodeQL: " + (tools.codeql.ran ? "실행함 (결과 " + tools.codeql.results.length + "개)" : (tools.codeql.note || "")) + " — security/codeql/ChangeTaint.ql");
-    if (tools.klee) tl.push("KLEE: 하네스 " + tools.klee.harnesses + "개 생성, 실행 " + tools.klee.ran + "개 — security/klee/");
-    p.appendChild(el("div", {class: "box small"}, [el("div", {}, [el("b", {text: "엔진  "}), "CPG " + (eng.cpg || "-") + " · Taint " + (eng.taint || "-") + " · 기호 실행 " + (eng.symbolic || "-") + " · 규칙 " + (eng.rules || "-")]),
-      tl.length ? el("ul", {}, tl.map(function (x) { return el("li", {text: x}); })) : null,
-      el("div", {class: "muted", text: "상태: 신규 발생 = 변경 후 위반 확인 & 변경 전 안전·없음 · 기존 존재 = 변경 전에도 위반 · 해결 = 변경 전 위반 & 변경 후 안전 · 판정 보류 = 위반을 증명하지 못한 후보. 등급: 위반 확인 + (외부 입력 도달 또는 메모리 쓰기) = High."})]));
-    if (!A.risks.length) { p.appendChild(el("p", {class: "muted", text: "변경으로 영향받는 위험 연산·보안 검사 조건이 없습니다."})); return; }
-    p.appendChild(riskTable(A.risks).node);
-  });
-
-  /* 4. 우선 확인할 영향 */
   var keyRows = A.items.filter(function (i) { return i.key; });
   addTab("key", "우선 확인할 영향", keyRows.length, function (p) {
-    head(p, "우선 확인할 영향", "외부 출력 → 레지스터 → 여러 진입점 공유 변수 → 반환값 순입니다. 같은 구분 안에서는 직접 바뀐 것 → 전달 단계가 짧은 것 → 메모리 복사·대기 같은 공용 호출 순이고, 같은 함수의 같은 대상은 하나로 합쳤습니다. 행을 누르면 조건과 전달 경로가 펼쳐집니다.");
+    head(p, "우선 확인할 영향 (영향 분석)", "변경이 닿는 외부 출력 → 레지스터 → 여러 진입점 공유 변수 → 반환값입니다. 보안 위험이 아니라 동작이 달라질 수 있는 곳입니다. 행을 누르면 조건과 전달 경로가 펼쳐집니다.");
     p.appendChild(itemTable(keyRows).node);
   });
-
-  /* 5. 전체 영향 목록 */
   addTab("all", "전체 영향 목록", A.items.length, function (p) {
-    head(p, "전체 영향 목록", "상태 변수를 포함한 모든 영향 후보입니다. 행을 누르면 조건과 전달 경로가 펼쳐집니다.");
+    head(p, "전체 영향 목록 (영향 분석)", "상태 변수를 포함한 모든 영향 후보입니다. 행을 누르면 조건과 전달 경로가 펼쳐집니다.");
     allTable = itemTable(A.items, [{name: "origin", label: "원인 변경", options: uniq(A.items.map(function (r) { return r.origin; })), test: function (r, v) { return r.origin === v; }}]);
     p.appendChild(allTable.node);
   });
-
-  /* 6. 변경 위치 */
-  addTab("changes", "변경 위치", A.changes.length, function (p) {
-    head(p, "변경 위치", "전처리 후 문장 단위로 비교한 변경 지점입니다. 같은 줄의 호출 인자 단위 변경은 하나로 합쳤습니다.");
-    p.appendChild(new Table({rows: A.changes, search: function (c) { return [c.file, c.func, c.old, c.new, c.detail, c.src].join(" "); },
-      filters: [
-        {name: "kind", label: "종류", options: uniq(A.changes.map(function (c) { return c.kind; })), test: function (c, v) { return c.kind === v; }},
-        {name: "file", label: "파일", options: uniq(A.changes.map(function (c) { return c.file; })), test: function (c, v) { return c.file === v; }}
-      ],
-      columns: [
-        {label: "위치", render: function (c) { return loc(c.file, c.line); }},
-        {label: "함수", render: function (c) { return code(c.func); }},
-        {label: "종류", render: function (c) { return c.kind; }, cls: "nowrap"},
-        {label: "변경 전 → 변경 후", render: change},
-        {label: "비고", render: function (c) { return el("span", {class: "small", text: c.detail || ""}); }}
-      ],
-      detail: function (c) { return el("div", {class: "kv"}, [el("div", {text: "소스"}), el("div", {}, [code(c.src || "")]),
-        el("div", {text: "변경 전"}), el("div", {}, [code(c.old || "(없음)")]), el("div", {text: "변경 후"}), el("div", {}, [code(c.new || "(없음)")]),
-        el("div", {text: "비고"}), el("div", {text: c.detail || "-"})]); }
-    }).node);
-  });
-
-  /* 7. 동작 변화 없음 */
-  if (A.notes.length) addTab("notes", "동작 변화 없음", A.notes.length, function (p) {
-    head(p, "동작 변화 없음으로 본 변경", "바뀌었지만 동작에는 영향이 없다고 보고 영향 분석 시작점에서 뺀 자료형·초기값 변경입니다.");
-    p.appendChild(new Table({rows: A.notes, search: function (n) { return n; }, columns: [{label: "내용", render: function (n) { return n; }}]}).node);
-  });
 }
-
-/* 8. 의존성 변화 */
-if (D.deps) addTab("deps", "의존성 변화", D.deps.functions.length, function (p) {
-  head(p, "함수·변수 의존성 변화 (읽기·쓰기·호출)", "변경 전후 버전 각각의 함수별 읽기·쓰기 변수와 호출 대상을 비교했습니다. 전체 표는 deps/deps_new.md, deps/deps_old.md 에 있습니다.");
-  function pm(r, k) {
-    if (r.status !== "변경") return list(r[k]);
-    var a = r[k + "_added"], m = r[k + "_removed"];
-    if (!a.length && !m.length) return el("span", {class: "muted", text: "-"});
-    return el("div", {}, [a.length ? el("div", {class: "new"}, ["+ ", list(a)]) : null, m.length ? el("div", {class: "old"}, ["− ", list(m)]) : null]);
-  }
-  function list(xs) { return xs.length ? frag(xs.map(function (x, i) { return frag([i ? ", " : "", code(x)]); })) : el("span", {class: "muted", text: "-"}); }
-  if (D.deps.functions.length) p.appendChild(new Table({rows: D.deps.functions,
-    search: function (r) { return [r.func].concat(r.reads || [], r.writes || [], r.calls || [], r.reads_added || [], r.reads_removed || [], r.writes_added || [], r.writes_removed || [], r.calls_added || [], r.calls_removed || []).join(" "); },
-    filters: [{name: "st", label: "상태", options: uniq(D.deps.functions.map(function (r) { return r.status; })), test: function (r, v) { return r.status === v; }}],
-    columns: [
-      {label: "함수", render: function (r) { return code(r.func); }}, {label: "상태", render: function (r) { return r.status; }, cls: "nowrap"},
-      {label: "읽기 +/−", render: function (r) { return pm(r, "reads"); }}, {label: "쓰기 +/−", render: function (r) { return pm(r, "writes"); }},
-      {label: "호출 +/−", render: function (r) { return pm(r, "calls"); }}
-    ]}).node);
-  else p.appendChild(el("p", {class: "muted", text: "함수별 읽기·쓰기·호출 관계는 바뀌지 않았습니다 (값이나 조건만 바뀐 변경)."}));
-  if (D.deps.vars_added.length || D.deps.vars_removed.length) p.appendChild(el("div", {class: "box", style: "margin-top:14px"}, [
-    el("h3", {text: "상태 변수"}), el("div", {class: "kv"}, [el("div", {text: "새 상태 변수"}), el("div", {}, [list(D.deps.vars_added)]),
-      el("div", {text: "사라진 상태 변수"}), el("div", {}, [list(D.deps.vars_removed)])])]));
-});
 
 /* 9. 진입점·공유 변수 */
 if (A && (A.entries.length || A.shared.length)) addTab("entries", "진입점·공유 변수", A.shared.length || A.entries.length, function (p) {
@@ -665,7 +669,7 @@ var th = el("button", {id: "theme", title: "밝은 화면 / 어두운 화면 전
 }});
 nav.appendChild(th);
 var start = location.hash.slice(1);
-show(panes[start] ? start : "overview");
+show(panes[start] ? start : "review");
 })();
 </script>
 </body>

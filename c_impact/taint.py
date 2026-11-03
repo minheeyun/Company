@@ -686,14 +686,17 @@ def find_risks(ctx, old: Program, rules=None) -> list[dict]:
             reads = _reads(prog, sk.operand) if sk.kind != "loop" else _reads(prog, sk.expr)
             src = taint.source(m, reads) if reads else None
             how, path, values = None, None, []
-            if src is not None:
+            if m in seeds and ch is not None and ch.kind == "changed" and old_keys is not None \
+                    and sk.key() not in old_keys:
+                # 위험 피연산자 자체가 바뀐 문장: 그 변경이 직접 원인 (영향받은 값이 들어와도 우선)
+                how, path = "변경된 연산", [hits[m]]
+                if src is not None:
+                    values = [display_path(prog, src[1])]
+            elif src is not None:
                 d, u, ekind = src
                 how = "값 전달"
                 values = [display_path(prog, u)]
                 path = path_to(hits, d) + [Hit(m, d, (ekind, display_path(prog, u)), hits[m].order)]
-            elif m in seeds and ch is not None and ch.kind == "changed" and old_keys is not None \
-                    and sk.key() not in old_keys:
-                how, path = "변경된 연산", [hits[m]]
             elif m in seeds and ch is not None and ch.kind == "moved":
                 how, path = "실행 조건 변경", [hits[m]]
                 evidence = evidence or "문장이 다른 조건 아래로 옮겨짐"
