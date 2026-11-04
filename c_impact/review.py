@@ -767,15 +767,16 @@ def review(old: Program, new: Program, cs, result: dict, deps_diff: dict | None,
             continue
         f, file, line = loc(prog, n)
         what = ", ".join(cv) or gen(call_cnt[0].name)
+        verb = {"changed": "변경", "added": "추가", "removed": "삭제", "moved": "실행 조건 변경(이동)"}.get(c.kind, c.kind)
         if n.kind == "cond":
-            C.add("4-3", REVIEW, f"카운터 판정 조건 {('변경' if c.kind == 'changed' else '추가' if c.kind == 'added' else '삭제')}: `{_short(c.other_text, 40) + '` → `' if c.kind == 'changed' else ''}{_short(n.text, 50)}`",
+            C.add("4-3", REVIEW, f"카운터 판정 조건 {verb}: `{_short(c.other_text, 40) + '` → `' if c.kind == 'changed' else ''}{_short(n.text, 50)}`",
                   func=f, file=file, line=line, evidence=[c.detail] if c.detail else [],
                   reviewer="재시도·실패 판정 임계값과 횟수가 요구사항과 맞는지 확인하세요.")
         elif c.kind == "removed":
             C.add("4-3", CANDIDATE, f"카운터 갱신·초기화 삭제 ({what}): `{_short(n.text)}`", func=f, file=file, line=line,
                   reviewer="카운터가 더 이상 증가·감소·초기화되지 않아 임계값 판정이 영원히 성립(또는 불성립)하지 않는지 확인하세요.")
         else:
-            C.add("4-3", REVIEW, f"카운터 갱신 {('변경' if c.kind == 'changed' else '추가')} ({what}): `{_short(n.text)}`", func=f, file=file, line=line,
+            C.add("4-3", REVIEW, f"카운터 갱신 {verb} ({what}): `{_short(n.text)}`", func=f, file=file, line=line,
                   reviewer="증감 단위·초기화 시점이 재시도·복구 조건과 맞는지 확인하세요.")
     C.note("4-3", "카운터 이름 패턴(cnt·count·retry·fail·debounce)의 증감·초기화·임계값 비교 변경을 검사")
 

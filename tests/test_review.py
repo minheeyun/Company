@@ -113,8 +113,9 @@ class ReviewChecklistTests(unittest.TestCase):
                   "**③ 어떤 문제가 발견되었는가**", "**④ 검증자가 추가로 확인할 사항**", "## 3. 검토 항목 체크리스트", "| 8-4 |"):
             self.assertIn(t, md)
         html = (self.out / "report.html").read_text(encoding="utf-8")
-        for t in ("📁 파일별 변경 검토", "⚠️ 검토 필요 항목", "🔗 변경 영향 및 의존성", "🔍 분석 근거 및 범위",
-                  "① 무엇이 변경되었는가", "④ 검증자가 추가로 확인할 사항", "부분 분석", "CSV 내보내기"):
+        for t in ("변경 검토", "발견 사항", "검증 기록", "근거 상세", "주요 동작 변경", "미완료 검증",
+                  "① 무엇이 변경되었는가", "② 스크립트가 무엇을 확인했는가", "③ 어떤 문제가 발견되었는가",
+                  "④ 검증자는 무엇을 추가로 확인해야 하는가", "신규 위험만", "CSV 내보내기"):
             self.assertIn(t, html)
 
     def test_change_units(self):

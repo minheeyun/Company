@@ -45,6 +45,7 @@ from c_impact import deps as deps_mod
 from c_impact import html_report, report
 from c_impact import external, parsediag
 from c_impact import review as review_mod
+from c_impact import story as story_mod
 from c_impact import units as units_mod
 from c_impact.analysis import load_programs, public, run_analysis
 from c_impact.rules import load_rules
@@ -633,6 +634,34 @@ def render_summary(s: dict) -> str:
     return "\n".join(out)
 
 
+def _attach_code(st: dict, old_dir: Path, new_dir: Path, old, new) -> None:
+    """변경마다 변경 전후 코드를 나란히 놓은 행: 핵심(변경 줄 ±3) 과 함수 전체."""
+    cache: dict = {}
+
+    def lines(root: Path, rel: str) -> list[str]:
+        key = (str(root), rel)
+        if key not in cache:
+            try:
+                cache[key] = (root / rel).read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                cache[key] = []
+        return cache[key]
+
+    def span(prog, func: str, rel: str):
+        ls = [n.line for n in prog.nodes if prog.func_display(n.func or "") == func and n.line
+              and Path(n.file).name == Path(rel).name]
+        return (min(ls), max(ls)) if ls else (None, None)
+    for c in st["changes"]:
+        ol, nl = lines(old_dir, c["file"]), lines(new_dir, c["file"])
+        c["code"] = story_mod.side_by_side(ol, nl, c["lo"], c["hi"], c.get("old_lo"), c.get("old_hi"), ctx=3)
+        nlo, nhi = span(new, c["func"], c["file"])
+        olo, ohi = span(old, c["func"], c["file"])
+        if nlo and c["func"] != "(전역 초기화)":
+            c["code_full"] = story_mod.side_by_side(ol, nl, nlo - 1, nhi + 1, olo and olo - 1, ohi and ohi + 1, ctx=1)
+        else:
+            c["code_full"] = []
+
+
 def html_payload(s: dict) -> dict:
     """report.html 에 넣을 데이터. 표시용으로 정렬·우선순위·원인 변경을 미리 계산해 둔다."""
     ch = s["file_changes"]
@@ -649,6 +678,7 @@ def html_payload(s: dict) -> dict:
         "deps": s.get("deps_diff"),
         "review": s.get("review"),
         "units": s.get("units"),
+        "story": s.get("story"),
         "explore": s.get("explore"), "sil": s.get("sil"),
         "analysis": None,
     }
@@ -917,6 +947,13 @@ def run(args) -> int:
                                               changes, cfg.defines, getattr(rules, "review_patterns", None))
         summary["units"] = units_mod.build(old, new, internal["cs"], analysis, summary["review"], summary["deps_diff"],
                                            getattr(rules, "review_patterns", None))
+        summary["story"] = story_mod.build(old, new, summary["units"], analysis, summary["review"], {
+            "versions": {"old": old_dir.name, "new": new_dir.name}, "time": summary["time"], "file_changes": changes,
+            "analyzed": summary["analyzed"], "scope": args.scope, "scope_reason": why,
+            "sil": summary.get("sil"), "explore": summary.get("explore")}, getattr(rules, "review_patterns", None))
+        _attach_code(summary["story"], old_dir, new_dir, old, new)
+        for u in summary["units"]["units"]:
+            u.pop("_g", None)
         dd = out / "deps"
         dd.mkdir(exist_ok=True)
         (dd / "deps_new.md").write_text(deps_mod.render_md(t_new, transitive=True), encoding="utf-8")

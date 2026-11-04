@@ -340,7 +340,7 @@ def build(old: Program, new: Program, cs, result: dict, review: dict | None, dep
                              "detail": "", "category": phr[i][0], "phrase": phr[i][1]} for i, x in enumerate(g)],
                 "deps": {"calls_added": sorted(set(calls_add)), "calls_removed": sorted(set(calls_rm)),
                          "writes": sorted(writes)},
-                "_lines": (lo, hi),
+                "_lines": (lo, hi), "_g": g,
             })
 
     # --- 분석 결과를 묶음에 붙이기 ---
