@@ -1,0 +1,427 @@
+#!/usr/bin/env python3
+"""프로젝트 폴더에서 분석용 빌드 설정(컴파일러·매크로·include·제외 폴더·메모리 클래스 헤더)을 자동으로 찾는다.
+
+손으로 넣던 옵션( -D __ghs__ -D CPU_BOARD_REVA -I ...\\GHS --exclude *SAMPLECODE* --cpp "... -include cia_memclass.h" )을
+다음 근거로 결정하고, 결정마다 근거와 확신도를 남긴다.
+
+  1. 빌드 파일      compile_commands.json, *.gpj(GHS), *.ewp(IAR), .cproject(Eclipse·TASKING), Makefile·*.mk·*.mak,
+                    CMakeLists.txt, *.bat·*.cmd 에서 컴파일러 실행 파일 이름과 -D / -I 옵션
+  2. Compiler.h     여러 개면 컴파일러 계열 이름(GHS·TASKING·IAR …)이 들어간 폴더
+  3. 메모리 클래스   AUTOSAR VAR/FUNC/P2VAR 의 memclass 이름을 빈 매크로로 정의한 헤더 (memclass_shim)
+  4. 반복 전처리     표본 .c 파일을 실제로 전처리해 보고
+                      - #error 가 나면 그 #if/#elif 사슬에서 고를 매크로를 찾아 -D 로 추가
+                        (컴파일러 계열 이름 → 빌드 파일에 있는 이름 → 사슬의 첫 번째 순으로 선택, 나머지는 대안으로 기록)
+                      - 헤더를 못 찾으면 프로젝트 안에서 같은 이름의 헤더 폴더를 -I 로 추가 (없으면 '생성 파일 없음'으로 기록)
+                    더 해결할 것이 없을 때까지 반복한다.
+  5. 제외 폴더      SAMPLECODE·example·demo 처럼 예제 코드 폴더
+
+사용 예)
+  python detect_config.py "S:\\...\\26A10" "S:\\...\\26A22"            # 결과: cia_config.json, run_auto.ps1
+  python folder_impact.py 변경전 변경후 -o result --auto-config        # 분석 전에 같은 탐지를 자동으로 수행
+
+확신도가 '낮음'인 결정(예: 보드 리비전을 근거 없이 첫 번째로 고른 경우)은 반드시 실제 빌드 설정과 확인하세요.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import random
+import re
+import subprocess
+import sys
+from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+import folder_impact as fi
+import memclass_shim
+from c_impact.frontend import BuildConfig, preprocess_command
+
+HERE = Path(__file__).resolve().parent
+
+# 컴파일러 계열: (실행 파일 이름 정규식, 정의할 매크로, Compiler.h 폴더 이름 단서)
+FAMILIES = {
+    "GHS": (r"\b(ccarm|ccppc|ccv850e?|ccrh850|cxarm|ccintarm|ccintppc)\b|green\s*hills|\.gpj\b", ["__ghs__"], ["ghs", "greenhills"]),
+    "TASKING": (r"\b(ctc|cctc|carm)\b|tasking", ["__TASKING__"], ["tasking"]),
+    "IAR": (r"\b(iccarm|iccrh850|iccrl78|iccrx)\b|iar\s*systems|\.ewp\b", ["__IAR_SYSTEMS_ICC__", "__ICCARM__"], ["iar"]),
+    "ARMCC": (r"\b(armcc|armclang)\b", ["__CC_ARM", "__ARMCC_VERSION=5060000"], ["armcc", "keil", "arm_cc"]),
+    "RENESAS": (r"\b(ccrl|ccrx|ccrh)\b", ["__CCRH__"], ["renesas", "ccrh", "ccrl"]),
+    "WINDRIVER": (r"\b(dcc|dplus)\b|diab", ["__DCC__"], ["diab", "windriver"]),
+    "GCC": (r"\b(arm-none-eabi-gcc|tricore-gcc|powerpc-eabi-gcc|gcc)\b", [], ["gcc", "gnu"]),
+}
+BUILD_GLOBS = ("*.gpj", "*.ewp", ".cproject", "*.mk", "*.mak", "Makefile*", "makefile*", "CMakeLists.txt", "*.cmake",
+               "*.bat", "*.cmd", "*.opt", "*.bld", "*.ld_opts", "*.launch", "compile_commands.json")
+SAMPLE_DIR = re.compile(r"(?i)(samplecode|sample_code|samples?|examples?|demo|testapp)$")
+DEF_RE = re.compile(r"""(?:^|[\s"'=,;(])-D\s*([A-Za-z_]\w*(?:=[^\s"',;)]*)?)""")
+INC_RE = re.compile(r"""(?:^|[\s"'=,;(])-I\s*("([^"]+)"|([^\s"',;)]+))""")
+XML_DEF_RE = re.compile(r"<(?:state|listOptionValue[^>]*value)=?\"?([A-Za-z_]\w*(?:=[^<\"]*)?)\"?", re.I)
+ERROR_RE = re.compile(r"^(.*?):(\d+):(?:\d+:)?\s*error:\s*#error\s*(.*)$", re.M)
+MISSING_RE = re.compile(r":\d+:\d+: fatal error: (.+?): No such file or directory")
+DEFINED_RE = re.compile(r"defined\s*\(?\s*([A-Za-z_]\w*)")
+COND_RE = re.compile(r"^\s*#\s*(if|ifdef|ifndef|elif|else|endif)\b(.*)$")
+
+
+def log(msg: str):
+    print(msg, file=sys.stderr, flush=True)
+
+
+# ---------------------------------------------------------------------------
+# 1. 빌드 파일
+# ---------------------------------------------------------------------------
+
+
+def scan_build_files(roots: list[Path], max_files: int = 400) -> dict:
+    found, defines, incs, compilers = [], Counter(), Counter(), Counter()
+    cc_json = None
+    for root in roots:
+        n = 0
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if not d.startswith(".") or d == ".settings"]
+            for fn in filenames:
+                if not any(Path(fn).match(g) for g in BUILD_GLOBS):
+                    continue
+                p = Path(dirpath) / fn
+                try:
+                    if p.stat().st_size > 4_000_000:
+                        continue
+                    text = p.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                n += 1
+                rel = p.relative_to(root).as_posix()
+                found.append(rel)
+                if fn == "compile_commands.json" and cc_json is None:
+                    cc_json = str(p)
+                for m in DEF_RE.finditer(text):
+                    defines[m.group(1)] += 1
+                if p.suffix.lower() in (".ewp", ".cproject") or fn == ".cproject":
+                    for blk in re.findall(r"(?is)<option[^>]*>(?:(?!</option>).)*?(?:CCDefines|defined|symbols|\.def)(?:(?!</option>).)*?</option>", text):
+                        for v in XML_DEF_RE.findall(blk):
+                            if not v.lower().startswith(("ccdefines", "true", "false")):
+                                defines[v] += 1
+                for m in INC_RE.finditer(text):
+                    incs[(m.group(2) or m.group(3)).strip()] += 1
+                low = text.lower()
+                for fam, (rx, _, _) in FAMILIES.items():
+                    k = len(re.findall(rx, low))
+                    if k and fam != "GCC":
+                        compilers[fam] += k
+                    elif k and fam == "GCC" and re.search(r"gcc\b", low):
+                        compilers[fam] += k
+                if n >= max_files:
+                    break
+            if n >= max_files:
+                break
+    return {"files": found, "defines": defines, "includes": incs, "compilers": compilers, "compile_commands": cc_json}
+
+
+# ---------------------------------------------------------------------------
+# 2. 컴파일러와 Compiler.h
+# ---------------------------------------------------------------------------
+
+
+def find_compiler_h(files: dict[str, Path]) -> list[str]:
+    return sorted(rel for rel in files if Path(rel).name.lower() == "compiler.h")
+
+
+def choose_family(build: dict, compiler_hs: list[str]) -> tuple[str | None, str, str]:
+    """(계열, 근거, 확신도)."""
+    if build["compilers"]:
+        fam, k = build["compilers"].most_common(1)[0]
+        return fam, f"빌드 파일에서 {fam} 컴파일러 이름 {k}회", "높음"
+    fams = [fam for fam, (_, _, hints) in FAMILIES.items()
+            if any(any(h in Path(rel).parent.as_posix().lower() for h in hints) for rel in compiler_hs)]
+    if len(fams) == 1:
+        return fams[0], f"Compiler.h 폴더 이름 ({fams[0]})", "중간"
+    if fams:
+        return fams[0], (f"빌드 파일이 없고 Compiler.h 가 여러 컴파일러용({', '.join(fams)})으로 있어 첫 번째를 선택 — "
+                         "실제 컴파일러 확인 필요"), "낮음"
+    return None, "빌드 파일·Compiler.h 폴더에서 컴파일러를 알 수 없음", "낮음"
+
+
+def choose_compiler_h(compiler_hs: list[str], family: str | None) -> tuple[str | None, str]:
+    if not compiler_hs:
+        return None, "Compiler.h 없음"
+    if len(compiler_hs) == 1:
+        return Path(compiler_hs[0]).parent.as_posix(), "프로젝트에 하나뿐"
+    hints = FAMILIES.get(family, (None, None, []))[2] if family else []
+    for rel in compiler_hs:
+        if any(h in rel.lower() for h in hints):
+            return Path(rel).parent.as_posix(), f"{len(compiler_hs)}개 중 {family} 폴더"
+    plain = [r for r in compiler_hs if not re.search(r"(?i)(template|sample|example|test)", r)]
+    pick = (plain or compiler_hs)[0]
+    return Path(pick).parent.as_posix(), f"{len(compiler_hs)}개 중 첫 번째 (계열 단서 없음)"
+
+
+# ---------------------------------------------------------------------------
+# 3. #error 사슬 분석
+# ---------------------------------------------------------------------------
+
+
+def error_chain(path: Path, line: int) -> list[str]:
+    """#error 가 들어 있는 #if/#elif 사슬의 조건식 목록 (바깥 블록 제외)."""
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    stack: list[list[str]] = []
+    for i, text in enumerate(lines[: max(0, line - 1)], 1):
+        m = COND_RE.match(text)
+        if not m:
+            continue
+        kind, rest = m.group(1), m.group(2).strip()
+        if kind in ("if", "ifdef", "ifndef"):
+            stack.append([f"#{kind} {rest}"])
+        elif kind in ("elif", "else") and stack:
+            stack[-1].append(f"#{kind} {rest}".strip())
+        elif kind == "endif" and stack:
+            stack.pop()
+    return stack[-1] if stack else []
+
+
+def chain_candidates(chain: list[str]) -> list[str]:
+    out = []
+    for c in chain:
+        if c.startswith("#ifndef") or c.startswith("#else"):
+            continue
+        if c.startswith("#ifdef"):
+            names = [c.split()[1]] if len(c.split()) > 1 else []
+        else:
+            names = DEFINED_RE.findall(c)
+            if not names:
+                m = re.match(r"#(?:el)?if\s*\(?\s*([A-Za-z_]\w*)\s*(==\s*(\w+))?", c)
+                if m:
+                    names = [m.group(1) + (f"={m.group(3)}" if m.group(3) else "")]
+        for n in names:
+            if n not in out:
+                out.append(n)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 4. 반복 전처리
+# ---------------------------------------------------------------------------
+
+
+def _run_pp(root: Path, rel: str, cfg: BuildConfig) -> tuple[str, str]:
+    try:
+        r = subprocess.run(preprocess_command(root, rel, cfg), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                           text=True, errors="replace", cwd=str(root))
+    except OSError as e:
+        return rel, f"전처리기 실행 실패: {e}"
+    return rel, ("" if r.returncode == 0 else r.stderr)
+
+
+def detect(old_dir: Path, new_dir: Path, exclude: list[str] | None = None, *, sample: int = 60, rounds: int = 8,
+           jobs: int = 8, out_dir: Path | None = None, quiet: bool = False) -> dict:
+    say = (lambda m: None) if quiet else log
+    exclude = list(exclude or [])
+    decisions: list[dict] = []
+
+    def decide(item, value, why, conf, alts=None):
+        decisions.append({"item": item, "value": value, "evidence": why, "confidence": conf, "alternatives": alts or []})
+
+    say("[1/5] 빌드 파일 찾는 중...")
+    build = scan_build_files([new_dir, old_dir])
+    say(f"      빌드 파일 {len(build['files'])}개")
+
+    # 예제 폴더 제외
+    sample_dirs = set()
+    for root in (new_dir, old_dir):
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+            for d in dirnames:
+                if SAMPLE_DIR.search(d):
+                    sample_dirs.add(d)
+    for d in sorted(sample_dirs):
+        pat = f"*{d}*"
+        if pat not in exclude:
+            exclude.append(pat)
+            decide("제외 폴더", pat, f"예제·시연 코드 폴더 이름 '{d}'", "중간")
+
+    say("[2/5] 컴파일러·Compiler.h 판별 중...")
+    old_files, new_files = fi.list_c_files(old_dir, exclude), fi.list_c_files(new_dir, exclude)
+    chs = find_compiler_h(new_files) or find_compiler_h(old_files)
+    family, why, conf = choose_family(build, chs)
+    defines: list[str] = []
+    if family:
+        fam_macros = FAMILIES[family][1]
+        defines += fam_macros
+        alts = [f for f in build["compilers"] if f != family] or \
+            [f for f, (_, _, h) in FAMILIES.items() if f != family and any(any(x in r.lower() for x in h) for r in chs)]
+        decide("컴파일러", family, why, conf, alts)
+        if fam_macros:
+            decide("컴파일러 매크로", " ".join(f"-D {m}" for m in fam_macros), f"{family} 컴파일러가 미리 정의하는 매크로", conf)
+    else:
+        decide("컴파일러", "알 수 없음", why, "낮음", list(FAMILIES))
+    ch_dir, ch_why = choose_compiler_h(chs, family)
+    includes: list[str] = []
+    if ch_dir:
+        includes.append(ch_dir)
+        decide("Compiler.h 경로", ch_dir, ch_why, "높음" if len(chs) == 1 or "폴더" in ch_why else "낮음",
+               [Path(r).parent.as_posix() for r in chs if Path(r).parent.as_posix() != ch_dir])
+    if build["compile_commands"]:
+        decide("compile_commands.json", build["compile_commands"], "프로젝트에 있음 — 파일별 -D/-I 를 그대로 쓰는 것이 가장 정확", "높음")
+
+    say("[3/5] 메모리 클래스 헤더 만드는 중...")
+    out_dir = Path(out_dir or HERE)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    names, guarded = memclass_shim.collect([old_dir, new_dir], exclude)
+    use = sorted(n for n in names if n not in guarded and n not in memclass_shim.POSITIONS)
+    mem = out_dir / "cia_memclass_auto.h"
+    lines = ["/* detect_config.py 가 만든 파일: AUTOSAR 메모리 클래스 이름을 빈 값으로 정의 */",
+             "#ifndef CIA_MEMCLASS_SHIM_H", "#define CIA_MEMCLASS_SHIM_H"]
+    for n in use:
+        lines += [f"#ifndef {n}", f"#define {n}", "#endif"]
+    lines += ["#endif", ""]
+    mem.write_text("\n".join(lines), encoding="utf-8")
+    decide("메모리 클래스 헤더", str(mem), f"VAR·FUNC·P2VAR 등의 memclass 이름 {len(use)}개 (Compiler*.h 가 검사하는 {len(names) - len(use)}개 제외)", "높음")
+
+    say("[4/5] 표본 파일을 전처리하며 #error·누락 헤더 해결 중...")
+    changes = fi.compare_trees(old_files, new_files)
+    changed_c = [f for f in changes["modified"] + changes["added"] if f.endswith(".c") and f in new_files]
+    rest = [f for f in new_files if f.endswith(".c") and f not in changed_c]
+    random.Random(1).shuffle(rest)
+    picks = (changed_c + rest)[:sample]
+    header_index = defaultdict(list)
+    for rel in list(new_files) + list(old_files):
+        if rel.endswith(".h"):
+            header_index[Path(rel).name.lower()].append(Path(rel).parent.as_posix())
+    auto_inc = fi.header_dirs(old_files, new_files)
+    cpp = [sys.executable, str(HERE / "cpp_filter.py"), "-include", str(mem)]
+    build_defs = {d.split("=")[0]: d for d in build["defines"]}
+    unresolved_err, missing_gen = {}, Counter()
+    history = []
+    for rnd in range(1, rounds + 1):
+        cfg = BuildConfig(cpp=cpp)
+        cfg.include_dirs = ["{ROOT}/" + d for d in includes] + ["{ROOT}/" + d if d != "." else "{ROOT}" for d in auto_inc]
+        cfg.defines = list(defines)
+        with ThreadPoolExecutor(max_workers=max(1, jobs)) as ex:
+            res = dict(ex.map(lambda r: _run_pp(new_dir, r, cfg), picks))
+        failed = {r: e for r, e in res.items() if e}
+        history.append({"round": rnd, "files": len(picks), "failed": len(failed)})
+        say(f"      {rnd}회차: 표본 {len(picks)}개 중 실패 {len(failed)}개")
+        progress = False
+        seen_err = set()
+        for rel, err in failed.items():
+            for m in ERROR_RE.finditer(err):
+                fpath, line, msg = m.group(1), int(m.group(2)), m.group(3).strip().strip('"')
+                key = (Path(fpath).name, line)
+                if key in seen_err:
+                    continue
+                seen_err.add(key)
+                p = Path(fpath)
+                if not p.is_absolute():
+                    p = new_dir / fpath
+                chain = error_chain(p, line)
+                cands = chain_candidates(chain)
+                if not cands:
+                    unresolved_err[msg] = f"{Path(fpath).name}:{line}"
+                    continue
+                hints = FAMILIES.get(family, (None, None, []))[2] if family else []
+                pick, reason, c2 = None, "", "낮음"
+                for cnd in cands:
+                    if any(h in cnd.lower() for h in hints):
+                        pick, reason, c2 = cnd, f"{family} 컴파일러 계열 이름", "높음"
+                        break
+                if pick is None:
+                    for cnd in cands:
+                        if cnd.split("=")[0] in build_defs:
+                            pick, reason, c2 = build_defs[cnd.split("=")[0]], "빌드 파일의 -D 옵션", "높음"
+                            break
+                if pick is None:
+                    pick, reason = cands[0], "근거 없이 #if 사슬의 첫 번째 선택 — 실제 빌드 설정 확인 필요"
+                if pick.split("=")[0] in {d.split("=")[0] for d in defines}:
+                    unresolved_err[msg] = f"{Path(fpath).name}:{line} (이미 -D {pick} 인데도 #error)"
+                    continue
+                defines.append(pick)
+                decide("매크로", f"-D {pick}", f"#error \"{msg}\" ({Path(fpath).name}:{line}) 를 피하려면 필요 · {reason}", c2,
+                       [c for c in cands if c != pick])
+                progress = True
+            for m in MISSING_RE.finditer(err):
+                hdr = m.group(1).strip().strip('"<>')
+                dirs = header_index.get(Path(hdr).name.lower(), [])
+                if dirs:
+                    d = sorted(dirs, key=lambda x: (bool(re.search(r"(?i)(sample|template|test)", x)), len(x)))[0]
+                    if d not in includes:
+                        includes.append(d)
+                        decide("include 경로", d, f"'{hdr}' 를 찾기 위해", "중간", [x for x in dirs if x != d][:5])
+                        progress = True
+                else:
+                    missing_gen[hdr] += 1
+        if not progress:
+            break
+    for hdr, k in missing_gen.most_common():
+        decide("생성 파일 없음", hdr, f"표본 {k}개 파일이 include 하지만 프로젝트에 없음 (빌드 때 생성되는 파일일 수 있음) — 해당 파일은 분석에서 빠짐", "참고")
+    for msg, where in unresolved_err.items():
+        decide("해결 못한 #error", msg, where, "참고")
+    say("[5/5] 완료")
+    final_fail = history[-1]["failed"] if history else 0
+    return {"compiler": family, "defines": defines, "include_dirs": includes, "exclude": exclude, "memclass_header": str(mem),
+            "cpp": cpp, "compile_commands": build["compile_commands"], "decisions": decisions, "history": history,
+            "sample_files": len(picks), "sample_failed": final_fail, "build_files": build["files"][:50]}
+
+
+# ---------------------------------------------------------------------------
+# 출력
+# ---------------------------------------------------------------------------
+
+
+def render(r: dict) -> str:
+    lines = ["", "자동 탐지 결과", "=" * 60]
+    for d in r["decisions"]:
+        alt = f"  (대안: {', '.join(d['alternatives'][:4])})" if d["alternatives"] else ""
+        lines.append(f"[{d['confidence']}] {d['item']}: {d['value']}")
+        lines.append(f"        근거: {d['evidence']}{alt}")
+    lines.append("")
+    lines.append(f"표본 {r['sample_files']}개 파일 중 마지막 전처리 실패 {r['sample_failed']}개")
+    low = [d for d in r["decisions"] if d["confidence"] == "낮음"]
+    if low:
+        lines.append(f"⚠ 확신도 '낮음' {len(low)}건은 실제 빌드 설정과 확인하세요.")
+    return "\n".join(lines)
+
+
+def ps1(r: dict, old_dir: Path, new_dir: Path, out: str) -> str:
+    q = lambda s: '"' + str(s) + '"'  # noqa: E731
+    parts = [f"python {q(HERE / 'folder_impact.py')} {q(old_dir)} {q(new_dir)} `", f"  -o {out} --scope changed `"]
+    for e in r["exclude"]:
+        parts.append(f"  --exclude {q(e)} `")
+    if r["defines"]:
+        parts.append("  " + " ".join(f"-D {d}" for d in r["defines"]) + " `")
+    for i in r["include_dirs"]:
+        parts.append(f"  -I {q(i)} `")
+    parts.append(f"  --cpp {q('python ' + str(HERE / 'cpp_filter.py') + ' -include ' + r['memclass_header'])}")
+    return "\n".join(parts) + "\n"
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description="분석용 빌드 설정 자동 탐지")
+    ap.add_argument("old_dir")
+    ap.add_argument("new_dir")
+    ap.add_argument("--exclude", action="append", default=[], metavar="GLOB")
+    ap.add_argument("--sample", type=int, default=60, help="전처리해 볼 표본 .c 파일 수 (기본 60)")
+    ap.add_argument("--rounds", type=int, default=8)
+    ap.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 4)
+    ap.add_argument("-o", "--out", default="cia_config.json", help="결과 JSON (기본 cia_config.json)")
+    ap.add_argument("--ps1", default="run_auto.ps1", help="만들 실행 스크립트 (기본 run_auto.ps1)")
+    ap.add_argument("--result", default="result_auto", help="실행 스크립트의 결과 폴더 (기본 result_auto)")
+    args = ap.parse_args(argv)
+    old_dir, new_dir = Path(args.old_dir).resolve(), Path(args.new_dir).resolve()
+    for d in (old_dir, new_dir):
+        if not d.is_dir():
+            log(f"오류: 폴더가 아닙니다: {d}")
+            return 1
+    r = detect(old_dir, new_dir, args.exclude, sample=args.sample, rounds=args.rounds, jobs=args.jobs,
+               out_dir=Path(args.out).resolve().parent)
+    print(render(r))
+    Path(args.out).write_text(json.dumps(r, ensure_ascii=False, indent=2), encoding="utf-8")
+    Path(args.ps1).write_text(ps1(r, old_dir, new_dir, args.result), encoding="utf-8")
+    print(f"\n설정: {Path(args.out).resolve()}")
+    print(f"실행 스크립트: {Path(args.ps1).resolve()}  (powershell -ExecutionPolicy Bypass -File {args.ps1})")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

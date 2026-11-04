@@ -330,6 +330,31 @@ CWE 분류는 기본으로 표시하지 않으며, `--cwe` 를 주면 각 항목
 - `report.html` **검토 항목** 탭: 25개 항목의 결과·분류별 건수·검토한 내용·검증자 판단 내용, 행을 누르면 항목별 결과 목록.
 - `summary.md` 2절(①→②→③, 함수별)과 3절(검토 항목 체크리스트), `summary.json` 의 `review`.
 
+## 빌드 설정 자동 탐지 (detect_config.py, `--auto-config`)
+
+프로젝트마다 손으로 넣던 `-D __ghs__ -D CPU_BOARD_REVA -I ...\GHS --exclude *SAMPLECODE* --cpp "... -include cia_memclass.h"` 를
+프로젝트 자체에서 찾아 적용합니다.
+
+| 단계 | 근거 |
+|---|---|
+| 컴파일러 | 빌드 파일(*.gpj·*.ewp·.cproject·Makefile·*.mk·*.bat·CMakeLists.txt)의 컴파일러 이름 → 없으면 Compiler.h 폴더 이름 |
+| 컴파일러 매크로 | 계열별 미리 정의 매크로 (GHS `__ghs__`, TASKING `__TASKING__`, IAR `__IAR_SYSTEMS_ICC__` …) |
+| Compiler.h | 여러 개면 컴파일러 계열 폴더 |
+| 메모리 클래스 헤더 | VAR·FUNC·P2VAR 의 memclass 이름을 빈 매크로로 정의 (memclass_shim 과 같은 방식) |
+| 보드·변형 매크로 | 표본 .c 를 실제로 전처리해 `#error` 가 나면 그 `#if/#elif` 사슬에서 선택 (계열 이름 → 빌드 파일 -D → 첫 번째 순), 대안도 기록 |
+| include 경로 | 못 찾은 헤더를 프로젝트에서 찾아 추가, 없으면 '생성 파일 없음'으로 기록 |
+| 제외 폴더 | SAMPLECODE·example·demo 등 예제 폴더 |
+
+결정마다 근거와 확신도(높음·중간·낮음)를 남기고, '낮음'은 보고서 경고와 '분석 근거 및 범위' 탭에 표시합니다.
+
+```powershell
+python detect_config.py "변경전폴더" "변경후폴더"            # cia_config.json, run_auto.ps1 생성 (확인 후 실행)
+python folder_impact.py "변경전폴더" "변경후폴더" -o result --scope changed --auto-config   # 탐지 후 바로 분석
+```
+
+직접 준 `-D`·`-I`·`--exclude` 는 자동 탐지 결과에 더해지고, `--cpp` 를 직접 주면 그 값을 씁니다.
+프로젝트에 `compile_commands.json` 이 있으면 `--compile-commands` 를 쓰는 것이 가장 정확합니다.
+
 ## 테스트
 
 ```bash

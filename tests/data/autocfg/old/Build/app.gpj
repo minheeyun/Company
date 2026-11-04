@@ -1,0 +1,6 @@
+#!gbuild
+primaryTarget=arm_standalone.tgt
+[Project]
+	-DCPU_BOARD_REVA
+	-cpu=cortexr52
+	:compiler=ccarm

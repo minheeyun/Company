@@ -746,6 +746,15 @@ addTab("scope", "🔍 분석 근거 및 범위", null, function (p) {
   head(p, "분석 근거 및 범위", "어떤 기술로 무엇을 분석했고, 무엇을 분석하지 못했는지입니다. 위험이 탐지되지 않았다는 것을 안전 확인으로 해석하지 않도록, 분석 한계를 함께 확인하세요.");
   var m = D.meta, sec = (A && A.security) || {}, eng = sec.engine || {}, tools = sec.tools || {};
   if ((m.warnings || []).length) p.appendChild(el("div", {class: "box warn"}, [el("h3", {text: "분석 범위 경고"}), el("ul", {}, m.warnings.map(function (w) { return el("li", {text: w}); }))]));
+  if ((D.auto_config || []).length) {
+    p.appendChild(el("h3", {text: "자동 탐지한 빌드 설정 (--auto-config)"}));
+    p.appendChild(el("table", {class: "cl"}, [el("thead", {}, [el("tr", {}, ["확신도", "항목", "값", "근거"].map(function (h) { return el("th", {text: h}); }))]),
+      el("tbody", {}, D.auto_config.map(function (d) {
+        return el("tr", {}, [el("td", {}, [el("span", {class: "tag " + (d.confidence === "높음" ? "t3" : d.confidence === "낮음" ? "t1" : "t2"), text: d.confidence})]),
+          el("td", {text: d.item}), el("td", {}, [code(d.value)]),
+          el("td", {class: "small", text: d.evidence + (d.alternatives.length ? " (대안: " + d.alternatives.slice(0, 4).join(", ") + ")" : "")})]);
+      }))]));
+  }
   var R = D.review || {items: [], groups: [], classes: []};
   var nRisk = A ? A.risks.length : 0, nSym = A ? A.risks.filter(function (r) { return r.symbolic; }).length : 0;
   var ex = A ? A.excluded : {};

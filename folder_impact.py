@@ -596,6 +596,13 @@ def render_summary(s: dict) -> str:
         out.append(f"- 지정 시나리오: 케이스 {sil['cases']}개 중 차이 {sil['diff_cases']}개 — [`sil/sil_report.md`](sil/sil_report.md)")
 
     out += ["", f"## {sec}. 분석 범위와 주의", ""]
+    ac = s.get("auto_config")
+    if ac:
+        out += ["**자동 탐지한 빌드 설정 (--auto-config)**", "", "| 확신도 | 항목 | 값 | 근거 |", "|---|---|---|---|"]
+        for d in ac["decisions"]:
+            alt = f" (대안: {', '.join(d['alternatives'][:3])})" if d["alternatives"] else ""
+            out.append(f"| {d['confidence']} | {_c(d['item'])} | `{_c(_s(d['value'], 80))}` | {_c(_s(d['evidence'], 160))}{_c(alt)} |")
+        out.append("")
     for w in s["warnings"]:
         out.append(f"- ⚠ {_c(w)}")
     if r is not None:
@@ -615,6 +622,7 @@ def html_payload(s: dict) -> dict:
     """report.html 에 넣을 데이터. 표시용으로 정렬·우선순위·원인 변경을 미리 계산해 둔다."""
     ch = s["file_changes"]
     data: dict = {
+        "auto_config": [d for d in ((s.get("auto_config") or {}).get("decisions") or [])],
         "meta": {k: s.get(k) for k in ("old_dir", "new_dir", "time", "elapsed", "scope_reason", "analyzed",
                                        "warnings", "duplicate_headers", "outputs")},
         "include": {"auto": len(s["auto_include"]), "user": len(s["user_include"]), "cc": bool(s["compile_commands"])},
@@ -808,6 +816,21 @@ def run(args) -> int:
     out.mkdir(parents=True, exist_ok=True)
     exclude = list(args.exclude or [])
     warnings: list[str] = []
+    auto = None
+    if getattr(args, "auto_config", False):
+        import detect_config
+        log("0/5 빌드 설정 자동 탐지 중 (--auto-config)...")
+        auto = detect_config.detect(old_dir, new_dir, exclude, out_dir=out, jobs=args.jobs)
+        log(detect_config.render(auto))
+        exclude = auto["exclude"]
+        args.defines = auto["defines"] + [d for d in args.defines if d not in auto["defines"]]
+        args.include_dirs = auto["include_dirs"] + [d for d in args.include_dirs if d not in auto["include_dirs"]]
+        if args.cpp == "gcc -E":
+            args.cpp_list = auto["cpp"]
+        low = [d for d in auto["decisions"] if d["confidence"] == "낮음"]
+        if low:
+            warnings.append("자동 탐지 설정 중 확신도 '낮음' " + str(len(low)) + "건: "
+                            + "; ".join(f"{d['item']} {d['value']}" for d in low[:4]) + " — 실제 빌드 설정과 확인하세요")
 
     log("1/5 파일 비교 중...")
     old_files, new_files = list_c_files(old_dir, exclude), list_c_files(new_dir, exclude)
@@ -824,6 +847,7 @@ def run(args) -> int:
         "compile_commands": args.compile_commands,
         "duplicate_headers": duplicate_headers(old_files, new_files) if auto_inc else {},
         "warnings": warnings, "outputs": [],
+        "auto_config": auto,
     }
     any_change = changes["added"] or changes["removed"] or changes["modified"]
     files, why = analysis_scope(changes, old_files, new_files, args.scope)
@@ -840,7 +864,7 @@ def run(args) -> int:
         log("분석할 .c 파일이 없습니다 (헤더만 바뀌었고 그 헤더를 쓰는 .c 가 없음).")
         summary["analyzed"] = {"old": 0, "new": 0}
     else:
-        cfg = BuildConfig(cpp=args.cpp.split(), use_fake_libc=not args.system_headers)
+        cfg = BuildConfig(cpp=getattr(args, "cpp_list", None) or args.cpp.split(), use_fake_libc=not args.system_headers)
         cfg.include_dirs = ["{ROOT}/" + d if d != "." else "{ROOT}" for d in auto_inc]
         for d in args.include_dirs:
             cfg.include_dirs.insert(0, d if Path(d).is_absolute() else "{ROOT}/" + d)  # 직접 지정한 경로가 우선
@@ -962,6 +986,9 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 1, help="병렬 파싱 프로세스 수")
     a.add_argument("--fail-on-impact", action="store_true", help="영향 항목이 있으면 종료 코드 3")
     a.add_argument("-q", "--quiet", action="store_true", help="터미널 요약 생략")
+
+    b.add_argument("--auto-config", action="store_true",
+                   help="컴파일러·매크로(-D)·include(-I)·제외 폴더·메모리 클래스 헤더를 프로젝트에서 자동 탐지해 적용 (detect_config.py)")
 
     sec = ap.add_argument_group("보안 취약점 분석 (CPG + Taint + Symbolic Execution)")
     sec.add_argument("--rules", help="Source·Sink·보안 검사 규칙 (YAML·JSON). 기본: config/security_rules.yaml")
