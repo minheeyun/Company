@@ -109,12 +109,32 @@ class ReviewChecklistTests(unittest.TestCase):
 
     def test_reports_three_part_structure(self):
         md = (self.out / "summary.md").read_text(encoding="utf-8")
-        for t in ("## 2. 변경 검토 결과", "**① 무엇이 변경되었나**", "**② 확인된 코드 위험과 의존성 변화**",
-                  "**③ 검증자가 추가로 확인할 것**", "## 3. 검토 항목 체크리스트", "| 8-4 |"):
+        for t in ("## 2. 파일별 변경 검토", "**① 무엇이 변경되었는가**", "**② 스크립트가 무엇을 확인했는가**",
+                  "**③ 어떤 문제가 발견되었는가**", "**④ 검증자가 추가로 확인할 사항**", "## 3. 검토 항목 체크리스트", "| 8-4 |"):
             self.assertIn(t, md)
         html = (self.out / "report.html").read_text(encoding="utf-8")
-        for t in ("① 무엇이 변경되었나", "③ 검증자가 추가로 확인할 것", "검토 항목 체크리스트"):
+        for t in ("📁 파일별 변경 검토", "⚠️ 검토 필요 항목", "🔗 변경 영향 및 의존성", "🔍 분석 근거 및 범위",
+                  "① 무엇이 변경되었는가", "④ 검증자가 추가로 확인할 사항", "부분 분석", "CSV 내보내기"):
             self.assertIn(t, html)
+
+    def test_change_units(self):
+        un = self.summary["units"]
+        units = un["units"]
+        err = [u for u in units if u["func"] == "App_Main" and "Dem_SetEventStatus() 호출 삭제" in u["summary"]]
+        self.assertEqual(len(err), 1)
+        u = err[0]
+        self.assertTrue(u["summary"].startswith("오류 처리 로직 변경"))
+        self.assertIn("판정 기준 변경", u["summary"])
+        self.assertEqual(u["level"], "orange")
+        items = [q["item"] for q in u["checklist"]]
+        self.assertEqual(len(items), len(set(items)))  # 항목당 하나
+        self.assertTrue(any(i["title"].startswith("오류 처리·복구 호출 삭제") for i in u["issues"]))
+        # 별개의 제어 블록은 다른 변경점으로 나뉜다
+        self.assertGreaterEqual(len([x for x in units if x["func"] == "App_Main"]), 3)
+        self.assertFalse([c for x in units for c in x["changes"] if "인자3" in c["phrase"]])
+        self.assertEqual(un["files"][0]["file"], "app.c")
+        fn = next(f for f in un["functions"] if f["func"] == "App_Main")
+        self.assertIn(["Dem_SetEventStatus", ""], fn["call_pairs"])
 
 
 if __name__ == "__main__":

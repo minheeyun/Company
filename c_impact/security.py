@@ -36,6 +36,7 @@ CWE_NAME = {
     "CWE-822": "Untrusted Pointer Dereference (신뢰할 수 없는 포인터)",
     "CWE-834": "Excessive Iteration (과도한 반복)",
     "CWE-20": "Improper Input Validation (입력 검증 부적절)",
+    "CWE-252": "Unchecked Return Value (반환값 미검사)",
     "CWE-862": "Missing Authorization (권한 확인 누락)",
     "CWE-307": "Improper Restriction of Excessive Authentication Attempts (인증 시도 제한 부적절)",
     "CWE-354": "Improper Validation of Integrity Check Value (무결성 검증 부적절)",
@@ -446,14 +447,24 @@ def _check_findings(new, old, cs, ctx_new, ctx_old, cpg_new, cpg_old, taint_new,
             ti = {"flow_detected": True, "source": taint.sources.get(src, ""), "source_label": taint.labels.get(src, ""),
                   "value": display_path(prog, u),
                   "path": [_step(ctx, h) for h in path_to(taint.hits, d) + [Hit(c.node, d, (kind, display_path(prog, u)), 0)]]}
+        # 조건이 외부 값을 '직접' 비교하는지, 함수 반환값(오류 코드)을 검사하는지 구분한다.
+        # 반환값 검사 조건의 삭제는 오류 처리 경로 변경이며, 그것만으로 입력 검증·인가 우회로 단정하지 않는다.
+        direct_vals = [u for u in reads if "::$out" not in u[0]]
+        ret_check = any("::$out" in u[0] for u in reads) and not any(
+            fl is not None and u == fl[1] for u in direct_vals)
         if rule is not None:
             cwe, label = rule.get("cwe", "CWE-840"), rule.get("label", rule.get("name", "보안 검사"))
+            risk = "보안 검사 우회·약화 가능 (요구사항 확인 필요)"
+        elif ret_check:
+            cwe, label = "CWE-252", "반환값·오류 검사"
+            risk = "오류 처리 경로 변경 — 반환값 확인 생략 시 상태 정리가 되는지 확인 필요 (보안 취약점으로 단정하지 않음)"
         else:
             cwe, label = "CWE-20", "외부 입력 검증"
+            risk = "검증되지 않은 외부 입력 허용 범위 변화"
         verb = "삭제" if removed else {"changed": "변경", "added": "추가", "moved": "위치 이동"}[c.kind]
         f = {
             "category": "보안 조건 변경", "kind": "check", "kind_label": f"{label} 조건 {verb}",
-            "risk": "보안 검사 우회·약화 가능" if rule else "검증되지 않은 외부 입력 허용 범위 변화",
+            "risk": risk,
             "how": f"조건 {verb}", "func": prog.func_display(n.func), "file": _rel(prog, n.file), "line": n.line,
             "src": ctx.lines.get(n.file, n.line), "expr": n.text, "operand": names, "values": [],
             "evidence": c.detail or ("검사 조건이 삭제됨" if removed else ""),
@@ -466,7 +477,7 @@ def _check_findings(new, old, cs, ctx_new, ctx_old, cpg_new, cpg_old, taint_new,
                          "old_location": "", "old_evidence": "", "old_symbolic": None},
             "status_code": "NEW_REGRESSION" if removed else "PENDING",
             "status": STATUS["NEW_REGRESSION" if removed else "PENDING"],
-            "level": "High" if removed or (rule and fl) else "Medium",
+            "level": "High" if (removed and not ret_check) or (rule and fl) else "Medium",
             "change": _change_info(c, new, old),
             "cpg": {"affected_sink": n.text, "control_dependency_changed": True, "data_dependency": False, "sink_kind": "check"},
             "severity": CANDIDATE,

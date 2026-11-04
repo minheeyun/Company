@@ -45,6 +45,7 @@ from c_impact import deps as deps_mod
 from c_impact import html_report, report
 from c_impact import external
 from c_impact import review as review_mod
+from c_impact import units as units_mod
 from c_impact.analysis import load_programs, public, run_analysis
 from c_impact.rules import load_rules
 from c_impact.frontend import BuildConfig, load_compile_commands
@@ -452,94 +453,61 @@ def _fn_key(func: str, file: str) -> tuple:
 
 
 def _review_sections(s: dict) -> list[str]:
-    """① 무엇이 변경 → ② 코드 위험·의존성 변화 → ③ 검증자 확인 사항 (함수별), 그리고 검토 항목 체크리스트."""
+    """변경점 묶음별: ① 무엇이 변경 → ② 스크립트가 확인한 것 → ③ 발견된 문제 → ④ 검증자 확인 사항, 그리고 검토 항목 체크리스트."""
     rv = s.get("review")
+    un = s.get("units")
     r = s.get("analysis")
-    if not rv or r is None:
+    if not rv or r is None or not un:
         return []
-    out = ["", "## 2. 변경 검토 결과 (① 무엇이 변경되었나 → ② 어떤 위험·의존성 변화가 있나 → ③ 검증자가 무엇을 확인해야 하나)", "",
-           "결과 분류: " + " · ".join(f"{_CLS_MARK[c['name']]} **{c['name']}**({c['desc']})" for c in rv["classes"]), ""]
-    items_by_id = {it["id"]: it for it in rv["items"]}
-    fnd = defaultdict(list)
-    for f in rv["findings"]:
-        fnd[_fn_key(f["func"], f["file"])].append(f)
-    risks = defaultdict(list)
-    for x in r.get("risks", []):
-        if x.get("status_code") in ("NEW_REGRESSION", "PENDING"):
-            risks[_fn_key(x["func"], x["file"])].append(x)
-    deps = {row["func"]: row for row in (s.get("deps_diff") or {}).get("functions", [])}
-    changes, groups = change_groups(r)
-    order = sorted(groups.items(), key=lambda x: (0 if x[0][1].endswith(".c") else 1, x[0][1], x[0][0]))
-    for (func, file), g in order:
-        key = _fn_key(func, file)
-        fs = fnd.get(key, [])
-        rk = risks.get(key, [])
-        out += [f"### `{_c(func)}` — {_c(file)}", ""]
-        out.append("**① 무엇이 변경되었나**")
-        sem = {f["line"]: f for f in fs if f["item"] == "1-3"}
-        n_sem = 0
-        for c in g["changes"][:12]:
-            body = f"`{_c(_s(c['old'], 70))}` → `{_c(_s(c['new'], 70))}`" if c["old"] and c["new"] else f"`{_c(_s(c['new'] or c['old'], 90))}`"
-            extra = ""
-            if c["line"] in sem and c["kind"] == "changed":
-                extra = " — 의미 차이: " + _c(_s(sem[c["line"]]["summary"].split("`: ", 1)[-1], 90))
-                n_sem += 1
-            elif c.get("detail") and c["detail"] not in ("추가된 문장", "삭제된 문장"):
-                extra = " — " + _c(_s(c["detail"], 90))
-            out.append(f"- {c['line']}행 {report.KIND_KO.get(c['kind'], c['kind'])}: {body}{extra}")
-        if len(g["changes"]) > 12:
-            out.append(f"- … 외 {len(g['changes']) - 12}곳")
-        out += ["", "**② 확인된 코드 위험과 의존성 변화**"]
-        lines2 = []
-        for x in rk:
-            lines2.append(f"- {_CLS_MARK['위반 경로 확인' if x['state'] == 'violated' else '위험 후보 탐지']} [{x['id']}] "
-                          f"{x['level']} · {x['status']} · {x['kind_label']} `{_c(_s(x['expr'], 60))}` — {x.get('verification_level', '')}")
-        for f in fs:
-            if f["class"] in ("위반 경로 확인", "위험 후보 탐지") and not f["summary"].startswith("["):
-                lines2.append(f"- {_CLS_MARK[f['class']]} ({f['item']}) {_c(_s(f['summary'], 130))}")
-        row = deps.get(func)
-        if row:
-            parts = []
-            for k, ko in (("calls", "호출"), ("reads", "읽기"), ("writes", "쓰기")):
-                if row.get(k + "_added"):
-                    parts.append(f"{ko} +{', '.join(row[k + '_added'][:4])}")
-                if row.get(k + "_removed"):
-                    parts.append(f"{ko} −{', '.join(row[k + '_removed'][:4])}")
-            if row["status"] != "변경":
-                parts.append(f"함수 {row['status']}")
-            lines2.append(f"- ✓ 의존성 변화 (영향 분석, 취약점 아님): {_c(' · '.join(parts))}")
-        out += lines2 or ["- 확인된 위험·의존성 변화 없음"]
-        out += ["", "**③ 검증자가 추가로 확인할 것**"]
-        qs = [f for f in fs if f["class"] in ("검증자 확인 필요", "위험 후보 탐지", "위반 경로 확인", "분석 불충분") and f["reviewer"]
-              and f["item"] != "1-3"]
-        qs.sort(key=lambda f: (["위반 경로 확인", "위험 후보 탐지", "검증자 확인 필요", "분석 불충분"].index(f["class"]), f["item"]))
-        if n_sem:
-            out.append(f"- [ ] ❓ **1-3 의도한 동작 변경인지** — ①의 의미 차이 {n_sem}곳(연산자·상수·인자 등)이 의도한 동작 변경인지 변경 요청과 대조하세요.")
-        seen = set()
-        for f in qs[:15]:
-            k = (f["item"], f["reviewer"])
-            if k in seen:
-                continue
-            seen.add(k)
-            focus = items_by_id[f["item"]]["reviewer_focus"]
-            out.append(f"- [ ] {_CLS_MARK[f['class']]} **{f['item']} {focus}** — {_c(_s(f['reviewer'], 160))}"
-                       + (f" <br>근거: {_c(_s(f['summary'], 120))}" if f["item"] not in ("1-3",) else ""))
-        for x in rk:
-            if x.get("verification"):
-                out.append(f"- [ ] {_CLS_MARK['위반 경로 확인' if x['state'] == 'violated' else '위험 후보 탐지']} **[{x['id']}] 재현·검증** — "
-                           f"{_c(_s(x['verification'], 160))}")
-        if out[-1] == "**③ 검증자가 추가로 확인할 것**":
-            out.append("- 추가로 확인할 사항 없음 (변경 사실만 확인됨)")
-        out.append("")
-    placed = {k for k in (_fn_key(func, file) for (func, file) in groups)}
-    glob = [f for f in rv["findings"] if _fn_key(f["func"], f["file"]) not in placed]
+    lvmark = {"red": "🔴 위반 경로 확인", "orange": "🟠 신규 위험 후보", "yellow": "🟡 검증자 확인 필요", "gray": "⚪ 분석 불충분",
+              "old": "⚫ 기존·해결", "none": "관련 위험 결과 없음"}
+    out = ["", "## 2. 파일별 변경 검토 (① 무엇이 변경 → ② 스크립트가 확인한 것 → ③ 발견된 문제 → ④ 검증자 확인 사항)", "",
+           "| 파일 | 변경 함수 | 변경점 | 위험 확인 | 의존성 변화 |", "|---|---|---|---|---|"]
+    for f in un["files"]:
+        out.append(f"| `{_c(f['file'])}` | {len(f['funcs'])}개 | {len(f['units'])}곳 | {lvmark.get(f['level'], '')} | {'있음' if f['has_deps'] else '-'} |")
+    units = {u["id"]: u for u in un["units"]}
+    for f in un["files"]:
+        if not f["units"] and not f["file_review"]:
+            continue
+        out += ["", f"### 📄 {f['file']}", ""]
+        for x in f["file_review"][:10]:
+            out.append(f"- 파일 수준: {_CLS_MARK.get(x['class'], '')} {_c(_s(x['summary'], 140))}")
+        for uid in f["units"]:
+            u = units[uid]
+            rng = str(u["lo"]) if u["lo"] == u["hi"] else f"{u['lo']}~{u['hi']}"
+            fnm = u["func"] if u["func"].startswith("(") else u["func"] + "()"
+            out += ["", f"#### `{_c(fnm)}` — 변경점 {uid} (Line {rng}) · {lvmark.get(u['level'], '')}", "",
+                    f"> **자동 분석 요약** {_c(u['summary'])}", "", "**① 무엇이 변경되었는가**", "", "```diff"]
+            for c in u["changes"][:8]:
+                if c["kind"] == "moved":
+                    out.append(f"  (Line {c['line']} 위치 이동) {c['new'] or c['old']}")
+                    continue
+                if c["old"]:
+                    out.append(f"- {c['old']}")
+                if c["new"]:
+                    out.append(f"+ {c['new']}")
+            if len(u["changes"]) > 8:
+                out.append(f"  … 외 {len(u['changes']) - 8}곳")
+            out += ["```", "", "**② 스크립트가 무엇을 확인했는가**", "", "| 분석 항목 | 분석 결과 | 상태 |", "|---|---|---|"]
+            for x in u["facts"][:8]:
+                out.append(f"| {_c(x['area'])} | {_c(_s(x['result'], 140))} | {x['status']} |")
+            out += ["", "**③ 어떤 문제가 발견되었는가**", ""]
+            iss = [i for i in u["issues"] if i["level"] != "old"]
+            if not iss:
+                out.append("- 발견된 문제 없음 — 코드 변경 사실만 확인")
+            for i in iss:
+                out.append(f"- {lvmark.get(i['level'], '')} **{_c(i['title'])}** — 검증 수준: {i['verification_level']} · {_c(i['fact_vs_judgement'])}")
+                if i.get("risk"):
+                    out.append(f"  - {_c(_s(i['risk'], 180))}")
+            out += ["", "**④ 검증자가 추가로 확인할 사항**", ""]
+            for q in u["checklist"]:
+                out.append(f"- [ ] **{_c(q['area'])}** — {_c(_s(q['question'], 170))}")
+    glob = un.get("global_review") or []
     if glob:
-        out += ["### 파일·전역 수준 (매크로·헤더·상태 변수·실행 모델)", ""]
-        for f in glob[:30]:
-            out.append(f"- {_CLS_MARK[f['class']]} ({f['item']}) {_c(_s(f['summary'], 140))}" + (f" — {_c(f['file'])}" if f["file"] else "")
-                       + (f" <br>검증자: {_c(_s(f['reviewer'], 140))}" if f["reviewer"] and f["class"] != "변경 사실 확인" else ""))
-        out.append("")
-
+        out += ["", "### 전역 (enum·실행 모델·분석 한계)", ""]
+        for x in glob[:20]:
+            out.append(f"- {_CLS_MARK.get(x['class'], '')} {_c(_s(x['summary'], 140))}")
+    out.append("")
     out += ["## 3. 검토 항목 체크리스트", "",
             "자동 분석으로 검토한 항목과 결과입니다. '해당 변경 없음'은 검토했지만 해당하는 변경이 없었다는 뜻입니다.", "",
             "| 번호 | 영역 | 자동 분석으로 확인한 내용 | 결과 | 분류별 건수 | 검토한 내용 | 검증자가 판단할 내용 |",
@@ -655,6 +623,7 @@ def html_payload(s: dict) -> dict:
         "file_counts": {k: len(v) for k, v in ch.items()},
         "deps": s.get("deps_diff"),
         "review": s.get("review"),
+        "units": s.get("units"),
         "explore": s.get("explore"), "sil": s.get("sil"),
         "analysis": None,
     }
@@ -902,6 +871,8 @@ def run(args) -> int:
         internal = analysis.get("_internal") or {}
         summary["review"] = review_mod.review(old, new, internal["cs"], analysis, summary["deps_diff"],
                                               changes, cfg.defines, getattr(rules, "review_patterns", None))
+        summary["units"] = units_mod.build(old, new, internal["cs"], analysis, summary["review"], summary["deps_diff"],
+                                           getattr(rules, "review_patterns", None))
         dd = out / "deps"
         dd.mkdir(exist_ok=True)
         (dd / "deps_new.md").write_text(deps_mod.render_md(t_new, transitive=True), encoding="utf-8")

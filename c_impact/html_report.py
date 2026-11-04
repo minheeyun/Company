@@ -134,6 +134,36 @@ h4.step { margin: 12px 0 6px; padding: 4px 8px; background: var(--accent-bg); co
 ul.ql { list-style: none; padding-left: 4px; margin: 4px 0; }
 ul.ql li.q { margin: 6px 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
 ul.ql li.q input { vertical-align: middle; }
+.banner { margin-top: 8px; font-size: 13px; padding: 6px 10px; border-radius: 6px; background: var(--accent-bg); }
+.banner.warn { background: var(--p1-bg); color: var(--p1); font-weight: 600; }
+.ucard { background: var(--panel); border: 1px solid var(--line); border-left: 5px solid var(--line); border-radius: 8px; padding: 10px 14px 12px; margin: 10px 0 16px; }
+.ucard.red { border-left-color: var(--p0); } .ucard.orange { border-left-color: var(--p1); } .ucard.yellow { border-left-color: var(--p2); }
+.ucard.flash { box-shadow: 0 0 0 3px var(--accent); }
+.uh { padding-bottom: 6px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+table.kvt th { width: 110px; color: var(--muted); font-weight: 600; white-space: nowrap; background: none; position: static; font-size: 13px; }
+table.kvt td, table.kvt th { padding: 4px 8px; border-bottom: 1px solid var(--line); }
+table.kvt.sum { background: var(--bg); border-radius: 6px; }
+table.cl { width: 100%; margin: 4px 0; } table.cl th { position: static; } table.cl td { font-size: 13px; }
+.diff { font-family: Consolas, "D2Coding", monospace; font-size: 12.5px; border: 1px solid var(--line); border-radius: 6px; overflow-x: auto; }
+.dh { border-bottom: 1px solid var(--line); padding: 4px 8px; } .dh:last-child { border-bottom: 0; }
+.dl .ln { color: var(--muted); font-weight: 600; } .dl { font-family: inherit; }
+.rm { color: var(--del); background: var(--p0-bg); white-space: pre-wrap; padding: 1px 4px; }
+.ad { color: var(--add); background: var(--p3-bg); white-space: pre-wrap; padding: 1px 4px; }
+.mv { color: var(--p2); background: var(--p2-bg); white-space: pre-wrap; padding: 1px 4px; }
+.conc { margin: 8px 0; padding: 8px 10px; background: var(--accent-bg); border-radius: 6px; font-size: 13.5px; }
+.icard { border: 1px solid var(--line); border-radius: 8px; margin: 6px 0; overflow: hidden; }
+.icard .ih { padding: 6px 10px; font-size: 13.5px; }
+.icard.red .ih { background: var(--p0-bg); color: var(--p0); } .icard.orange .ih { background: var(--p1-bg); color: var(--p1); }
+.icard.yellow .ih { background: var(--p2-bg); color: var(--p2); } .icard.old .ih { background: var(--p4-bg); color: var(--p4); }
+.btns { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line); }
+select.ans { font: inherit; padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); }
+h3.fnh { margin: 22px 0 4px; font-size: 16px; }
+.flow { display: flex; flex-direction: column; align-items: stretch; max-width: 760px; margin: 6px 0 10px; }
+.fb { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; background: var(--bg); }
+.fb.dir { border-style: dashed; background: var(--accent-bg); }
+.arr { text-align: center; color: var(--muted); line-height: 1.2; }
+.lvl { margin: 4px 0; }
+.vuln { margin: 10px 0; padding: 8px 12px; border: 1px solid var(--p1); border-radius: 8px; background: var(--p1-bg); }
 #theme { margin-left: auto; border: 0; background: none; color: var(--muted); cursor: pointer; font: inherit; padding: 10px; }
 @media (max-width: 700px) { main { padding: 14px 16px 40px; } header { padding: 14px 16px 10px; } .toolbar input[type=search] { min-width: 0; width: 100%; } }
 </style>
@@ -142,6 +172,7 @@ ul.ql li.q input { vertical-align: middle; }
 <header>
   <h1>변경 영향 분석 보고서</h1>
   <div class="paths" id="paths"></div>
+  <div id="banner"></div>
 </header>
 <nav id="nav"></nav>
 <main id="main"></main>
@@ -416,334 +447,372 @@ function head(pane, title, desc) {
   if (desc) pane.appendChild(el("p", {class: "desc", text: desc}));
 }
 
-/* ---------- 변경 검토 (기본 화면) ---------- */
 var VL = {"기호 실행 반례 발견": "t0", "정적 규칙 위반": "t1", "Taint 경로 발견": "t2", "검증 불충분": "t4"};
 function vlev(r) { return el("span", {class: "tag " + (VL[r.verification_level] || "t4"), title: "검증 수준", text: r.verification_level || "검증 불충분"}); }
-var MODES = [
-  ["new", "신규 위험", "변경으로 새로 생긴 위험 (변경 후 안전 속성 위반 증명, 변경 전 안전·없음)"],
-  ["priority", "우선 검토", "신규 위험 + 변경 함수 안에서 외부 입력이 닿거나 보안 조건이 바뀐 판정 보류 후보"],
-  ["all", "전체 변경점", "변경된 모든 파일·함수·변경점과 의존성 변화"],
-  ["pending", "판정 보류", "위반을 증명하지 못한 후보 (검증 불충분·Taint 경로만 발견)"]
-];
-
-function model() {
-  var files = {}, order = [];
-  function file(name) {
-    if (!files[name]) { files[name] = {file: name, status: "", funcs: {}, forder: [], review: []}; order.push(name); }
-    return files[name];
-  }
-  function fn(fname, func) {
-    var f = file(fname);
-    if (!f.funcs[func]) { f.funcs[func] = {func: func, file: fname, changes: [], direct: [], prop: [], deps: null, review: [], lo: 1e9, hi: 0}; f.forder.push(func); }
-    return f.funcs[func];
-  }
-  (D.files || []).forEach(function (x) { file(x.file).status = x.status; });
-  if (A) {
-    A.changes.forEach(function (c) { var b = fn(c.file, c.func); b.changes.push(c); b.lo = Math.min(b.lo, c.line); b.hi = Math.max(b.hi, c.line); });
-    A.risks.forEach(function (r) {
-      if (r.relation === "전파") { fn(r.origin_file, r.origin).prop.push(r); }
-      else { var f = files[r.file] && files[r.file].funcs[r.func] ? files[r.file].funcs[r.func] : fn(r.origin_file, r.origin); f.direct.push(r); }
-    });
-  }
-  var globalReview = [];
-  ((D.review || {}).findings || []).forEach(function (f) {
-    if (f.file && files[f.file] && files[f.file].funcs[f.func]) files[f.file].funcs[f.func].review.push(f);
-    else if (f.file && files[f.file]) files[f.file].review.push(f);
-    else {
-      var hit = null;
-      order.forEach(function (n) { if (!hit && files[n].funcs[f.func]) hit = files[n].funcs[f.func]; });
-      if (hit) hit.review.push(f); else globalReview.push(f);
-    }
-  });
-  var deps = {};
-  ((D.deps || {}).functions || []).forEach(function (row) { deps[row.func] = row; });
-  order.forEach(function (n) { files[n].forder.forEach(function (k) { var b = files[n].funcs[k]; if (deps[k]) { b.deps = deps[k]; deps[k].used = true; } }); });
-  var restDeps = Object.keys(deps).filter(function (k) { return !deps[k].used; }).map(function (k) { return deps[k]; });
-  order.sort(function (x, y) {
-    var cx = /\.c$/i.test(x) ? 0 : 1, cy = /\.c$/i.test(y) ? 0 : 1;
-    return cx - cy || (x < y ? -1 : x > y ? 1 : 0);
-  });
-  return {files: files, order: order, restDeps: restDeps, globalReview: globalReview};
-}
-
 var CLS = {"위반 경로 확인": ["t0", "⛔"], "위험 후보 탐지": ["t1", "⚠"], "검증자 확인 필요": ["t2", "❓"], "분석 불충분": ["t4", "…"], "변경 사실 확인": ["t3", "✓"], "해당 변경 없음": ["t4", "–"]};
 function cls(name) { var c = CLS[name] || ["t4", ""]; return el("span", {class: "tag " + c[0], text: c[1] + " " + name}); }
 var ITEM = {};
 ((D.review || {}).items || []).forEach(function (it) { ITEM[it.id] = it; });
-function reviewLine(f, withQ) {
-  var it = ITEM[f.item] || {};
-  var kids = [cls(f["class"]), " ", el("b", {text: f.item + " "}), el("span", {class: "small muted", text: (it.title || "") + "  "}), el("div", {class: "rv-s", text: f.summary})];
-  var more = [];
-  if (f.evidence && f.evidence.length) more.push(el("div", {class: "small"}, [el("span", {class: "muted", text: "근거 "}), f.evidence.join(" · ")]));
-  if (f.refs && f.refs.length) more.push(el("div", {class: "small"}, [el("span", {class: "muted", text: "관련 위치 "}), f.refs.slice(0, 10).join(" · ")]));
-  if (more.length) kids.push(el("details", {class: "more-d"}, [el("summary", {text: "근거·관련 위치"})].concat(more)));
-  return el("div", {class: "rv"}, kids);
+
+/* ---------- 공통: 검토 상태 저장 (이 브라우저에만) ---------- */
+var U = D.units || {units: [], functions: [], files: [], global_review: []};
+function fnm(f) { return f.charAt(0) === "(" ? f : f + "()"; }
+var UNIT = {}; U.units.forEach(function (u) { UNIT[u.id] = u; });
+var RISK = {}; (A ? A.risks : []).forEach(function (r) { RISK[r.id] = r; });
+var FUNCS = {}; U.functions.forEach(function (f) { FUNCS[f.file + "|" + f.func] = f; });
+var LV = {red: ["🔴", "위반 경로 확인", "t0"], orange: ["🟠", "신규 위험 후보", "t1"], yellow: ["🟡", "검증자 확인 필요", "t2"],
+          gray: ["⚪", "분석 불충분", "t4"], old: ["⚫", "기존·해결 위험", "t4"], none: ["", "관련 위험 결과 없음", "t3"]};
+function lvchip(l, txt) { var x = LV[l] || LV.none; return el("span", {class: "tag " + x[2], text: (x[0] ? x[0] + " " : "") + (txt || x[1])}); }
+var STORE_KEY = "cia-review|" + D.meta.time + "|" + D.meta.new_dir;
+var ANS = {};
+try { ANS = JSON.parse(localStorage.getItem(STORE_KEY) || "{}") || {}; } catch (e) { ANS = {}; }
+function saveAns() { try { localStorage.setItem(STORE_KEY, JSON.stringify(ANS)); } catch (e) {} }
+var CHOICES = ["", "적합", "부적합", "보류", "해당 없음"];
+function qsOfUnit(u) { return u.checklist || []; }
+function qsOfFile(fname) {
+  var out = [];
+  U.units.forEach(function (u) { if (u.file === fname) out = out.concat(qsOfUnit(u)); });
+  U.functions.forEach(function (f) { if (f.file === fname) out = out.concat(f.checklist || []); });
+  return out;
 }
-function questionLine(f) {
-  var it = ITEM[f.item] || {};
-  return el("li", {class: "q"}, [el("input", {type: "checkbox"}), " ", cls(f["class"]), " ", el("b", {text: f.item + " " + (it.reviewer_focus || "")}),
-    el("div", {class: "small", text: f.reviewer}), el("div", {class: "small muted", text: "근거: " + f.summary})]);
+function statusOf(qs) {
+  if (!qs.length) return "검토 대상 없음";
+  var n = qs.filter(function (q) { return ANS[q.qid]; }).length;
+  if (qs.some(function (q) { return ANS[q.qid] === "부적합"; })) return "부적합 있음";
+  if (!n) return "미검토";
+  return n === qs.length ? "검토 완료" : "검토 중 (" + n + "/" + qs.length + ")";
+}
+function statusChip(s) {
+  var c = s.indexOf("부적합") === 0 ? "t0" : s === "검토 완료" ? "t3" : s.indexOf("검토 중") === 0 ? "t2" : "t4";
+  return el("span", {class: "tag " + c, text: s});
+}
+var LISTENERS = [];
+function onAnswer(fn) { LISTENERS.push(fn); }
+function answerSelect(q) {
+  var s = el("select", {class: "ans"}, CHOICES.map(function (c) { var o = el("option", {value: c, text: c || "선택"}); if ((ANS[q.qid] || "") === c) o.selected = true; return o; }));
+  s.addEventListener("change", function () { if (s.value) ANS[q.qid] = s.value; else delete ANS[q.qid]; saveAns(); LISTENERS.forEach(function (f) { f(); }); });
+  return s;
+}
+function exportCsv() {
+  var rows = [["파일", "함수", "변경점", "라인", "검증 항목", "확인할 내용", "근거", "결과"]];
+  U.units.forEach(function (u) {
+    qsOfUnit(u).forEach(function (q) { rows.push([u.file, u.func, u.id, u.lo + "-" + u.hi, q.area, q.question, q.basis || "", ANS[q.qid] || ""]); });
+  });
+  U.functions.forEach(function (f) {
+    (f.checklist || []).forEach(function (q) { rows.push([f.file, f.func, "함수 전체", "", q.area, q.question, q.basis || "", ANS[q.qid] || ""]); });
+  });
+  var csv = "﻿" + rows.map(function (r) { return r.map(function (x) { return '"' + String(x).replace(/"/g, '""') + '"'; }).join(","); }).join("\r\n");
+  var a = el("a", {href: URL.createObjectURL(new Blob([csv], {type: "text/csv;charset=utf-8"})), download: "검토결과.csv"});
+  document.body.appendChild(a); a.click(); a.remove();
 }
 
-function riskVisible(r, st) {
-  var old = r.status_code === "EXISTING" || r.status_code === "FIXED";
-  if (old) return st.showOld;
-  if (st.mode === "new") return r.status_code === "NEW_REGRESSION";
-  if (st.mode === "pending") return r.status_code === "PENDING";
-  if (st.mode === "priority") return r.status_code === "NEW_REGRESSION" ||
-    (r.status_code === "PENDING" && r.relation === "직접" && ((r.taint || {}).flow_detected || r.category === "보안 조건 변경" || r.level === "High"));
-  return true;
+/* ---------- 탭 01: 파일별 변경 검토 ---------- */
+var FILES_API = null;
+function diffBlock(list) {
+  return el("div", {class: "diff"}, list.map(function (c) {
+    var rows = [el("div", {class: "dl"}, [el("span", {class: "ln", text: "Line " + c.line}), el("span", {class: "small muted", text: " " + c.phrase})])];
+    if (c.kind === "moved") rows.push(el("div", {class: "mv", text: "↕ " + (c.new || c.old)}));
+    else {
+      if (c.old) rows.push(el("div", {class: "rm", text: "- " + c.old}));
+      if (c.new) rows.push(el("div", {class: "ad", text: "+ " + c.new}));
+    }
+    return el("div", {class: "dh"}, rows);
+  }));
 }
-
-function riskCard(r) {
-  var ch = r.change, bd = r.bounds || {}, t = r.taint || {};
-  var head = el("div", {class: "rh"}, [sev(r), " ", stat(r), " ", vlev(r), " ", el("b", {text: r.kind_label}), " ",
-    code(short(r.expr, 100)), " ", loc(r.file, r.line), r.relation === "전파" ? el("span", {class: "small muted", text: "  ← " + r.origin + "에서 전파"}) : null]);
-  var facts = [];
-  if (ch) facts.push(frag([el("span", {class: "muted", text: "원인 변경 "}), el("span", {class: "code old", text: short(ch.before || "(없음)", 60)}), " → ", el("span", {class: "code new", text: short(ch.after || "(삭제)", 60)})]));
-  if (bd.change) facts.push(frag([el("span", {class: "muted", text: "범위 "}), bd.change]));
-  if (t.flow_detected) facts.push(frag([el("span", {class: "muted", text: "외부 입력 "}), t.source + " (" + (t.change || "") + ")"]));
-  if (r.symbolic && r.symbolic.result === "violated") facts.push(frag([el("span", {class: "muted", text: "반례 "}), symText(r)]));
-  else if (r.evidence) facts.push(frag([el("span", {class: "muted", text: "근거 "}), short(r.evidence, 140)]));
-  var det = el("details", {class: "more-d"}, [el("summary", {text: "상세 (조건·근거 경로·검증 방법)"}), riskDetail(r)]);
-  return el("div", {class: "rcard " + (r.status_code === "NEW_REGRESSION" ? "new" : "")}, [head,
-    el("div", {class: "rf small"}, facts.map(function (x) { return el("div", {}, [x]); })), det]);
+function issueCard(i) {
+  var x = LV[i.level] || LV.yellow;
+  var rows = [["변경 위치", i.where], ["위험 유형", i.title + (i.risk ? " — " + i.risk : "")], ["발견 근거", [i.basis].concat(i.evidence || []).concat((i.items || []).length ? ["검토 항목 " + i.items.join(", ")] : []).filter(function (t) { return t; }).join(" · ") || "-"]];
+  if (i.before || i.after) rows.push(["변경 전 → 후", (i.before || "-") + " → " + (i.after || "-")]);
+  rows.push(["검증 수준", i.verification_level]);
+  rows.push(["판단 구분", i.fact_vs_judgement]);
+  return el("div", {class: "icard " + i.level}, [el("div", {class: "ih"}, [el("b", {text: x[0] + " " + x[1] + " — " + i.title})]),
+    el("table", {class: "kvt"}, [el("tbody", {}, rows.map(function (r) { return el("tr", {}, [el("th", {text: r[0]}), el("td", {text: r[1]})]); }))])]);
 }
-
-function depBlock(row) {
-  function part(label, add, del) {
-    if (!(add || []).length && !(del || []).length) return null;
-    return el("div", {}, [el("span", {class: "muted", text: label + " "}),
-      (add || []).length ? el("span", {class: "new", text: "+ " + add.join(", ") + "  "}) : null,
-      (del || []).length ? el("span", {class: "old", text: "− " + del.join(", ")}) : null]);
-  }
-  if (row.status !== "변경") {
-    return el("div", {class: "small"}, [el("b", {text: "함수 " + row.status + " "}),
-      part("호출", row.status === "추가" ? row.calls : [], row.status === "삭제" ? row.calls : []),
-      part("읽기", row.status === "추가" ? row.reads : [], row.status === "삭제" ? row.reads : []),
-      part("쓰기", row.status === "추가" ? row.writes : [], row.status === "삭제" ? row.writes : [])]);
-  }
-  return el("div", {class: "small"}, [part("호출", row.calls_added, row.calls_removed), part("읽기", row.reads_added, row.reads_removed),
-    part("쓰기", row.writes_added, row.writes_removed)]);
+function checklistTable(qs, onchange) {
+  if (!qs.length) return el("div", {class: "small muted", text: "검증자가 따로 확인할 항목 없음"});
+  return el("table", {class: "cl"}, [el("thead", {}, [el("tr", {}, ["검증 항목", "검증자가 확인할 내용", "결과"].map(function (h) { return el("th", {text: h}); }))]),
+    el("tbody", {}, qs.map(function (q) {
+      return el("tr", {}, [el("td", {class: "nowrap"}, [el("b", {text: q.area}), el("div", {class: "small muted", text: q.item !== "-" ? "항목 " + q.item : ""})]),
+        el("td", {}, [q.question, q.basis ? el("div", {class: "small muted", text: "근거: " + q.basis}) : null]), el("td", {}, [answerSelect(q)])]);
+    }))]);
 }
-
-function changeRows(list) {
-  return el("table", {class: "ct"}, [el("tbody", {}, list.map(function (c) {
-    return el("tr", {}, [el("td", {class: "nowrap"}, [loc("", c.line)]), el("td", {class: "nowrap small"}, [c.kind]),
-      el("td", {}, [change(c), c.detail ? el("div", {class: "small muted", text: c.detail}) : null])]);
-  }))]);
+function unitCard(u, showOld) {
+  var issues = u.issues.filter(function (i) { return showOld || i.level !== "old"; });
+  var deps = [];
+  if (u.deps.calls_removed.length) deps.push("호출 삭제 " + u.deps.calls_removed.join(", "));
+  if (u.deps.calls_added.length) deps.push("호출 추가 " + u.deps.calls_added.join(", "));
+  if (u.deps.writes.length) deps.push("쓰는 전역 " + u.deps.writes.slice(0, 4).join(", "));
+  var st = el("span");
+  function refresh() { st.textContent = ""; st.appendChild(statusChip(statusOf(qsOfUnit(u)))); }
+  refresh(); onAnswer(refresh);
+  var sumRows = [["변경 유형", u.type_label], ["자동 분석", u.summary],
+    ["발견된 위험", issues.length ? issues.map(function (i) { return (LV[i.level] || LV.yellow)[0] + " " + i.title; }).join(" / ") : "없음 (변경 사실만 확인)"],
+    ["의존성 변화", deps.join(" · ") || "-"], ["검증 수준", u.verification_level]];
+  var facts = u.facts || [];
+  var ftab = function (list) { return el("table", {class: "cl"}, [el("thead", {}, [el("tr", {}, ["분석 항목", "분석 결과", "상태"].map(function (h) { return el("th", {text: h}); }))]),
+    el("tbody", {}, list.map(function (f) { return el("tr", {}, [el("td", {class: "nowrap", text: f.area}), el("td", {text: f.result}), el("td", {class: "nowrap"}, [el("span", {class: "tag " + (f.status === "변경 확인" ? "t3" : f.status === "위반 경로 확인" ? "t0" : f.status === "위험 후보" || f.status === "추가 검증 필요" ? "t1" : "t2"), text: f.status})])]); }))]); };
+  var kids = [
+    el("div", {class: "uh"}, [el("b", {text: fnm(u.func) + "  "}), el("span", {class: "small muted", text: "변경점 " + u.id + " · Line " + (u.lo === u.hi ? u.lo : u.lo + " ~ " + u.hi) + "  "}), lvchip(u.level), " ", st]),
+    el("table", {class: "kvt sum"}, [el("tbody", {}, sumRows.map(function (r) { return el("tr", {}, [el("th", {text: r[0]}), el("td", {text: r[1]})]); }).concat([el("tr", {}, [el("th", {text: "검토 상태"}), el("td", {}, [st])])]))]),
+    el("h4", {class: "step", text: "① 무엇이 변경되었는가"}), diffBlock(u.changes.slice(0, 6)),
+    u.changes.length > 6 ? el("details", {class: "more-d"}, [el("summary", {text: "변경 코드 전체 보기 (" + u.changes.length + "곳)"}), diffBlock(u.changes)]) : null,
+    el("div", {class: "conc"}, [el("b", {text: "자동 분석 요약  "}), u.summary]),
+    el("h4", {class: "step", text: "② 스크립트가 무엇을 확인했는가"}), ftab(facts.slice(0, 8)),
+    facts.length > 8 ? el("details", {class: "more-d"}, [el("summary", {text: "확인 결과 더 보기 (" + facts.length + "건)"}), ftab(facts.slice(8))]) : null,
+    el("h4", {class: "step", text: "③ 어떤 문제가 발견되었는가"}),
+    issues.length ? frag(issues.map(issueCard)) : el("div", {class: "small muted", text: "발견된 문제 없음 — 코드 변경 사실만 확인되었습니다."}),
+    el("h4", {class: "step", text: "④ 검증자가 추가로 확인할 사항"}), checklistTable(qsOfUnit(u)),
+    el("div", {class: "btns"}, [
+      el("details", {class: "more-d"}, [el("summary", {text: "변경 코드 전체 보기"}), diffBlock(u.changes)]),
+      el("button", {class: "lnk", text: "의존성 경로 보기 →", onclick: function () { goFunc(u.file, u.func); }}),
+      el("details", {class: "more-d"}, [el("summary", {text: "분석 근거 보기"}), frag(u.risks.concat(u.prop_risks).map(function (rid) { return RISK[rid] ? el("div", {class: "rcard"}, [el("b", {text: rid + " "}), riskDetail(RISK[rid])]) : null; })),
+        u.risks.length + u.prop_risks.length ? null : el("div", {class: "small muted", text: "이 변경점에 연결된 Taint·기호 실행 결과 없음 (AST·CFG 비교 결과만)"})])
+    ])
+  ];
+  return el("div", {class: "ucard " + u.level, id: "unit-" + u.id}, kids);
 }
-
-addTab("review", "변경 검토", null, function (p) {
-  var M = model(), st = {mode: "new", showOld: false, q: ""};
-  var all = A ? A.risks : [];
-  function cnt(f) { return all.filter(f).length; }
-  var nNew = cnt(function (r) { return r.status_code === "NEW_REGRESSION"; });
-  var nPend = cnt(function (r) { return r.status_code === "PENDING"; });
-  var nOld = cnt(function (r) { return r.status_code === "EXISTING" || r.status_code === "FIXED"; });
-  var nFn = 0; M.order.forEach(function (n) { nFn += M.files[n].forder.length; });
-  if (!nNew) st.mode = cnt(function (r) { return riskVisible(r, {mode: "priority"}); }) ? "priority" : "all";
-  head(p, "변경 검토", "변경된 .c 파일별로 바뀐 함수와 변경점을 보여 주고, 그 함수와 직접 연결된 보안 위험을 먼저 표시합니다. 다른 함수로 전파된 위험은 의존 경로가 분명할 때만 따로 표시하고, "
-    + "함수 호출·변수 읽기쓰기의 추가·삭제는 '의존성 변화'(영향 분석)로 구분해 취약점과 섞지 않습니다. 이미 있던 위험은 기본 화면에서 뺐습니다.");
+addTab("files", "📁 파일별 변경 검토", U.files.length, function (p) {
+  var showOld = false;
+  head(p, "파일별 변경 검토", "변경된 파일을 선택하면 변경 함수별로 ① 무엇이 변경되었는가 → ② 스크립트가 확인한 것 → ③ 발견된 문제 → ④ 검증자 확인 사항을 같은 순서로 보여 줍니다. "
+    + "체크리스트 결과는 이 브라우저에만 저장되며 'CSV 내보내기'로 공유할 수 있습니다.");
+  var nUnits = U.units.length, cnt = {red: 0, orange: 0, yellow: 0};
+  U.units.forEach(function (u) { u.issues.forEach(function (i) { if (cnt[i.level] !== undefined) cnt[i.level]++; }); });
+  var allQ = []; U.units.forEach(function (u) { allQ = allQ.concat(qsOfUnit(u)); }); U.functions.forEach(function (f) { allQ = allQ.concat(f.checklist || []); });
+  var prog = el("div", {class: "v"});
+  function refreshProg() { prog.textContent = allQ.filter(function (q) { return ANS[q.qid]; }).length + " / " + allQ.length; }
+  refreshProg(); onAnswer(refreshProg);
   p.appendChild(el("div", {class: "cards"}, [
-    ["변경 파일", D.files.length], ["변경 함수", nFn], ["신규 위험", nNew, nNew ? "alert" : ""],
-    ["우선 검토", cnt(function (r) { return riskVisible(r, {mode: "priority"}); })], ["판정 보류", nPend], ["기존·해결 (숨김)", nOld]
-  ].map(function (c) { return el("div", {class: "card " + (c[2] || "")}, [el("div", {class: "v", text: c[1]}), el("div", {class: "k", text: c[0]})]); })));
-  p.appendChild(el("div", {class: "box small"}, [el("b", {text: "검증 수준  "}),
-    frag(["기호 실행 반례 발견", "정적 규칙 위반", "Taint 경로 발견", "검증 불충분"].map(function (k) { return frag([vlev({verification_level: k}), " "]); })),
-    el("span", {class: "muted", text: " — 반례: z3가 위반 입력을 찾음 · 정적 규칙: 상수·바뀐 조건 구간으로 위반 증명 · Taint: 외부 입력이 위험 피연산자에 닿음(위반 미증명) · 불충분: 근거 부족"}),
-    el("div", {class: "muted", text: "엔진: " + ((A && A.security && A.security.engine) ? ("CPG " + A.security.engine.cpg + " · Taint " + A.security.engine.taint + " · 기호 실행 " + A.security.engine.symbolic) : "-")})]));
-  var bar = el("div", {class: "seg"});
-  var btns = MODES.map(function (m) {
-    var b = el("button", {title: m[2], text: m[1], onclick: function () { st.mode = m[0]; draw(); }});
-    bar.appendChild(b); return [m[0], b];
-  });
-  var chk = el("input", {type: "checkbox", id: "showold"});
-  chk.addEventListener("change", function () { st.showOld = chk.checked; draw(); });
-  var q = el("input", {type: "search", placeholder: "파일·함수 검색"});
-  q.addEventListener("input", function () { st.q = q.value.toLowerCase(); draw(); });
-  p.appendChild(el("div", {class: "toolbar"}, [bar, el("label", {class: "small"}, [chk, " 기존·해결 위험도 표시"]), q]));
-  var desc = el("p", {class: "small muted"});
-  var body = el("div");
-  p.appendChild(desc); p.appendChild(body);
-
-  function draw() {
-    btns.forEach(function (x) { x[1].classList.toggle("on", x[0] === st.mode); });
-    desc.textContent = MODES.filter(function (m) { return m[0] === st.mode; })[0][2];
-    body.textContent = "";
-    var shown = 0;
-    M.order.forEach(function (fname) {
-      var F = M.files[fname];
-      var blocks = [];
-      F.forder.forEach(function (k) {
-        var b = F.funcs[k];
-        if (st.q && (fname + " " + k).toLowerCase().indexOf(st.q) < 0) return;
-        var dv = b.direct.filter(function (r) { return riskVisible(r, st); });
-        var pv = b.prop.filter(function (r) { return riskVisible(r, st); });
-        var rvHot = b.review.some(function (f) { return f["class"] === "위반 경로 확인" || f["class"] === "위험 후보 탐지"; });
-        if (st.mode !== "all" && !dv.length && !pv.length && !(st.mode === "priority" && rvHot)) return;
-        var badges = [];
-        var nn = b.direct.concat(b.prop).filter(function (r) { return r.status_code === "NEW_REGRESSION"; }).length;
-        var np = b.direct.concat(b.prop).filter(function (r) { return r.status_code === "PENDING"; }).length;
-        if (nn) badges.push(el("span", {class: "sev c", text: "신규 위험 " + nn}));
-        if (np) badges.push(el("span", {class: "sev u", text: "판정 보류 " + np}));
-        if (b.deps) badges.push(el("span", {class: "tag t3", text: "의존성 변화"}));
-        var nq = b.review.filter(function (f) { return f["class"] !== "변경 사실 확인"; }).length;
-        if (nq) badges.push(el("span", {class: "tag t2", text: "검증자 확인 " + nq}));
-        var range = b.changes.length ? (b.lo === b.hi ? "라인 " + b.lo : "라인 " + b.lo + "–" + b.hi) : "";
-        var kids = [el("summary", {}, [el("b", {}, [code(k)]), " ", el("span", {class: "small muted", text: range + (b.changes.length ? " · 변경점 " + b.changes.length + "곳" : "")}), " "].concat(badges.map(function (x) { return frag([x, " "]); })))];
-        var sem = {};
-        b.review.forEach(function (f) { if (f.item === "1-3") sem[f.line] = f.summary.split("`: ").slice(-1)[0]; });
-        kids.push(el("h4", {class: "step", text: "① 무엇이 변경되었나"}));
-        if (b.changes.length) {
-          var withSem = function (list) { return changeRows(list.map(function (c) { return c.kind === "수정" && sem[c.line] ? Object.assign({}, c, {detail: "의미 차이: " + sem[c.line] + (c.detail ? " · " + c.detail : "")}) : c; })); };
-          kids.push(withSem(b.changes.slice(0, 8)));
-          if (b.changes.length > 8) kids.push(el("details", {class: "more-d"}, [el("summary", {text: "나머지 변경점 " + (b.changes.length - 8) + "곳"}), withSem(b.changes.slice(8))]));
-        } else kids.push(el("div", {class: "small muted", text: "이 함수 안의 변경점 없음 (다른 함수의 변경이 전파됨)"}));
-        kids.push(el("h4", {class: "step", text: "② 확인된 코드 위험과 의존성 변화"}));
-        var risky = b.review.filter(function (f) { return (f["class"] === "위반 경로 확인" || f["class"] === "위험 후보 탐지") && f.summary.charAt(0) !== "["; });
-        if (dv.length) { kids.push(el("div", {class: "small muted", text: "보안 위험 · 후보 (이 함수와 직접 연결)"})); dv.forEach(function (r) { kids.push(riskCard(r)); }); }
-        if (pv.length) { kids.push(el("div", {class: "small muted", text: "다른 함수로 전파된 위험 (의존 경로 확보)"})); pv.forEach(function (r) { kids.push(riskCard(r)); }); }
-        if (risky.length) { kids.push(el("div", {class: "small muted", text: "검토 항목에서 찾은 결함 후보"})); risky.forEach(function (f) { kids.push(reviewLine(f)); }); }
-        if (b.deps) { kids.push(el("div", {class: "small muted", text: "의존성 변화 (영향 분석 — 취약점 아님)"})); kids.push(depBlock(b.deps)); }
-        if (!dv.length && !pv.length && !risky.length && !b.deps) kids.push(el("div", {class: "small muted", text: "확인된 위험·의존성 변화 없음"}));
-        kids.push(el("h4", {class: "step", text: "③ 검증자가 추가로 확인할 것"}));
-        var order3 = ["위반 경로 확인", "위험 후보 탐지", "검증자 확인 필요", "분석 불충분"];
-        var qs = b.review.filter(function (f) { return order3.indexOf(f["class"]) >= 0 && f.reviewer && f.item !== "1-3"; })
-          .sort(function (x, y) { return order3.indexOf(x["class"]) - order3.indexOf(y["class"]) || (x.item < y.item ? -1 : 1); });
-        var nsem = Object.keys(sem).length;
-        var ql = [];
-        if (nsem) ql.push(questionLine({"class": "검증자 확인 필요", item: "1-3", reviewer: "①의 의미 차이 " + nsem + "곳(연산자·상수·인자 등)이 의도한 동작 변경인지 변경 요청과 대조하세요.", summary: "AST 비교로 찾은 의미 차이"}));
-        qs.forEach(function (f) { ql.push(questionLine(f)); });
-        dv.concat(pv).forEach(function (r) { if (r.verification) ql.push(questionLine({"class": r.state === "violated" ? "위반 경로 확인" : "위험 후보 탐지", item: r.id, reviewer: r.verification, summary: r.kind_label + " " + r.expr})); });
-        kids.push(ql.length ? el("ul", {class: "ql"}, ql) : el("div", {class: "small muted", text: "추가로 확인할 사항 없음 (변경 사실만 확인됨)"}));
-        var d = el("details", {class: "fn"}, kids);
-        if (st.mode !== "all" || dv.length || pv.length || rvHot) d.open = true;
-        blocks.push(d);
+    el("div", {class: "card"}, [el("div", {class: "v", text: U.files.length}), el("div", {class: "k", text: "변경 파일"})]),
+    el("div", {class: "card"}, [el("div", {class: "v", text: U.functions.length}), el("div", {class: "k", text: "변경 함수"})]),
+    el("div", {class: "card"}, [el("div", {class: "v", text: nUnits}), el("div", {class: "k", text: "변경점 묶음"})]),
+    el("div", {class: "card" + (cnt.red ? " alert" : "")}, [el("div", {class: "v", text: cnt.red}), el("div", {class: "k", text: "🔴 위반 경로 확인"})]),
+    el("div", {class: "card"}, [el("div", {class: "v", text: cnt.orange}), el("div", {class: "k", text: "🟠 신규 위험 후보"})]),
+    el("div", {class: "card"}, [prog, el("div", {class: "k", text: "체크리스트 진행"})])]));
+  var listView = el("div"), detailView = el("div");
+  p.appendChild(listView); p.appendChild(detailView);
+  function fileRows() {
+    var q = el("input", {type: "search", placeholder: "파일·함수 검색"});
+    var tb = el("tbody");
+    function draw() {
+      tb.textContent = "";
+      U.files.forEach(function (f) {
+        var t = (f.file + " " + f.funcs.join(" ")).toLowerCase();
+        if (q.value && t.indexOf(q.value.toLowerCase()) < 0) return;
+        var risk = f.level === "red" ? lvchip("red") : f.level === "orange" ? lvchip("orange", "⚠️ 검토 필요") : f.level === "yellow" ? lvchip("yellow") : f.level === "gray" ? lvchip("gray") : el("span", {class: "muted", text: "관련 위험 결과 없음"});
+        var tr = el("tr", {class: "row click"}, [el("td", {}, [el("b", {}, [code(f.file)])]),
+          el("td", {}, [f.funcs.length ? f.funcs.length + "개" : "-", el("div", {class: "small muted", text: short(f.funcs.join(", "), 80)})]),
+          el("td", {}, [risk, f.n_issues ? el("span", {class: "small muted", text: " " + f.n_issues + "건"}) : null]),
+          el("td", {text: f.has_deps ? "있음" : "-"}), el("td", {text: f.units.length + "곳"}), el("td", {}, [statusChip(statusOf(qsOfFile(f.file)))])]);
+        tr.addEventListener("click", function () { openFile(f.file); });
+        tb.appendChild(tr);
       });
-      if (!blocks.length && !(st.mode === "all" && !st.q)) return;
-      var fileLevel = F.review.length ? el("details", {class: "fn"}, [el("summary", {}, [el("b", {text: "파일 수준 검토 (매크로·헤더·상태 변수 등) "}), el("span", {class: "tag t2", text: F.review.length + "건"})]),
-        el("div", {}, F.review.map(function (f) { return reviewLine(f); })),
-        el("ul", {class: "ql"}, F.review.filter(function (f) { return f["class"] !== "변경 사실 확인" && f.reviewer; }).map(questionLine))]) : null;
-      shown++;
-      var nRisk = 0;
-      F.forder.forEach(function (k) { nRisk += F.funcs[k].direct.concat(F.funcs[k].prop).filter(function (r) { return riskVisible(r, st); }).length; });
-      body.appendChild(el("section", {class: "fileblk on"}, [
-        el("div", {class: "fh"}, [el("b", {}, [code(fname)]), " ", el("span", {class: "small muted", text: (F.status || "") + " · 변경 함수 " + F.forder.length + "개" + (nRisk ? " · 표시된 위험 " + nRisk + "개" : "")})]),
-        fileLevel,
-        blocks.length ? frag(blocks) : el("div", {class: "small muted", text: "함수 단위 변경 없음 (주석·공백·선언만 바뀌었거나, 이 파일을 쓰는 .c 쪽에 변경점이 표시됨)"})
-      ]));
-    });
-    if (M.globalReview.length) {
-      body.insertBefore(el("section", {class: "fileblk on"}, [el("div", {class: "fh"}, [el("b", {text: "전역 검토 (enum·실행 모델·분석 한계)"})]),
-        el("div", {}, M.globalReview.map(function (f) { return reviewLine(f); })),
-        el("ul", {class: "ql"}, M.globalReview.filter(function (f) { return f["class"] !== "변경 사실 확인" && f.reviewer; }).map(questionLine))]), body.firstChild);
     }
-    if (st.mode === "all" && M.restDeps.length) {
-      body.appendChild(el("section", {class: "fileblk on"}, [el("div", {class: "fh"}, [el("b", {text: "변경점 없이 의존성만 바뀐 함수"})]),
-        frag(M.restDeps.map(function (row) { return el("details", {class: "fn"}, [el("summary", {}, [code(row.func), " ", el("span", {class: "tag t3", text: "의존성 변화"})]), depBlock(row)]); }))]));
-    }
-    if (st.mode === "all" && A && A.notes.length) {
-      body.appendChild(el("details", {class: "fn"}, [el("summary", {text: "동작 변화 없음으로 본 변경 " + A.notes.length + "개"}),
-        el("ul", {class: "small"}, A.notes.map(function (n) { return el("li", {text: n}); }))]));
-    }
-    if (!shown) body.appendChild(el("p", {class: "muted", text: st.mode === "new" ? "변경으로 새로 생긴 위험이 없습니다. '우선 검토'나 '판정 보류'에서 후보를 확인하세요." : "표시할 항목이 없습니다."}));
+    q.addEventListener("input", draw); onAnswer(draw); draw();
+    return el("div", {}, [el("div", {class: "toolbar"}, [q, el("button", {class: "clear", text: "CSV 내보내기 (체크리스트 결과)", onclick: exportCsv})]),
+      el("div", {class: "tw"}, [el("table", {}, [el("thead", {}, [el("tr", {}, ["파일명", "변경 함수", "위험 확인", "의존성 변화", "변경점", "검토 상태"].map(function (h) { return el("th", {text: h}); }))]), tb])]),
+      el("p", {class: "small muted", text: "정렬: 위반 경로가 확인된 파일 → 신규 위험 후보가 있는 파일 → 나머지 변경 파일. 위험 결과가 없다는 것은 안전이 확인되었다는 뜻이 아닙니다(분석 범위는 '분석 근거 및 범위' 탭)."})]);
   }
-  draw();
+  listView.appendChild(fileRows());
+  function openFile(fname, uid) {
+    var f = U.files.filter(function (x) { return x.file === fname; })[0];
+    if (!f) return;
+    listView.style.display = "none"; detailView.textContent = "";
+    var oldChk = el("input", {type: "checkbox"});
+    oldChk.checked = showOld;
+    oldChk.addEventListener("change", function () { showOld = oldChk.checked; openFile(fname); });
+    detailView.appendChild(el("div", {class: "toolbar"}, [el("button", {class: "clear", text: "← 파일 목록", onclick: function () { detailView.textContent = ""; listView.style.display = ""; window.scrollTo(0, 0); }}),
+      el("label", {class: "small"}, [oldChk, " 기존·해결 위험도 표시"])]));
+    detailView.appendChild(el("h2", {text: "📄 " + f.file}));
+    if ((f.file_review || []).length) {
+      var fq = [], seen = {};
+      f.file_review.forEach(function (x) { if (x["class"] !== "변경 사실 확인" && x.reviewer && !seen[x.item]) { seen[x.item] = 1; fq.push({qid: "FILE:" + f.file + ":" + x.item, area: (ITEM[x.item] || {}).reviewer_focus || x.item, item: x.item, question: x.reviewer, basis: x.summary}); } });
+      detailView.appendChild(el("details", {class: "fn", open: true}, [el("summary", {}, [el("b", {text: "파일 수준 변경 (매크로·조건부 컴파일·헤더 등) " + f.file_review.length + "건"})]),
+        el("ul", {class: "small"}, f.file_review.map(function (x) { return el("li", {}, [cls(x["class"]), " " + x.summary]); })), checklistTable(fq)]));
+    }
+    f.funcs.forEach(function (fn) {
+      var F = FUNCS[f.file + "|" + fn] || {checklist: []};
+      detailView.appendChild(el("h3", {class: "fnh", text: "변경 함수: " + fnm(fn)}));
+      if ((F.checklist || []).length) detailView.appendChild(el("details", {class: "more-d"}, [el("summary", {text: "함수 전체에 대한 확인 사항 " + F.checklist.length + "건 (의존성·인터페이스)"}), checklistTable(F.checklist)]));
+      U.units.filter(function (u) { return u.file === f.file && u.func === fn; }).forEach(function (u) { detailView.appendChild(unitCard(u, showOld)); });
+    });
+    var target = uid ? document.getElementById("unit-" + uid) : null;
+    if (target) { target.scrollIntoView({behavior: "instant", block: "start"}); target.classList.add("flash"); } else window.scrollTo(0, 0);
+  }
+  FILES_API = {openFile: openFile};
 });
-
-if (D.review) addTab("checklist", "검토 항목", (D.review.items || []).length, function (p) {
-  var R = D.review;
-  head(p, "검토 항목 체크리스트", "변경점에 대해 자동 분석으로 검토한 항목과 결과입니다. 결과는 적합/부적합이 아니라 아래 다섯 가지로 구분합니다. '해당 변경 없음'은 검토했지만 해당하는 변경이 없었다는 뜻입니다.");
-  p.appendChild(el("div", {class: "box small"}, R.classes.map(function (c) { return el("div", {}, [cls(c.name), " " + c.desc]); })));
-  var tot = R.totals || {};
-  p.appendChild(el("div", {class: "cards"}, R.classes.map(function (c) { return el("div", {class: "card" + (c.name === "위반 경로 확인" && tot[c.name] ? " alert" : "")}, [el("div", {class: "v", text: tot[c.name] || 0}), el("div", {class: "k", text: c.name})]); })));
-  R.groups.forEach(function (g) {
-    var items = R.items.filter(function (it) { return it.group === g.name; });
-    p.appendChild(el("h3", {text: g.id + ". " + g.name}));
-    p.appendChild(el("div", {class: "small muted", text: "적용 알고리즘: " + g.algorithms}));
-    p.appendChild(el("div", {class: "tw", style: "margin:6px 0 14px"}, [el("table", {}, [el("thead", {}, [el("tr", {}, ["번호", "자동 분석으로 확인할 내용", "결과", "분류별 건수", "검토한 내용", "검증자가 추가로 판단할 내용"].map(function (h) { return el("th", {text: h}); }))]),
-      el("tbody", {}, [].concat.apply([], items.map(function (it) {
-        var counts = Object.keys(it.counts).filter(function (k) { return it.counts[k]; }).map(function (k) { return frag([cls(k), " " + it.counts[k] + " "]); });
-        var tr = el("tr", {class: "row" + (it.findings.length ? " click" : "")}, [el("td", {}, [el("b", {text: it.id})]), el("td", {text: it.title}), el("td", {}, [cls(it.overall)]),
-          el("td", {}, counts.length ? counts : ["-"]), el("td", {class: "small", text: it.notes.join(" · ")}), el("td", {class: "small", text: it.reviewer_focus})]);
-        var det = el("tr", {class: "det", style: "display:none"}, [el("td", {colspan: 6}, it.findings.map(function (f) {
-          return el("div", {class: "rv"}, [cls(f["class"]), " ", el("span", {class: "small muted", text: (f.func || "") + (f.file ? " " + f.file + (f.line ? ":" + f.line : "") : "")}),
-            el("div", {class: "rv-s", text: f.summary}), f.reviewer ? el("div", {class: "small"}, [el("b", {text: "검증자: "}), f.reviewer]) : null,
-            (f.evidence || []).length ? el("div", {class: "small muted", text: "근거: " + f.evidence.join(" · ")}) : null]);
-        }))]);
-        tr.addEventListener("click", function () { det.style.display = det.style.display === "none" ? "" : "none"; tr.classList.toggle("open"); });
-        return [tr, det];
-      })))])]));
-  });
-});
-
-if (A) {
-  var allTable = null;
-  var keyRows = A.items.filter(function (i) { return i.key; });
-  addTab("key", "우선 확인할 영향", keyRows.length, function (p) {
-    head(p, "우선 확인할 영향 (영향 분석)", "변경이 닿는 외부 출력 → 레지스터 → 여러 진입점 공유 변수 → 반환값입니다. 보안 위험이 아니라 동작이 달라질 수 있는 곳입니다. 행을 누르면 조건과 전달 경로가 펼쳐집니다.");
-    p.appendChild(itemTable(keyRows).node);
-  });
-  addTab("all", "전체 영향 목록", A.items.length, function (p) {
-    head(p, "전체 영향 목록 (영향 분석)", "상태 변수를 포함한 모든 영향 후보입니다. 행을 누르면 조건과 전달 경로가 펼쳐집니다.");
-    allTable = itemTable(A.items, [{name: "origin", label: "원인 변경", options: uniq(A.items.map(function (r) { return r.origin; })), test: function (r, v) { return r.origin === v; }}]);
-    p.appendChild(allTable.node);
-  });
+function goUnit(uid) {
+  var u = UNIT[uid]; if (!u) return;
+  show("files"); if (FILES_API) FILES_API.openFile(u.file, uid);
 }
 
-/* 9. 진입점·공유 변수 */
-if (A && (A.entries.length || A.shared.length)) addTab("entries", "진입점·공유 변수", A.shared.length || A.entries.length, function (p) {
-  head(p, "진입점과 여러 진입점이 공유하는 영향 변수", "호출자가 없는 함수와 --entry 로 지정한 함수를 진입점으로 봅니다. 여러 진입점(태스크·ISR)이 접근하는 변수는 실행 순서·선점에 따라 결과가 달라질 수 있습니다.");
-  if (A.shared.length) {
-    p.appendChild(el("h3", {text: "여러 진입점이 공유하는 영향 변수"}));
-    p.appendChild(new Table({rows: A.shared, search: function (s) { return [s.var].concat(s.entries, s.functions).join(" "); },
-      filters: [{name: "isr", label: "ISR 포함", options: ["예", "아니오"], test: function (s, v) { return !!s.isr === (v === "예"); }}],
-      columns: [{label: "변수", render: function (s) { return code(s.var); }}, {label: "접근 진입점", render: function (s) { return s.entries.join(", "); }},
-        {label: "ISR 포함", render: function (s) { return s.isr ? "예" : "-"; }}, {label: "접근 함수", render: function (s) { return el("span", {class: "small", text: s.functions.join(", ")}); }}]}).node);
+/* ---------- 탭 02: 검토 필요 항목 ---------- */
+addTab("issues", "⚠️ 검토 필요 항목", null, function (p) {
+  head(p, "검토 필요 항목", "변경 파일을 하나씩 열지 않고, 위험이 발견되었거나 검증자 판단이 필요한 변경점만 모아 봅니다. 행을 누르면 '파일별 변경 검토'의 해당 변경점으로 이동합니다. "
+    + "같은 위치·같은 문제를 여러 분석이 함께 찾은 경우 하나로 합쳤습니다.");
+  p.appendChild(el("table", {class: "cl"}, [el("thead", {}, [el("tr", {}, ["구분", "의미", "검토 우선순위"].map(function (h) { return el("th", {text: h}); }))]),
+    el("tbody", {}, [["red", "정의된 안전 속성을 위반하는 반례 또는 경로가 확인됨 (기호 실행 반례·상수·조건 구간 증명)", "높음"],
+      ["orange", "변경 후 새로 나타난 잠재적 결함 — Taint 경로나 정적 규칙으로 찾았지만 위반은 확정되지 않음", "높음"],
+      ["yellow", "코드 분석만으로 적합 여부를 판단할 수 없음 (요구사항·시험 근거 필요)", "보통"],
+      ["gray", "분석 범위·모델링 한계로 판단 불가", "별도 관리"]].map(function (r) { return el("tr", {}, [el("td", {}, [lvchip(r[0])]), el("td", {text: r[1]}), el("td", {text: r[2]})]); }))]));
+  var newRisks = (A ? A.risks : []).filter(function (r) { return r.status_code === "NEW_REGRESSION"; });
+  if (newRisks.length) {
+    var proof = newRisks.filter(function (r) { return r.state === "violated"; }).length;
+    p.appendChild(el("p", {class: "small", text: "변경으로 새로 생긴 위험 레코드 " + newRisks.length + "개 중 반례·증명으로 위반이 확인된 것 " + proof + "개, Taint 경로·조건 변경만 확인된 후보 " + (newRisks.length - proof) + "개입니다. 후보는 취약점으로 확정된 것이 아닙니다."}));
   }
-  if (A.entries.length) {
-    p.appendChild(el("h3", {text: "진입점별 영향 함수"}));
-    p.appendChild(new Table({rows: A.entries, search: function (e) { return [e.entry].concat(e.affected_functions).join(" "); },
-      columns: [{label: "진입점", render: function (e) { return code(e.entry); }},
-        {label: "구분", render: function (e) { return (e.isr ? "ISR 추정" : "진입점") + (e.user ? " (지정)" : ""); }, cls: "nowrap"},
-        {label: "영향 함수", render: function (e) { return el("span", {class: "small", text: e.affected_functions.join(", ")}); }}]}).node);
-  }
+  var rows = [];
+  U.units.forEach(function (u) { u.issues.forEach(function (i) { if (i.level !== "old") rows.push({lv: i.level, u: u, title: i.title, vl: i.verification_level, extra: i.risk}); }); });
+  U.units.forEach(function (u) {
+    if (u.level === "yellow" && !u.issues.some(function (i) { return i.level === "yellow"; })) rows.push({lv: "yellow", u: u, title: u.type_label, vl: "검증자 판단 " + qsOfUnit(u).length + "건", extra: u.summary});
+  });
+  var gray = (U.global_review || []).filter(function (f) { return f["class"] === "분석 불충분"; });
+  U.files.forEach(function (f) { (f.file_review || []).forEach(function (x) { if (x["class"] === "분석 불충분") gray.push(x); }); });
+  ["red", "orange", "yellow"].forEach(function (l) {
+    var rs = rows.filter(function (r) { return r.lv === l; });
+    var tb = el("tbody", {}, rs.map(function (r) {
+      var tr = el("tr", {class: "row click"}, [el("td", {}, [code(r.u.file)]), el("td", {}, [code(r.u.func)]), el("td", {}, [el("b", {text: r.title}), el("div", {class: "small muted", text: short(r.extra || "", 140)})]),
+        el("td", {text: r.vl}), el("td", {}, [statusChip(statusOf(qsOfUnit(r.u)))])]);
+      tr.addEventListener("click", function () { goUnit(r.u.id); });
+      return tr;
+    }));
+    p.appendChild(el("details", {class: "fn", open: l !== "yellow" || rs.length <= 30}, [el("summary", {}, [lvchip(l), " " + rs.length + "건"]),
+      rs.length ? el("div", {class: "tw"}, [el("table", {}, [el("thead", {}, [el("tr", {}, ["파일", "함수", "발견된 문제", "검증 수준", "상태"].map(function (h) { return el("th", {text: h}); }))]), tb])])
+                : el("div", {class: "small muted", text: "없음"})]));
+  });
+  p.appendChild(el("details", {class: "fn"}, [el("summary", {}, [lvchip("gray"), " " + gray.length + "건"]),
+    el("ul", {class: "small"}, gray.map(function (x) { return el("li", {}, [x.summary, x.reviewer ? el("div", {class: "muted", text: "→ " + x.reviewer}) : null]); }))]));
 });
 
-/* 10. 분석 범위와 주의 */
-addTab("scope", "분석 범위와 주의", null, function (p) {
-  head(p, "분석 범위와 주의", "결과는 정적 분석상 영향 후보입니다. 동작 차이가 의도된 변경인지 결함인지는 별도로 판단해야 합니다.");
-  var m = D.meta;
-  if ((m.warnings || []).length) p.appendChild(el("div", {class: "box warn"}, [el("h3", {text: "경고"}), el("ul", {}, m.warnings.map(function (w) { return el("li", {text: w}); }))]));
-  if (D.explore || D.sil) p.appendChild(el("div", {class: "box"}, [el("h3", {text: "실행 확인"}), el("ul", {}, [
-    D.explore ? el("li", {text: "자동 탐색: 케이스 " + D.explore.cases + "개 중 차이 " + D.explore.diff_cases + "개 — explore/explore_report.md"}) : null,
-    D.sil ? el("li", {text: "지정 시나리오: 케이스 " + D.sil.cases + "개 중 차이 " + D.sil.diff_cases + "개 — sil/sil_report.md"}) : null])]));
+/* ---------- 탭 03: 변경 영향 및 의존성 ---------- */
+var IMPACT_API = null;
+function goFunc(file, func) { show("impact"); if (IMPACT_API) IMPACT_API.open(file, func); }
+addTab("impact", "🔗 변경 영향 및 의존성", U.functions.length, function (p) {
+  head(p, "변경 영향 및 의존성", "변경 함수에서 출발해 영향이 어디까지 전달되는지 보여 줍니다. 기본으로 직접 변경과 직접 영향만 보이고, 간접 영향은 '영향 경로 더 보기'로 펼칩니다. "
+    + "함수 호출·변수 접근의 변화는 의존성 변화(영향 분석)이며, 검증되지 않은 입력이 위험 연산에 닿는 것(잠재 취약점)과 따로 표시합니다.");
+  var q = el("input", {type: "search", placeholder: "함수·파일 검색"});
+  var only = el("input", {type: "checkbox"}); only.checked = true;
+  var box = el("div");
+  p.appendChild(el("div", {class: "toolbar"}, [q, el("label", {class: "small"}, [only, " 영향·의존성 변화가 있는 함수만"])]));
+  p.appendChild(box);
+  function itemLine(i) {
+    var it = A.items[i];
+    return el("li", {}, [code(it.func), " → ", code(it.name), el("span", {class: "small muted", text: "  " + it.how_kind + ": " + short(it.how, 80)}),
+      el("details", {class: "more-d"}, [el("summary", {text: "경로"}), steps(it.path)])]);
+  }
+  function card(f) {
+    var row = f.deps || {};
+    var calls = (row.calls_added || []).map(function (x) { return "+ " + x; }).concat((row.calls_removed || []).map(function (x) { return "− " + x; }));
+    var vars = (row.writes_added || []).map(function (x) { return "쓰기 + " + x; }).concat((row.writes_removed || []).map(function (x) { return "쓰기 − " + x; }))
+      .concat((row.reads_added || []).map(function (x) { return "읽기 + " + x; })).concat((row.reads_removed || []).map(function (x) { return "읽기 − " + x; }));
+    var related = f.shared.map(function (s) { return s.var + (s.isr ? " (ISR 공유)" : " (여러 진입점 공유)"); })
+      .concat(f.direct.slice(0, 6).map(function (i) { return A.items[i].name; }));
+    related = related.filter(function (x, i) { return related.indexOf(x) === i; });
+    var flow = el("div", {class: "flow"}, [
+      el("div", {class: "fb fact"}, [el("div", {class: "small muted", text: "변경 함수"}), el("b", {text: fnm(f.func)}), el("div", {class: "small", text: f.summary})]),
+      el("div", {class: "arr", text: "▼"}),
+      el("div", {class: "fb fact"}, [el("div", {class: "small muted", text: "변경된 함수 호출 · 변수 접근 (자동 분석 확인)"}), el("div", {class: "small", text: calls.concat(vars).join(" · ") || "호출·변수 접근 변화 없음 (값·조건만 변경)"})]),
+      el("div", {class: "arr", text: "▼"}),
+      el("div", {class: "fb fact"}, [el("div", {class: "small muted", text: "연관 상태 및 데이터 (자동 분석 확인)"}), el("div", {class: "small", text: related.join(" · ") || "-"})]),
+      el("div", {class: "arr", text: "▼"}),
+      el("div", {class: "fb dir"}, [el("div", {class: "small muted", text: "검증이 필요한 동작 (변경에서 도출한 검토 방향)"}), el("div", {class: "small", text: f.behaviors.join(" · ") || "-"})])]);
+    var kids = [el("div", {class: "uh"}, [el("b", {text: fnm(f.func) + "  "}), el("span", {class: "small muted", text: f.file + "  "}), lvchip(f.level)]), flow];
+    if (f.call_pairs.length) kids.push(el("h4", {text: "함수 호출 변경"}), el("table", {class: "cl"}, [el("thead", {}, [el("tr", {}, [el("th", {text: "변경 전"}), el("th", {text: "변경 후"})])]),
+      el("tbody", {}, f.call_pairs.map(function (pr) { return el("tr", {}, [el("td", {}, [pr[0] ? code(pr[0] + "()") : el("span", {class: "muted", text: "(없음)"})]), el("td", {}, [pr[1] ? code(pr[1] + "()") : el("span", {class: "muted", text: "(삭제)"})])]); }))]));
+    kids.push(el("h4", {text: "의존성 3단계"}));
+    kids.push(el("div", {class: "lvl"}, [el("b", {text: "① 직접 변경  "}), el("span", {class: "small", text: calls.concat(vars).join(" · ") || "-"})]));
+    kids.push(el("div", {class: "lvl"}, [el("b", {text: "② 직접 영향  "}), f.direct.length ? el("ul", {class: "small"}, f.direct.slice(0, 12).map(itemLine)) : el("span", {class: "small muted", text: "-"})]));
+    kids.push(el("details", {class: "more-d"}, [el("summary", {text: "③ 간접 영향 — 영향 경로 더 보기 (" + f.indirect.length + "건)"}), el("ul", {class: "small"}, f.indirect.slice(0, 200).map(itemLine))]));
+    if (f.taint_risks.length) kids.push(el("div", {class: "vuln"}, [el("b", {text: "⚠️ 잠재 취약점 (외부 입력 → 위험 연산) — 의존성 변화와 별개"}),
+      el("ul", {class: "small"}, f.taint_risks.map(function (rid) { var r = RISK[rid]; return el("li", {}, [el("button", {class: "lnk", text: rid, onclick: function () {
+        var uu = U.units.filter(function (u) { return u.risks.concat(u.prop_risks).indexOf(rid) >= 0; })[0]; if (uu) goUnit(uu.id); }}), " " + (r ? r.kind_label + " " + r.expr + " — " + r.verification_level : "")]); }))]));
+    if (f.shared.length) kids.push(el("div", {class: "small muted", text: "공유 데이터 접근 (의존 관계, 위험 아님): " + f.shared.map(function (s) { return s.var + " ← " + s.entries.join(", "); }).join(" · ")}));
+    return el("div", {class: "ucard", id: "fn-" + f.file + "|" + f.func}, kids);
+  }
+  function draw() {
+    box.textContent = "";
+    U.functions.slice().sort(function (a, b) { var o = ["red", "orange", "yellow", "gray", "none"]; return o.indexOf(a.level) - o.indexOf(b.level); }).forEach(function (f) {
+      if (q.value && (f.func + " " + f.file).toLowerCase().indexOf(q.value.toLowerCase()) < 0) return;
+      if (only.checked && !f.deps && !f.direct.length && !f.indirect.length && !f.taint_risks.length) return;
+      box.appendChild(card(f));
+    });
+    if (A && A.entries.length) box.appendChild(el("details", {class: "fn"}, [el("summary", {text: "참고: 진입점(태스크·ISR)별 영향 함수 " + A.entries.length + "개"}),
+      el("ul", {class: "small"}, A.entries.map(function (e) { return el("li", {}, [code(e.entry), (e.isr ? " (ISR 추정)" : "") + ": " + e.affected_functions.join(", ")]); }))]));
+  }
+  q.addEventListener("input", draw); only.addEventListener("change", draw); draw();
+  IMPACT_API = {open: function (file, func) { q.value = func; only.checked = false; draw(); var t = document.getElementById("fn-" + file + "|" + func); if (t) t.scrollIntoView({block: "start"}); }};
+});
+
+/* ---------- 탭 04: 분석 근거 및 범위 ---------- */
+addTab("scope", "🔍 분석 근거 및 범위", null, function (p) {
+  head(p, "분석 근거 및 범위", "어떤 기술로 무엇을 분석했고, 무엇을 분석하지 못했는지입니다. 위험이 탐지되지 않았다는 것을 안전 확인으로 해석하지 않도록, 분석 한계를 함께 확인하세요.");
+  var m = D.meta, sec = (A && A.security) || {}, eng = sec.engine || {}, tools = sec.tools || {};
+  if ((m.warnings || []).length) p.appendChild(el("div", {class: "box warn"}, [el("h3", {text: "분석 범위 경고"}), el("ul", {}, m.warnings.map(function (w) { return el("li", {text: w}); }))]));
+  var R = D.review || {items: [], groups: [], classes: []};
+  var nRisk = A ? A.risks.length : 0, nSym = A ? A.risks.filter(function (r) { return r.symbolic; }).length : 0;
+  var ex = A ? A.excluded : {};
+  var algo = [
+    ["AST Diff", "변경 노드 " + (A ? A.changes.length : 0) + "개 (변경 전후 문장·조건·식 비교, 의미 차이: 연산자·상수·호출·형변환·평가 순서)", "파일별 변경 검토 ①"],
+    ["CFG", "변경 함수의 분기·반복·조기 종료·문장 이동, else-if 사슬", "파일별 변경 검토 ②, 검토 항목 3-1·3-2·4-4"],
+    ["CPG", eng.cpg ? eng.cpg + (tools.cpg ? " — 노드 " + tools.cpg.nodes + "개, 간선 " + tools.cpg.edges + "개 (security/cpg.json)" : "") : "-", "변경 영향 및 의존성"],
+    ["Taint Analysis", (eng.taint || "-") + " · 규칙 " + (eng.rules || "-"), "검토 필요 항목, 분석 근거 보기"],
+    ["Symbolic Execution", (eng.symbolic || "-") + " · 위험 연산 " + nRisk + "개 중 " + nSym + "개 기호 실행", "분석 근거 보기 (반례·속성)"],
+    ["분석 한계", "파싱 실패 " + Object.keys(ex.parse_errors || {}).length + "개 · 본문 없는 외부 함수 " + (ex.extern_functions || []).length + "개 · 풀지 못한 함수 포인터 " + (ex.unresolved_calls || []).length + "개 · 비활성 #if 경로 미분석", "아래 상세"]];
+  p.appendChild(el("h3", {text: "사용한 분석 기술"}));
+  p.appendChild(el("table", {class: "cl"}, [el("thead", {}, [el("tr", {}, ["분석 기술", "이 보고서의 분석 결과", "보는 곳"].map(function (h) { return el("th", {text: h}); }))]),
+    el("tbody", {}, algo.map(function (r) { return el("tr", {}, [el("td", {}, [el("b", {text: r[0]})]), el("td", {text: r[1]}), el("td", {class: "small", text: r[2]})]); }))]));
+  if (R.items.length) {
+    p.appendChild(el("h3", {text: "자동 검토 항목 (25개)"}));
+    p.appendChild(el("div", {class: "small muted", text: "각 항목에서 무엇을 검토했는지와 결과 분류별 건수입니다. 항목별 상세 결과는 파일별 변경 검토의 각 변경점에 연결되어 있습니다."}));
+    R.groups.forEach(function (g) {
+      var its = R.items.filter(function (it) { return it.group === g.name; });
+      p.appendChild(el("details", {class: "fn"}, [el("summary", {}, [el("b", {text: g.id + ". " + g.name}), el("span", {class: "small muted", text: "  " + g.algorithms})]),
+        el("table", {class: "cl"}, [el("thead", {}, [el("tr", {}, ["번호", "자동 분석 내용", "결과", "건수", "검토한 내용", "검증자가 판단할 내용"].map(function (h) { return el("th", {text: h}); }))]),
+          el("tbody", {}, its.map(function (it) {
+            return el("tr", {}, [el("td", {text: it.id}), el("td", {text: it.title}), el("td", {}, [cls(it.overall)]),
+              el("td", {class: "small", text: Object.keys(it.counts).filter(function (k) { return it.counts[k]; }).map(function (k) { return k + " " + it.counts[k]; }).join(" · ") || "-"}),
+              el("td", {class: "small", text: it.notes.join(" · ")}), el("td", {class: "small", text: it.reviewer_focus})]);
+          }))])]));
+    });
+  }
   if (A) {
-    var ex = A.excluded, pe = Object.keys(ex.parse_errors || {});
+    var pe = Object.keys(ex.parse_errors || {});
     p.appendChild(el("div", {class: "box" + (pe.length ? " warn" : "")}, [el("h3", {text: "파싱 실패 (분석 제외) " + pe.length + "개"}),
       pe.length ? el("ul", {}, pe.map(function (f) { return el("li", {}, [code(f), " ", el("span", {class: "small muted", text: String(ex.parse_errors[f] || "").split("\n")[0]})]); }))
                 : el("div", {class: "muted", text: "없음 (변경 전 " + m.analyzed.old + "개 / 변경 후 " + m.analyzed.new + "개 파일 모두 분석)"})]));
-    function sec(title, desc, xs, fmt) {
+    var secBox = function (title, desc, xs, fmt) {
       if (!xs || !xs.length) return;
-      p.appendChild(el("div", {class: "box"}, [el("h3", {text: title + " " + xs.length + "개"}), desc ? el("p", {class: "small muted", text: desc}) : null,
+      p.appendChild(el("details", {class: "fn"}, [el("summary", {text: title + " " + xs.length + "개"}), desc ? el("p", {class: "small muted", text: desc}) : null,
         el("div", {class: "small"}, [frag(xs.map(function (x, i) { return frag([i ? ", " : "", fmt(x)]); }))])]));
-    }
-    sec("본문 없는 외부 함수", "포인터 인자가 가리키는 메모리를 읽고 쓰는 것으로 보수적으로 가정했습니다 (const 포인터 인자는 읽기만). --extern-model 로 효과를 지정할 수 있습니다.",
-        ex.extern_functions, function (e) { return frag([code(e.name), e.modeled ? " (모델)" : ""]); });
-    sec("대상을 풀지 못한 함수 포인터 호출", "반환값이 모든 인자에 의존한다고 보았고, 피호출 함수 내부 영향은 빠져 있습니다.",
-        ex.unresolved_calls, function (u) { return frag([code(u.func), ":" + u.line + " ", code(u.call + "(...)")]); });
-    sec("대상을 모르는 포인터", "호출자가 분석 범위 밖인 인자 등. 실제로 전역을 가리키면 영향이 누락될 수 있습니다.", ex.unresolved_pointers, code);
-    sec("상수 주소(하드웨어 레지스터) 접근", "읽기·쓰기 효과만 반영하며 하드웨어 동작은 모델링하지 않습니다.", ex.hw_access, code);
-    if ((ex.warnings || []).length) p.appendChild(el("div", {class: "box"}, [el("h3", {text: "분석 경고 " + ex.warnings.length + "개"}), el("ul", {class: "small"}, ex.warnings.map(function (w) { return el("li", {text: w}); }))]));
-    if ((ex.assumptions || []).length) p.appendChild(el("div", {class: "box"}, [el("h3", {text: "분석 가정"}), el("ul", {class: "small"}, ex.assumptions.map(function (w) { return el("li", {text: w}); }))]));
+    };
+    secBox("본문 없는 외부 함수", "포인터 인자가 가리키는 메모리를 읽고 쓰는 것으로 보수적으로 가정했습니다 (const 포인터 인자는 읽기만).", ex.extern_functions, function (e) { return frag([code(e.name), e.modeled ? " (모델)" : ""]); });
+    secBox("대상을 풀지 못한 함수 포인터 호출", "반환값이 모든 인자에 의존한다고 보았고, 피호출 함수 내부 영향은 빠져 있습니다.", ex.unresolved_calls, function (u) { return frag([code(u.func), ":" + u.line + " ", code(u.call + "(...)")]); });
+    secBox("대상을 모르는 포인터", "실제로 전역을 가리키면 영향이 누락될 수 있습니다.", ex.unresolved_pointers, code);
+    secBox("상수 주소(하드웨어 레지스터) 접근", "읽기·쓰기 효과만 반영하며 하드웨어 동작은 모델링하지 않습니다.", ex.hw_access, code);
+    if ((ex.assumptions || []).length) p.appendChild(el("details", {class: "fn"}, [el("summary", {text: "분석 가정"}), el("ul", {class: "small"}, ex.assumptions.map(function (w) { return el("li", {text: w}); }))]));
+    if (A.notes.length) p.appendChild(el("details", {class: "fn"}, [el("summary", {text: "동작 변화 없음으로 본 변경 " + A.notes.length + "개"}), el("ul", {class: "small"}, A.notes.map(function (n) { return el("li", {text: n}); }))]));
+    var tl = [];
+    if (tools.joern) tl.push("Joern: " + (tools.joern.ran ? "실행함" : (tools.joern.note || "")) + " — security/joern/taint.sc");
+    if (tools.codeql) tl.push("CodeQL: " + (tools.codeql.ran ? "실행함" : (tools.codeql.note || "")) + " — security/codeql/ChangeTaint.ql");
+    if (tools.klee) tl.push("KLEE: 하네스 " + tools.klee.harnesses + "개, 실행 " + tools.klee.ran + "개 — security/klee/");
+    if (tl.length) p.appendChild(el("details", {class: "fn"}, [el("summary", {text: "외부 도구 교차 검증 입력"}), el("ul", {class: "small"}, tl.map(function (x) { return el("li", {text: x}); }))]));
+    p.appendChild(el("details", {class: "fn"}, [el("summary", {text: "전체 보안 분석 결과 표 (" + A.risks.length + "건)"}), riskTable(A.risks).node]));
+    p.appendChild(el("details", {class: "fn"}, [el("summary", {text: "전체 영향 목록 (" + A.items.length + "건)"}), itemTable(A.items).node]));
   }
-  if ((m.outputs || []).length) p.appendChild(el("div", {class: "box"}, [el("h3", {text: "결과 파일"}), el("ul", {class: "small"}, m.outputs.map(function (o) { return el("li", {}, [code(o)]); }))]));
+  if ((m.outputs || []).length) p.appendChild(el("details", {class: "fn"}, [el("summary", {text: "결과 파일"}), el("ul", {class: "small"}, m.outputs.map(function (o) { return el("li", {}, [code(o)]); }))]));
 });
 
 /* ---------- 화면 구성 ---------- */
 document.getElementById("paths").appendChild(frag([
   "변경 전 ", code(D.meta.old_dir), "  →  변경 후 ", code(D.meta.new_dir), "   ·   " + D.meta.time]));
+(function () {
+  var m = D.meta, an = m.analyzed || {}, ws = m.warnings || [];
+  var partial = ws.some(function (w) { return w.indexOf("--scope changed") >= 0; });
+  var pe = A ? Object.keys(A.excluded.parse_errors || {}).length : 0;
+  var msg = partial ? "⚠️ 부분 분석 — 변경 및 연관 C 파일 " + an.new + "개 분석 (변경 전 " + an.old + "개). 분석 범위 밖의 함수 호출·전역 변수 영향은 누락될 수 있습니다."
+                    : "전체 분석 — 변경 전 " + an.old + "개 / 변경 후 " + an.new + "개 C 파일.";
+  if (pe) msg += "  ⚠️ 파싱 실패 " + pe + "개 파일은 분석에서 빠졌습니다.";
+  msg += "  위험이 탐지되지 않은 것은 안전이 확인되었다는 뜻이 아닙니다.";
+  document.getElementById("banner").appendChild(el("div", {class: "banner" + (partial || pe ? " warn" : ""), text: msg}));
+})();
 var nav = document.getElementById("nav"), main = document.getElementById("main");
 tabs.forEach(function (t) {
   t.btn = el("button", {onclick: function () { show(t.id); }}, [t.label, t.count !== null && t.count !== undefined ? el("span", {class: "cnt", text: String(t.count)}) : null]);
@@ -756,7 +825,7 @@ var th = el("button", {id: "theme", title: "밝은 화면 / 어두운 화면 전
 }});
 nav.appendChild(th);
 var start = location.hash.slice(1);
-show(panes[start] ? start : "review");
+show(panes[start] ? start : "files");
 })();
 </script>
 </body>

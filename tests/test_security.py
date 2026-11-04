@@ -343,5 +343,26 @@ class ReviewClassificationTests(unittest.TestCase):
         self.assertIn(f["verification_level"], ("기호 실행 반례 발견", "정적 규칙 위반") if symexec.available() else ("Taint 경로 발견",))
 
 
+class ReturnCheckLabelTests(unittest.TestCase):
+    SRC = """
+    typedef unsigned char U8;
+    U8 HSM_CancelJob(U8 id); U8 g_state;
+    typedef struct { U8 id; } Obj;
+    void Dcm_ProcessRequest(Obj *obj) {
+        if (0U != HSM_CancelJob(obj->id)) { g_state = 1U; }
+        g_state = 2U;
+    }
+    """
+
+    def test_removed_return_value_check_is_not_input_validation(self):
+        new = self.SRC.replace("if (0U != HSM_CancelJob(obj->id)) { g_state = 1U; }", "")
+        r = analyze({"a.c": self.SRC}, {"a.c": new})
+        f = next(x for x in r["risks"] if x["category"] == "보안 조건 변경")
+        self.assertIn("반환값·오류 검사", f["kind_label"])
+        self.assertNotIn("외부 입력 검증", f["kind_label"])
+        self.assertIn("단정하지 않음", f["risk"])
+        self.assertNotEqual(f["state"], "violated")
+
+
 if __name__ == "__main__":
     unittest.main()

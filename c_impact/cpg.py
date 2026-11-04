@@ -112,6 +112,10 @@ class CPG:
                     if v.env is not None and (v.env.is_pointer(v.type) or v.env.is_array(v.type)):
                         objs = self._pointee((key,))
                         if not objs:
+                            # 호출자가 분석 범위 밖인 포인터 인자: 대상을 모르는 객체(sym:*이름)로 본다
+                            sk = f"sym:*{v.name}"
+                            objs = {(sk,)} if sk in p.vars else set()
+                        if not objs:
                             continue
                         paths, what = objs, f"*{v.name}"
                     else:
