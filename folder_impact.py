@@ -18,7 +18,10 @@ git 이 없어도 되는 폴더 비교 전용 실행기다. 내부 분석은 c_i
   python3 folder_impact.py before/ after/ --scope changed -D VARIANT_A=1 --exclude 'test/*'
   python3 folder_impact.py before/ after/ --compile-commands after/build/compile_commands.json
 
-결과 (-o, 기본 impact_out/folder):
+결과 (-o, 기본: 변경 후 폴더 안의 CIA_Result):
+  -o 를 상대 경로로 주면 변경 후 폴더 아래에 만든다 (예: -o result_26A22 → <변경 후>\result_26A22).
+  다른 곳에 두려면 절대 경로를 준다. 결과 폴더에는 표식 파일(.cia_output)을 두어, 그 안의 산출물
+  (cia_memclass_auto.h, KLEE 하네스 .c 등)은 다음 실행에서 소스로 읽지 않는다.
   report.html                   모든 결과를 항목별 탭으로 묶은 HTML 보고서 (브라우저로 열기, 검색·필터·경로 펼치기)
   security/vulnerability_report.json, cpg.json, joern/, codeql/, klee/   보안 분석 결과와 외부 도구 입력
   summary.md / summary.json     폴더 비교 요약 (파일 변경, 영향 요약, 의존성 변화, 실행 확인, 분석 범위)
@@ -66,6 +69,25 @@ def log(msg: str):
 # ---------------------------------------------------------------------------
 
 
+OUTPUT_MARKER = ".cia_output"  # 결과 폴더 표식: 이 파일이 있는 폴더는 소스 검색에서 뺀다
+DEFAULT_OUT = "CIA_Result"
+
+
+def resolve_out(new_dir: Path, out: str | None) -> Path:
+    """결과 폴더: 지정 안 함 → <변경 후>/CIA_Result, 상대 경로 → <변경 후>/경로, 절대 경로 → 그대로."""
+    if not out:
+        return Path(new_dir) / DEFAULT_OUT
+    p = Path(out)
+    return p if p.is_absolute() else Path(new_dir) / p
+
+
+def prepare_out(out: Path) -> None:
+    out.mkdir(parents=True, exist_ok=True)
+    marker = out / OUTPUT_MARKER
+    if not marker.exists():
+        marker.write_text("folder_impact.py 결과 폴더 — 이 폴더의 파일은 분석 소스로 읽지 않습니다.\n", encoding="utf-8")
+
+
 def _excluded(rel: str, exclude: list[str]) -> bool:
     return any(fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(Path(rel).name, pat) for pat in exclude)
 
@@ -74,6 +96,9 @@ def list_c_files(root: Path, exclude: list[str]) -> dict[str, Path]:
     """root 아래 *.c / *.h (숨김 폴더 제외) → 상대 경로: 절대 경로."""
     out = {}
     for dirpath, dirnames, filenames in os.walk(root):
+        if OUTPUT_MARKER in filenames:  # 이 도구의 결과 폴더
+            dirnames[:] = []
+            continue
         dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
         for name in sorted(filenames):
             if not name.endswith(SOURCE_EXT + HEADER_EXT):
@@ -859,8 +884,14 @@ def run(args) -> int:
         if not p.is_dir():
             log(f"오류: 폴더가 아닙니다: {p}")
             return 1
-    out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
+    out = resolve_out(new_dir, args.out)
+    try:
+        prepare_out(out)
+    except OSError as e:
+        log(f"오류: 결과 폴더를 만들 수 없습니다: {out} ({e})")
+        log("      변경 후 폴더에 쓸 수 없으면 -o 로 다른 위치의 절대 경로를 지정하세요.")
+        return 1
+    log(f"결과 폴더: {out}")
     exclude = list(args.exclude or [])
     warnings: list[str] = []
     auto = None
@@ -1018,7 +1049,8 @@ def main(argv: list[str] | None = None) -> int:
         epilog="예) python3 folder_impact.py before/ after/ --explore")
     ap.add_argument("old_dir", help="변경 전 프로젝트 폴더")
     ap.add_argument("new_dir", help="변경 후 프로젝트 폴더")
-    ap.add_argument("-o", "--out", default="impact_out/folder", help="결과 폴더 (기본 impact_out/folder)")
+    ap.add_argument("-o", "--out", default=None,
+                    help="결과 폴더 (기본: <변경 후 폴더>/CIA_Result). 상대 경로는 변경 후 폴더 아래, 절대 경로는 그대로")
     ap.add_argument("--scope", choices=["all", "changed"], default="all",
                     help="all: 전체 *.c 분석 (기본, 파일 간 영향 포함) / changed: 변경된 .c 와 변경 헤더를 쓰는 .c 만 (빠름)")
     ap.add_argument("--exclude", action="append", metavar="GLOB", help="제외할 파일·폴더 패턴 (예: 'test/*', '*_stub.c')")

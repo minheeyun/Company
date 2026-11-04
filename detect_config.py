@@ -21,7 +21,7 @@
   5. 제외 폴더      SAMPLECODE·example·demo 처럼 예제 코드 폴더
 
 사용 예)
-  python detect_config.py "S:\\...\\26A10" "S:\\...\\26A22"            # 결과: cia_config.json, run_auto.ps1
+  python detect_config.py "S:\\...\\26A10" "S:\\...\\26A22"            # 결과: <26A22>\\CIA_Result\\cia_config.json, run_auto.ps1
   python folder_impact.py 변경전 변경후 -o result --auto-config        # 분석 전에 같은 탐지를 자동으로 수행
 
 확신도가 '낮음'인 결정(예: 보드 리비전을 근거 없이 첫 번째로 고른 경우)은 반드시 실제 빌드 설정과 확인하세요.
@@ -100,6 +100,9 @@ def _parent_roots(old_dir: Path, new_dir: Path) -> list[Path]:
 def _iter_build_candidates(root: Path, shallow: bool):
     if not shallow:
         for dirpath, dirnames, filenames in os.walk(root):
+            if fi.OUTPUT_MARKER in filenames:  # 이 도구의 결과 폴더
+                dirnames[:] = []
+                continue
             dirnames[:] = [d for d in dirnames if not d.startswith(".") or d == ".settings"]
             for fn in filenames:
                 yield Path(dirpath) / fn
@@ -687,7 +690,7 @@ def render(r: dict) -> str:
 
 def ps1(r: dict, old_dir: Path, new_dir: Path, out: str) -> str:
     q = lambda s: '"' + str(s) + '"'  # noqa: E731
-    parts = [f"python {q(HERE / 'folder_impact.py')} {q(old_dir)} {q(new_dir)} `", f"  -o {out} --scope changed `"]
+    parts = [f"python {q(HERE / 'folder_impact.py')} {q(old_dir)} {q(new_dir)} `", f"  -o {q(out)} --scope changed `"]
     for e in r["exclude"]:
         parts.append(f"  --exclude {q(e)} `")
     if r["defines"]:
@@ -710,22 +713,33 @@ def main(argv=None) -> int:
     ap.add_argument("--search", action="append", default=[], metavar="DIR",
                     help="프로젝트 밖에서 헤더를 찾을 위치 (MCAL·BSW·컴파일러 include 폴더, 여러 번 가능)")
     ap.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 4)
-    ap.add_argument("-o", "--out", default="cia_config.json", help="결과 JSON (기본 cia_config.json)")
-    ap.add_argument("--ps1", default="run_auto.ps1", help="만들 실행 스크립트 (기본 run_auto.ps1)")
-    ap.add_argument("--result", default="result_auto", help="실행 스크립트의 결과 폴더 (기본 result_auto)")
+    ap.add_argument("--result", default=None,
+                    help="결과 폴더 (기본: <변경 후 폴더>/CIA_Result). 상대 경로는 변경 후 폴더 아래, 절대 경로는 그대로. "
+                         "cia_config.json·run_auto.ps1·메모리 클래스 헤더도 여기에 만들고, 실행 스크립트의 분석 결과도 여기에 쓴다")
+    ap.add_argument("-o", "--out", default="cia_config.json", help="결과 JSON 이름 (기본 cia_config.json, 결과 폴더 안)")
+    ap.add_argument("--ps1", default="run_auto.ps1", help="만들 실행 스크립트 이름 (기본 run_auto.ps1, 결과 폴더 안)")
     args = ap.parse_args(argv)
     old_dir, new_dir = Path(args.old_dir).resolve(), Path(args.new_dir).resolve()
     for d in (old_dir, new_dir):
         if not d.is_dir():
             log(f"오류: 폴더가 아닙니다: {d}")
             return 1
+    res = fi.resolve_out(new_dir, args.result)
+    try:
+        fi.prepare_out(res)
+    except OSError as e:
+        log(f"오류: 결과 폴더를 만들 수 없습니다: {res} ({e}) — --result 로 다른 위치의 절대 경로를 지정하세요.")
+        return 1
+    cfg_path = Path(args.out) if Path(args.out).is_absolute() else res / args.out
+    ps1_path = Path(args.ps1) if Path(args.ps1).is_absolute() else res / args.ps1
     r = detect(old_dir, new_dir, args.exclude, sample=args.sample, rounds=args.rounds, jobs=args.jobs,
-               out_dir=Path(args.out).resolve().parent, scope=args.scope, search=args.search)
+               out_dir=res, scope=args.scope, search=args.search)
     print(render(r))
-    Path(args.out).write_text(json.dumps(r, ensure_ascii=False, indent=2), encoding="utf-8")
-    Path(args.ps1).write_text(ps1(r, old_dir, new_dir, args.result), encoding="utf-8")
-    print(f"\n설정: {Path(args.out).resolve()}")
-    print(f"실행 스크립트: {Path(args.ps1).resolve()}  (powershell -ExecutionPolicy Bypass -File {args.ps1})")
+    cfg_path.write_text(json.dumps(r, ensure_ascii=False, indent=2), encoding="utf-8")
+    ps1_path.write_text(ps1(r, old_dir, new_dir, str(res)), encoding="utf-8")
+    print(f"\n결과 폴더: {res}")
+    print(f"설정: {cfg_path}")
+    print(f"실행 스크립트: {ps1_path}  (powershell -ExecutionPolicy Bypass -File \"{ps1_path}\")")
     return 0
 
 

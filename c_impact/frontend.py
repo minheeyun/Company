@@ -228,8 +228,11 @@ def discover_sources(root: Path, include: list[str] | None, exclude: list[str] |
     include = include or ["*.c"]
     exclude = exclude or []
     files = []
+    skip = [p.parent for p in root.rglob(".cia_output")]  # folder_impact.py 결과 폴더
     for p in sorted(root.rglob("*")):
         if not p.is_file():
+            continue
+        if skip and any(d == p.parent or d in p.parents for d in skip):
             continue
         rel = p.relative_to(root).as_posix()
         if any(part.startswith(".") for part in Path(rel).parts):

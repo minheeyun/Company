@@ -365,7 +365,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="후보가 여러 개일 때 피할 폴더 패턴 (기본: test, stub, sample, example, backup ...)")
     ap.add_argument("--max-rounds", type=int, default=12, help="반복 횟수 한도 (기본 12)")
     ap.add_argument("--no-run", action="store_true", help="include 폴더만 찾고 folder_impact.py 는 실행하지 않음")
-    ap.add_argument("-o", "--out", default="impact_out/folder", help="결과 폴더 (folder_impact.py 의 -o 와 같음)")
+    ap.add_argument("-o", "--out", default=None,
+                    help="결과 폴더 (folder_impact.py 의 -o 와 같음, 기본: <변경 후 폴더>/CIA_Result)")
     ap.add_argument("--exclude", action="append", metavar="GLOB", help="제외할 파일·폴더 패턴")
     ap.add_argument("-I", dest="include_dirs", action="append", default=[], metavar="DIR", help="직접 지정할 include 경로")
     ap.add_argument("--no-auto-include", action="store_true", help="프로젝트 안 헤더 폴더를 자동 등록하지 않음")
@@ -378,6 +379,8 @@ def main(argv: list[str] | None = None) -> int:
     args, rest = ap.parse_known_args(argv)
 
     t0 = time.time()
+    args.out = str(fi.resolve_out(Path(args.new_dir).resolve(), args.out))
+    fi.prepare_out(Path(args.out))
     r, passthrough = search(args, rest)
     fi_args = [args.old_dir, args.new_dir, "-o", args.out, "-j", str(args.jobs), "--cpp", args.cpp]
     for d in args.include_dirs:
