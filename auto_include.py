@@ -366,7 +366,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-rounds", type=int, default=12, help="반복 횟수 한도 (기본 12)")
     ap.add_argument("--no-run", action="store_true", help="include 폴더만 찾고 folder_impact.py 는 실행하지 않음")
     ap.add_argument("-o", "--out", default=None,
-                    help="결과 폴더 (folder_impact.py 의 -o 와 같음, 기본: <변경 후 폴더>/CIA_Result)")
+                    help="결과 폴더 (folder_impact.py 의 -o 와 같음, 기본: 변경 후 폴더의 상위 폴더/CIA_Result_<변경 후 폴더 이름>)")
     ap.add_argument("--exclude", action="append", metavar="GLOB", help="제외할 파일·폴더 패턴")
     ap.add_argument("-I", dest="include_dirs", action="append", default=[], metavar="DIR", help="직접 지정할 include 경로")
     ap.add_argument("--no-auto-include", action="store_true", help="프로젝트 안 헤더 폴더를 자동 등록하지 않음")

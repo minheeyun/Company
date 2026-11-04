@@ -18,8 +18,9 @@ git 이 없어도 되는 폴더 비교 전용 실행기다. 내부 분석은 c_i
   python3 folder_impact.py before/ after/ --scope changed -D VARIANT_A=1 --exclude 'test/*'
   python3 folder_impact.py before/ after/ --compile-commands after/build/compile_commands.json
 
-결과 (-o, 기본: 변경 후 폴더 안의 CIA_Result):
-  -o 를 상대 경로로 주면 변경 후 폴더 아래에 만든다 (예: -o result_26A22 → <변경 후>\result_26A22).
+결과 (-o, 기본: 변경 후 폴더의 바로 상위 폴더에 CIA_Result_<변경 후 폴더 이름>):
+  예) 변경 후 폴더가 S:\Proj\26A22 이면 S:\Proj\CIA_Result_26A22
+  -o 를 상대 경로로 주면 같은 상위 폴더 아래에 만든다 (예: -o result_26A22 → S:\Proj\result_26A22).
   다른 곳에 두려면 절대 경로를 준다. 결과 폴더에는 표식 파일(.cia_output)을 두어, 그 안의 산출물
   (cia_memclass_auto.h, KLEE 하네스 .c 등)은 다음 실행에서 소스로 읽지 않는다.
   report.html                   모든 결과를 항목별 탭으로 묶은 HTML 보고서 (브라우저로 열기, 검색·필터·경로 펼치기)
@@ -74,11 +75,17 @@ DEFAULT_OUT = "CIA_Result"
 
 
 def resolve_out(new_dir: Path, out: str | None) -> Path:
-    """결과 폴더: 지정 안 함 → <변경 후>/CIA_Result, 상대 경로 → <변경 후>/경로, 절대 경로 → 그대로."""
+    """결과 폴더 (변경 후 폴더의 바로 상위 폴더 기준).
+
+    지정 안 함 → <상위>/CIA_Result_<변경 후 폴더 이름>, 상대 경로 → <상위>/경로, 절대 경로 → 그대로.
+    변경 후 폴더가 드라이브 루트처럼 상위가 없으면 변경 후 폴더 안에 만든다.
+    """
+    new_dir = Path(new_dir).resolve()
+    base = new_dir.parent if new_dir.parent != new_dir else new_dir
     if not out:
-        return Path(new_dir) / DEFAULT_OUT
+        return base / f"{DEFAULT_OUT}_{new_dir.name}" if new_dir.name else base / DEFAULT_OUT
     p = Path(out)
-    return p if p.is_absolute() else Path(new_dir) / p
+    return p if p.is_absolute() else base / p
 
 
 def prepare_out(out: Path) -> None:
@@ -889,7 +896,7 @@ def run(args) -> int:
         prepare_out(out)
     except OSError as e:
         log(f"오류: 결과 폴더를 만들 수 없습니다: {out} ({e})")
-        log("      변경 후 폴더에 쓸 수 없으면 -o 로 다른 위치의 절대 경로를 지정하세요.")
+        log("      그 위치에 쓸 수 없으면 -o 로 다른 위치의 절대 경로를 지정하세요.")
         return 1
     log(f"결과 폴더: {out}")
     exclude = list(args.exclude or [])
@@ -1050,7 +1057,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("old_dir", help="변경 전 프로젝트 폴더")
     ap.add_argument("new_dir", help="변경 후 프로젝트 폴더")
     ap.add_argument("-o", "--out", default=None,
-                    help="결과 폴더 (기본: <변경 후 폴더>/CIA_Result). 상대 경로는 변경 후 폴더 아래, 절대 경로는 그대로")
+                    help="결과 폴더 (기본: 변경 후 폴더의 상위 폴더/CIA_Result_<변경 후 폴더 이름>). "
+                         "상대 경로는 그 상위 폴더 아래, 절대 경로는 그대로")
     ap.add_argument("--scope", choices=["all", "changed"], default="all",
                     help="all: 전체 *.c 분석 (기본, 파일 간 영향 포함) / changed: 변경된 .c 와 변경 헤더를 쓰는 .c 만 (빠름)")
     ap.add_argument("--exclude", action="append", metavar="GLOB", help="제외할 파일·폴더 패턴 (예: 'test/*', '*_stub.c')")

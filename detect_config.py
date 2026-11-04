@@ -21,7 +21,7 @@
   5. 제외 폴더      SAMPLECODE·example·demo 처럼 예제 코드 폴더
 
 사용 예)
-  python detect_config.py "S:\\...\\26A10" "S:\\...\\26A22"            # 결과: <26A22>\\CIA_Result\\cia_config.json, run_auto.ps1
+  python detect_config.py "S:\\...\\26A10" "S:\\...\\26A22"            # 결과: S:\\...\\CIA_Result_26A22\\cia_config.json, run_auto.ps1
   python folder_impact.py 변경전 변경후 -o result --auto-config        # 분석 전에 같은 탐지를 자동으로 수행
 
 확신도가 '낮음'인 결정(예: 보드 리비전을 근거 없이 첫 번째로 고른 경우)은 반드시 실제 빌드 설정과 확인하세요.
@@ -714,7 +714,8 @@ def main(argv=None) -> int:
                     help="프로젝트 밖에서 헤더를 찾을 위치 (MCAL·BSW·컴파일러 include 폴더, 여러 번 가능)")
     ap.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 4)
     ap.add_argument("--result", default=None,
-                    help="결과 폴더 (기본: <변경 후 폴더>/CIA_Result). 상대 경로는 변경 후 폴더 아래, 절대 경로는 그대로. "
+                    help="결과 폴더 (기본: 변경 후 폴더의 상위 폴더/CIA_Result_<변경 후 폴더 이름>). 상대 경로는 그 상위 폴더 아래, "
+                         "절대 경로는 그대로. "
                          "cia_config.json·run_auto.ps1·메모리 클래스 헤더도 여기에 만들고, 실행 스크립트의 분석 결과도 여기에 쓴다")
     ap.add_argument("-o", "--out", default="cia_config.json", help="결과 JSON 이름 (기본 cia_config.json, 결과 폴더 안)")
     ap.add_argument("--ps1", default="run_auto.ps1", help="만들 실행 스크립트 이름 (기본 run_auto.ps1, 결과 폴더 안)")

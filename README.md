@@ -356,7 +356,7 @@ CWE 분류는 기본으로 표시하지 않으며, `--cwe` 를 주면 각 항목
 결정마다 근거와 확신도(높음·중간·낮음)를 남기고, '낮음'은 보고서 경고와 '분석 근거 및 범위' 탭에 표시합니다.
 
 ```powershell
-python detect_config.py "변경전폴더" "변경후폴더"            # <변경후폴더>\CIA_Result 에 cia_config.json, run_auto.ps1 생성 (확인 후 실행)
+python detect_config.py "변경전폴더" "변경후폴더"            # <상위폴더>\CIA_Result_<변경후폴더이름> 에 cia_config.json, run_auto.ps1 생성 (확인 후 실행)
 python folder_impact.py "변경전폴더" "변경후폴더" -o result --scope changed --auto-config   # 탐지 후 바로 분석
 python folder_impact.py "변경전폴더" "변경후폴더" -o result --scope changed --auto-config --search "S:\MCAL" --search "C:\ghs\comp_201754"
                                                     # 프로젝트 밖 헤더(MCAL·BSW·컴파일러 include)도 찾기
@@ -368,16 +368,17 @@ python folder_impact.py "변경전폴더" "변경후폴더" -o result --scope ch
 ## 결과 폴더 위치 (folder_impact.py · detect_config.py · auto_include.py)
 
 모든 산출물(report.html, summary.md/json, impact/, security/, deps/, sil/, explore/, cia_config.json, run_auto.ps1,
-cia_memclass_auto.h)은 **변경 후(NEW) 폴더 안**에 만듭니다.
+cia_memclass_auto.h)은 **변경 후(NEW) 폴더의 바로 상위 폴더**에 만듭니다. 예) NEW 가 `S:\Proj\26A22` 이면:
 
 | `-o` (detect_config.py 는 `--result`) | 결과 폴더 |
 |---|---|
-| 지정 안 함 | `<변경 후 폴더>\CIA_Result` |
-| 상대 경로 (예: `-o result_26A22`) | `<변경 후 폴더>\result_26A22` |
-| 절대 경로 (예: `-o D:\reports\26A22`) | 그 경로 그대로 (변경 후 폴더에 쓸 수 없을 때) |
+| 지정 안 함 | `S:\Proj\CIA_Result_26A22` |
+| 상대 경로 (예: `-o result_26A22`) | `S:\Proj\result_26A22` |
+| 절대 경로 (예: `-o D:\reports\26A22`) | 그 경로 그대로 (상위 폴더에 쓸 수 없을 때) |
 
-결과 폴더에는 표식 파일 `.cia_output` 을 두어, 그 안의 파일(메모리 클래스 헤더, KLEE 하네스 .c 등)은 다음 실행에서
-소스로 읽거나 '추가된 파일'로 세지 않습니다. 결과가 들어 있는 변경 후 폴더를 다음 비교의 변경 전 폴더로 써도 같습니다.
+기본 이름에 NEW 폴더 이름을 붙여, 같은 상위 폴더에서 여러 버전을 비교해도 결과가 서로 덮어쓰지 않습니다.
+결과 폴더에는 표식 파일 `.cia_output` 을 두어, 결과 폴더가 분석 대상 폴더 안에 놓이더라도 그 안의 파일(메모리 클래스 헤더,
+KLEE 하네스 .c 등)은 소스로 읽거나 '추가된 파일'로 세지 않습니다.
 
 ## 테스트
 
