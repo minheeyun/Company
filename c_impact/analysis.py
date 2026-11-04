@@ -481,7 +481,7 @@ def run_analysis(old: Program, new: Program, cfg: BuildConfig, *, k: int = 2, en
     sec = analyze_security(old, new, cs, hits_new, hits_old, lines, rules, symbolic=symbolic,
                            sym_paths=sym_paths, sym_budget=sym_budget, cwe=cwe)
     risks = sec["findings"]
-    internal = {"cpg": sec.pop("_cpg_new"), "old": old, "new": new,
+    internal = {"cpg": sec.pop("_cpg_new"), "old": old, "new": new, "cs": cs,
                 "sinks": {id(f): (f.get("_sink"), f.get("_node")) for f in risks}}
     strip_internal(risks)
 

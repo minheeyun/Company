@@ -69,3 +69,10 @@ security_checks:
     label: "보안 상태 전이·NVM 보안 상태"
     cwe: CWE-840
     patterns: [SecurityState, SecState, LockState, Tamper, ConfigurationLock, DebugLock]
+
+# 변경점 검토 체크리스트(4-2 오류 처리, 4-3 카운터, 7-2 타이머, 4-1 초기화 함수, 7-3 보호 구간, 8-2 기능 스위치)에서
+# 쓰는 이름 패턴(정규식, 대소문자 무시). 프로젝트 명명 규칙에 맞게 고치세요. 지정하지 않은 항목은 내장 기본값을 씁니다.
+review_patterns:
+  error_call: "(Det_Report|Dem_|ReportError|SetEventStatus|ErrorStatus|Reset|Recover|Error|Fault|Abort|Shutdown|SafeState|FailSafe|Mcu_PerformReset|WdgM_|Fail)"
+  counter: "(cnt|count|counter|retry|fail|debounce|attempt)"
+  timer: "(timer|tmr|tick|_tm\\b|_tm[A-Z_\\[]|time|delay|timeout|period)"

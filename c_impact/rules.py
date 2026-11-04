@@ -85,6 +85,8 @@ class Rules:
                              for s in self.sinks if s.get("functions")]
         if self.length_calls:
             self.enabled_kinds.add("length")
+        # 변경점 검토용 이름 패턴 (review.DEFAULT_PATTERNS 를 덮어씀): error_call, counter, timer, init_func, critical, feature_switch
+        self.review_patterns = {k: v for k, v in (data.get("review_patterns") or {}).items() if isinstance(v, str)}
         self._check_res = [(c, re.compile("|".join(re.escape(p) for p in c.get("patterns") or ["^$"]), re.I))
                            for c in self.checks]
 

@@ -102,7 +102,16 @@ def compute_changes(old: Program, new: Program) -> ChangeSet:
             olds, news = a[i1:i2], b[j1:j2]
             pairs, used = [], set()
             for o in olds:
-                match = next((n for n in news if n.id not in used and n.kind == o.kind), None)
+                # 같은 종류 중 가장 비슷한 문장과 짝짓는다 (분기가 끼어들어도 엉뚱한 문장끼리 '수정'으로 묶이지 않게)
+                so = _plain_sig(o)
+                best, score = None, 0.0
+                for n in news:
+                    if n.id in used or n.kind != o.kind:
+                        continue
+                    r = difflib.SequenceMatcher(None, so, _plain_sig(n), autojunk=False).ratio()
+                    if r > score:
+                        best, score = n, r
+                match = best if best is not None and (score >= 0.45 or len(olds) == len(news) == 1) else None
                 if match is not None:
                     used.add(match.id)
                 pairs.append((o, match))
@@ -120,9 +129,35 @@ def compute_changes(old: Program, new: Program) -> ChangeSet:
             for n in news:
                 if n.id not in used:
                     _add_node_change(cs, "new", "added", new, n)
+    _reordered(cs, old, new)
     _global_changes(cs, old, new)
     _type_changes(cs, old, new)
     return cs
+
+
+def _reordered(cs: ChangeSet, old: Program, new: Program):
+    """같은 함수에서 삭제된 문장과 추가된 문장이 같으면 '위치 이동'(실행 순서 변경)으로 바꾼다."""
+    removed = [c for c in cs.changes if c.kind == "removed" and c.version == "old"]
+    added = [c for c in cs.changes if c.kind == "added" and c.version == "new"]
+    used: set[int] = set()
+    drop: set[int] = set()
+    extra = []
+    for r in removed:
+        o = old.nodes[r.node]
+        key = _sig_no_depth(o)
+        for a in added:
+            if id(a) in used or a.func != r.func:
+                continue
+            n = new.nodes[a.node]
+            if _sig_no_depth(n) == key and o.dead == n.dead:
+                used.add(id(a))
+                drop |= {id(r), id(a)}
+                det = "같은 문장이 다른 위치로 이동 (실행 순서 또는 감싸는 조건이 바뀜)"
+                extra.append(Change("old", "moved", o.id, r.func, o.file, o.line, o.text, n.text, n.id, det))
+                extra.append(Change("new", "moved", n.id, a.func, n.file, n.line, n.text, o.text, o.id, det))
+                break
+    if drop:
+        cs.changes = [c for c in cs.changes if id(c) not in drop] + extra
 
 
 def _add_node_change(cs: ChangeSet, version: str, kind: str, prog: Program, n: Node):

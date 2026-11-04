@@ -44,6 +44,7 @@ from pathlib import Path
 from c_impact import deps as deps_mod
 from c_impact import html_report, report
 from c_impact import external
+from c_impact import review as review_mod
 from c_impact.analysis import load_programs, public, run_analysis
 from c_impact.rules import load_rules
 from c_impact.frontend import BuildConfig, load_compile_commands
@@ -322,7 +323,7 @@ def _risk_section(r: dict, num: str) -> list[str]:
     eng = sec.get("engine", {})
     out = ["", f"### {num}. 변경 기반 보안 위험 (CPG + Taint + Symbolic Execution)", "",
            "변경된 함수의 위험 연산을 먼저(관계 '직접'), 다른 함수로 전파된 위험은 값 전달·자료형 변경처럼 의존 경로가 분명할 때만(관계 '전파') "
-           "표시합니다. 이미 있던 위험(기존 존재)과 해결된 위험은 이 표에서 뺐습니다. 함수 호출·변수 읽기쓰기 변화는 3절 '의존성 변화'(영향 분석)이며 "
+           "표시합니다. 이미 있던 위험(기존 존재)과 해결된 위험은 이 표에서 뺐습니다. 함수 호출·변수 읽기쓰기 변화는 5절 '의존성 변화'(영향 분석)이며 "
            "보안 위험으로 보지 않습니다. **보안 위험** = 안전 속성 위반이 증명된 것, **판정 보류** = 위반을 증명하지 못한 후보.", "",
            "- 검증 수준: **기호 실행 반례 발견**(z3 가 위반 입력을 찾음) > **정적 규칙 위반**(상수·바뀐 조건 구간으로 증명) > "
            "**Taint 경로 발견**(외부 입력이 닿음, 위반 미증명) > **검증 불충분**",
@@ -377,7 +378,7 @@ def _impact_sections(r: dict) -> list[str]:
         g["samples"] = [f"`{_c(_s(c['old']))}` → `{_c(_s(c['new']))}`" if c["old"] and c["new"]
                         else f"`{_c(_s(c['new'] or c['old']))}`" for c in g["changes"][:2]]
 
-    out += ["### 2-1. 변경된 함수별 요약", "",
+    out += ["### 4-1. 변경된 함수별 요약", "",
             "| 변경 함수 | 파일 | 변경 내용 | 영향 함수 | 영향 변수·출력 | 보안 위험 (신규·보류) | 우선 확인할 영향 |", "|---|---|---|---|---|---|---|"]
     for (func, file), g in sorted(groups.items(), key=lambda x: (x[0][1], x[0][0])):
         kinds = " · ".join(f"{k} {v}" for k, v in g["kinds"].items())
@@ -388,11 +389,11 @@ def _impact_sections(r: dict) -> list[str]:
         rk = " · ".join(p for p in ((f"**신규 {nn}**" if nn else ""), (f"보류 {npd}" if npd else "")) if p) or "-"
         out.append(f"| `{_c(func)}` | {_c(file)} | {kinds}<br>{'<br>'.join(g['samples'])} | {len(g['funcs'])} | "
                    f"{len(g['items'])} | {rk} | {tops} |")
-    out += _risk_section(r, "2-2")
+    out += _risk_section(r, "4-2")
 
     key_items = _ranked(r["items"], shared)
     n_key = sum(1 for it in r["items"] if _priority(it, shared) < 4)
-    out += ["", "### 2-3. 우선 확인할 영향 (외부 출력 → 레지스터 → 여러 진입점 공유 변수 → 반환값)", ""]
+    out += ["", "### 4-3. 우선 확인할 영향 (외부 출력 → 레지스터 → 여러 진입점 공유 변수 → 반환값)", ""]
     if key_items:
         counts = defaultdict(int)
         for it in key_items:
@@ -420,13 +421,13 @@ def _impact_sections(r: dict) -> list[str]:
 
     notes = r["excluded"].get("no_effect_changes") or []
     if notes:
-        out += ["", "### 2-4. 동작 변화 없음으로 본 변경", "",
+        out += ["", "### 4-4. 동작 변화 없음으로 본 변경", "",
                 "바뀌었지만 동작에는 영향이 없다고 보고 영향 분석 시작점에서 뺀 변경입니다.", ""]
         out += [f"- {_c(_s(x, 400))}" for x in notes[:20]]
         if len(notes) > 20:
             out.append(f"- 외 {len(notes) - 20}개 (상세 보고서 '분석에서 제외되거나 가정한 구성' 절)")
 
-    out += ["", f"### 2-{5 if notes else 4}. 변경 위치", "",
+    out += ["", f"### 4-{5 if notes else 4}. 변경 위치", "",
             "| 위치 | 함수 | 종류 | 변경 전 → 변경 후 | 비고 |", "|---|---|---|---|---|"]
     for c in changes[:60]:
         body = f"`{_c(_s(c['old']))}` → `{_c(_s(c['new']))}`" if c["old"] and c["new"] else f"`{_c(_s(c['new'] or c['old']))}`"
@@ -440,6 +441,115 @@ def _impact_sections(r: dict) -> list[str]:
 def _s(text: str, n: int = 160) -> str:
     text = " ".join(str(text).split())
     return text if len(text) <= n else text[: n - 1] + "…"
+
+
+_CLS_MARK = {"위반 경로 확인": "⛔", "위험 후보 탐지": "⚠", "검증자 확인 필요": "❓", "분석 불충분": "…", "변경 사실 확인": "✓",
+             "해당 변경 없음": "–"}
+
+
+def _fn_key(func: str, file: str) -> tuple:
+    return (func or "", file or "")
+
+
+def _review_sections(s: dict) -> list[str]:
+    """① 무엇이 변경 → ② 코드 위험·의존성 변화 → ③ 검증자 확인 사항 (함수별), 그리고 검토 항목 체크리스트."""
+    rv = s.get("review")
+    r = s.get("analysis")
+    if not rv or r is None:
+        return []
+    out = ["", "## 2. 변경 검토 결과 (① 무엇이 변경되었나 → ② 어떤 위험·의존성 변화가 있나 → ③ 검증자가 무엇을 확인해야 하나)", "",
+           "결과 분류: " + " · ".join(f"{_CLS_MARK[c['name']]} **{c['name']}**({c['desc']})" for c in rv["classes"]), ""]
+    items_by_id = {it["id"]: it for it in rv["items"]}
+    fnd = defaultdict(list)
+    for f in rv["findings"]:
+        fnd[_fn_key(f["func"], f["file"])].append(f)
+    risks = defaultdict(list)
+    for x in r.get("risks", []):
+        if x.get("status_code") in ("NEW_REGRESSION", "PENDING"):
+            risks[_fn_key(x["func"], x["file"])].append(x)
+    deps = {row["func"]: row for row in (s.get("deps_diff") or {}).get("functions", [])}
+    changes, groups = change_groups(r)
+    order = sorted(groups.items(), key=lambda x: (0 if x[0][1].endswith(".c") else 1, x[0][1], x[0][0]))
+    for (func, file), g in order:
+        key = _fn_key(func, file)
+        fs = fnd.get(key, [])
+        rk = risks.get(key, [])
+        out += [f"### `{_c(func)}` — {_c(file)}", ""]
+        out.append("**① 무엇이 변경되었나**")
+        sem = {f["line"]: f for f in fs if f["item"] == "1-3"}
+        n_sem = 0
+        for c in g["changes"][:12]:
+            body = f"`{_c(_s(c['old'], 70))}` → `{_c(_s(c['new'], 70))}`" if c["old"] and c["new"] else f"`{_c(_s(c['new'] or c['old'], 90))}`"
+            extra = ""
+            if c["line"] in sem and c["kind"] == "changed":
+                extra = " — 의미 차이: " + _c(_s(sem[c["line"]]["summary"].split("`: ", 1)[-1], 90))
+                n_sem += 1
+            elif c.get("detail") and c["detail"] not in ("추가된 문장", "삭제된 문장"):
+                extra = " — " + _c(_s(c["detail"], 90))
+            out.append(f"- {c['line']}행 {report.KIND_KO.get(c['kind'], c['kind'])}: {body}{extra}")
+        if len(g["changes"]) > 12:
+            out.append(f"- … 외 {len(g['changes']) - 12}곳")
+        out += ["", "**② 확인된 코드 위험과 의존성 변화**"]
+        lines2 = []
+        for x in rk:
+            lines2.append(f"- {_CLS_MARK['위반 경로 확인' if x['state'] == 'violated' else '위험 후보 탐지']} [{x['id']}] "
+                          f"{x['level']} · {x['status']} · {x['kind_label']} `{_c(_s(x['expr'], 60))}` — {x.get('verification_level', '')}")
+        for f in fs:
+            if f["class"] in ("위반 경로 확인", "위험 후보 탐지") and not f["summary"].startswith("["):
+                lines2.append(f"- {_CLS_MARK[f['class']]} ({f['item']}) {_c(_s(f['summary'], 130))}")
+        row = deps.get(func)
+        if row:
+            parts = []
+            for k, ko in (("calls", "호출"), ("reads", "읽기"), ("writes", "쓰기")):
+                if row.get(k + "_added"):
+                    parts.append(f"{ko} +{', '.join(row[k + '_added'][:4])}")
+                if row.get(k + "_removed"):
+                    parts.append(f"{ko} −{', '.join(row[k + '_removed'][:4])}")
+            if row["status"] != "변경":
+                parts.append(f"함수 {row['status']}")
+            lines2.append(f"- ✓ 의존성 변화 (영향 분석, 취약점 아님): {_c(' · '.join(parts))}")
+        out += lines2 or ["- 확인된 위험·의존성 변화 없음"]
+        out += ["", "**③ 검증자가 추가로 확인할 것**"]
+        qs = [f for f in fs if f["class"] in ("검증자 확인 필요", "위험 후보 탐지", "위반 경로 확인", "분석 불충분") and f["reviewer"]
+              and f["item"] != "1-3"]
+        qs.sort(key=lambda f: (["위반 경로 확인", "위험 후보 탐지", "검증자 확인 필요", "분석 불충분"].index(f["class"]), f["item"]))
+        if n_sem:
+            out.append(f"- [ ] ❓ **1-3 의도한 동작 변경인지** — ①의 의미 차이 {n_sem}곳(연산자·상수·인자 등)이 의도한 동작 변경인지 변경 요청과 대조하세요.")
+        seen = set()
+        for f in qs[:15]:
+            k = (f["item"], f["reviewer"])
+            if k in seen:
+                continue
+            seen.add(k)
+            focus = items_by_id[f["item"]]["reviewer_focus"]
+            out.append(f"- [ ] {_CLS_MARK[f['class']]} **{f['item']} {focus}** — {_c(_s(f['reviewer'], 160))}"
+                       + (f" <br>근거: {_c(_s(f['summary'], 120))}" if f["item"] not in ("1-3",) else ""))
+        for x in rk:
+            if x.get("verification"):
+                out.append(f"- [ ] {_CLS_MARK['위반 경로 확인' if x['state'] == 'violated' else '위험 후보 탐지']} **[{x['id']}] 재현·검증** — "
+                           f"{_c(_s(x['verification'], 160))}")
+        if out[-1] == "**③ 검증자가 추가로 확인할 것**":
+            out.append("- 추가로 확인할 사항 없음 (변경 사실만 확인됨)")
+        out.append("")
+    placed = {k for k in (_fn_key(func, file) for (func, file) in groups)}
+    glob = [f for f in rv["findings"] if _fn_key(f["func"], f["file"]) not in placed]
+    if glob:
+        out += ["### 파일·전역 수준 (매크로·헤더·상태 변수·실행 모델)", ""]
+        for f in glob[:30]:
+            out.append(f"- {_CLS_MARK[f['class']]} ({f['item']}) {_c(_s(f['summary'], 140))}" + (f" — {_c(f['file'])}" if f["file"] else "")
+                       + (f" <br>검증자: {_c(_s(f['reviewer'], 140))}" if f["reviewer"] and f["class"] != "변경 사실 확인" else ""))
+        out.append("")
+
+    out += ["## 3. 검토 항목 체크리스트", "",
+            "자동 분석으로 검토한 항목과 결과입니다. '해당 변경 없음'은 검토했지만 해당하는 변경이 없었다는 뜻입니다.", "",
+            "| 번호 | 영역 | 자동 분석으로 확인한 내용 | 결과 | 분류별 건수 | 검토한 내용 | 검증자가 판단할 내용 |",
+            "|---|---|---|---|---|---|---|"]
+    for it in rv["items"]:
+        cnt = " · ".join(f"{_CLS_MARK[k]}{v}" for k, v in it["counts"].items() if v) or "-"
+        out.append(f"| {it['id']} | {it['group']} | {_c(it['title'])} | {_CLS_MARK.get(it['overall'], '')} {it['overall']} | {cnt} | "
+                   f"{_c(_s('; '.join(it['notes']), 160))} | {_c(it['reviewer_focus'])} |")
+    out += ["", "적용 알고리즘: " + " / ".join(f"{g['name']}: {g['algorithms']}" for g in rv["groups"]), ""]
+    return out
 
 
 def render_summary(s: dict) -> str:
@@ -467,7 +577,8 @@ def render_summary(s: dict) -> str:
                 + "; ".join(f"`{k}`: {', '.join(v)}" for k, v in list(s["duplicate_headers"].items())[:10])]
 
     r = s.get("analysis")
-    out += ["", "## 2. 변경 영향 요약", ""]
+    out += _review_sections(s)
+    out += ["", "## 4. 변경 영향 요약", ""]
     if r is None:
         out.append("C 소스·헤더 변경이 없어 분석하지 않았습니다.")
     else:
@@ -480,7 +591,7 @@ def render_summary(s: dict) -> str:
 
     d = s.get("deps_diff")
     if d is not None:
-        out += ["", "## 3. 함수·변수 의존성 변화 (읽기·쓰기·호출 — 영향 분석, 취약점 아님)", "",
+        out += ["", "## 5. 함수·변수 의존성 변화 (읽기·쓰기·호출 — 영향 분석, 취약점 아님)", "",
                 "변경 전후 버전 각각의 함수별 읽기·쓰기 변수와 호출 대상을 비교한 결과입니다. "
                 "전체 표: [`deps/deps_new.md`](deps/deps_new.md), [`deps/deps_old.md`](deps/deps_old.md)", ""]
         if d["functions"]:
@@ -504,10 +615,10 @@ def render_summary(s: dict) -> str:
 
     ex = s.get("explore")
     sil = s.get("sil")
-    sec = 4
+    sec = 6
     if ex or sil:
-        out += ["", "## 4. 실행 확인", ""]
-        sec = 5
+        out += ["", "## 6. 실행 확인", ""]
+        sec = 7
     if ex:
         out.append(f"- 자동 탐색: 케이스 {ex['cases']}개 중 차이 {ex['diff_cases']}개 — [`explore/explore_report.md`](explore/explore_report.md)")
         for lab, w in sorted(ex["witnesses_input_only"].items()):
@@ -543,6 +654,7 @@ def html_payload(s: dict) -> dict:
                   for rel in ch[key]],
         "file_counts": {k: len(v) for k, v in ch.items()},
         "deps": s.get("deps_diff"),
+        "review": s.get("review"),
         "explore": s.get("explore"), "sil": s.get("sil"),
         "analysis": None,
     }
@@ -786,6 +898,10 @@ def run(args) -> int:
         t_old = deps_mod.dependency_table(old, args.entry, args.isr)
         t_new = deps_mod.dependency_table(new, args.entry, args.isr)
         summary["deps_diff"] = deps_diff(t_old, t_new)
+        log("    변경점 검토 체크리스트...")
+        internal = analysis.get("_internal") or {}
+        summary["review"] = review_mod.review(old, new, internal["cs"], analysis, summary["deps_diff"],
+                                              changes, cfg.defines, getattr(rules, "review_patterns", None))
         dd = out / "deps"
         dd.mkdir(exist_ok=True)
         (dd / "deps_new.md").write_text(deps_mod.render_md(t_new, transitive=True), encoding="utf-8")

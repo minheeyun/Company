@@ -128,6 +128,12 @@ table.ct td { padding: 3px 10px 3px 0; border: 0; }
 .rcard { border: 1px solid var(--line); border-left: 4px solid var(--p1); border-radius: 6px; padding: 8px 12px; margin: 6px 0; background: var(--bg); }
 .rcard.new { border-left-color: var(--p0); }
 .rf div { margin-top: 2px; }
+h4.step { margin: 12px 0 6px; padding: 4px 8px; background: var(--accent-bg); color: var(--accent); border-radius: 6px; font-size: 13px; }
+.rv { border-left: 3px solid var(--line); padding: 4px 10px; margin: 4px 0; }
+.rv-s { margin-top: 2px; }
+ul.ql { list-style: none; padding-left: 4px; margin: 4px 0; }
+ul.ql li.q { margin: 6px 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+ul.ql li.q input { vertical-align: middle; }
 #theme { margin-left: auto; border: 0; background: none; color: var(--muted); cursor: pointer; font: inherit; padding: 10px; }
 @media (max-width: 700px) { main { padding: 14px 16px 40px; } header { padding: 14px 16px 10px; } .toolbar input[type=search] { min-width: 0; width: 100%; } }
 </style>
@@ -423,12 +429,12 @@ var MODES = [
 function model() {
   var files = {}, order = [];
   function file(name) {
-    if (!files[name]) { files[name] = {file: name, status: "", funcs: {}, forder: []}; order.push(name); }
+    if (!files[name]) { files[name] = {file: name, status: "", funcs: {}, forder: [], review: []}; order.push(name); }
     return files[name];
   }
   function fn(fname, func) {
     var f = file(fname);
-    if (!f.funcs[func]) { f.funcs[func] = {func: func, file: fname, changes: [], direct: [], prop: [], deps: null, lo: 1e9, hi: 0}; f.forder.push(func); }
+    if (!f.funcs[func]) { f.funcs[func] = {func: func, file: fname, changes: [], direct: [], prop: [], deps: null, review: [], lo: 1e9, hi: 0}; f.forder.push(func); }
     return f.funcs[func];
   }
   (D.files || []).forEach(function (x) { file(x.file).status = x.status; });
@@ -439,6 +445,16 @@ function model() {
       else { var f = files[r.file] && files[r.file].funcs[r.func] ? files[r.file].funcs[r.func] : fn(r.origin_file, r.origin); f.direct.push(r); }
     });
   }
+  var globalReview = [];
+  ((D.review || {}).findings || []).forEach(function (f) {
+    if (f.file && files[f.file] && files[f.file].funcs[f.func]) files[f.file].funcs[f.func].review.push(f);
+    else if (f.file && files[f.file]) files[f.file].review.push(f);
+    else {
+      var hit = null;
+      order.forEach(function (n) { if (!hit && files[n].funcs[f.func]) hit = files[n].funcs[f.func]; });
+      if (hit) hit.review.push(f); else globalReview.push(f);
+    }
+  });
   var deps = {};
   ((D.deps || {}).functions || []).forEach(function (row) { deps[row.func] = row; });
   order.forEach(function (n) { files[n].forder.forEach(function (k) { var b = files[n].funcs[k]; if (deps[k]) { b.deps = deps[k]; deps[k].used = true; } }); });
@@ -447,7 +463,26 @@ function model() {
     var cx = /\.c$/i.test(x) ? 0 : 1, cy = /\.c$/i.test(y) ? 0 : 1;
     return cx - cy || (x < y ? -1 : x > y ? 1 : 0);
   });
-  return {files: files, order: order, restDeps: restDeps};
+  return {files: files, order: order, restDeps: restDeps, globalReview: globalReview};
+}
+
+var CLS = {"위반 경로 확인": ["t0", "⛔"], "위험 후보 탐지": ["t1", "⚠"], "검증자 확인 필요": ["t2", "❓"], "분석 불충분": ["t4", "…"], "변경 사실 확인": ["t3", "✓"], "해당 변경 없음": ["t4", "–"]};
+function cls(name) { var c = CLS[name] || ["t4", ""]; return el("span", {class: "tag " + c[0], text: c[1] + " " + name}); }
+var ITEM = {};
+((D.review || {}).items || []).forEach(function (it) { ITEM[it.id] = it; });
+function reviewLine(f, withQ) {
+  var it = ITEM[f.item] || {};
+  var kids = [cls(f["class"]), " ", el("b", {text: f.item + " "}), el("span", {class: "small muted", text: (it.title || "") + "  "}), el("div", {class: "rv-s", text: f.summary})];
+  var more = [];
+  if (f.evidence && f.evidence.length) more.push(el("div", {class: "small"}, [el("span", {class: "muted", text: "근거 "}), f.evidence.join(" · ")]));
+  if (f.refs && f.refs.length) more.push(el("div", {class: "small"}, [el("span", {class: "muted", text: "관련 위치 "}), f.refs.slice(0, 10).join(" · ")]));
+  if (more.length) kids.push(el("details", {class: "more-d"}, [el("summary", {text: "근거·관련 위치"})].concat(more)));
+  return el("div", {class: "rv"}, kids);
+}
+function questionLine(f) {
+  var it = ITEM[f.item] || {};
+  return el("li", {class: "q"}, [el("input", {type: "checkbox"}), " ", cls(f["class"]), " ", el("b", {text: f.item + " " + (it.reviewer_focus || "")}),
+    el("div", {class: "small", text: f.reviewer}), el("div", {class: "small muted", text: "근거: " + f.summary})]);
 }
 
 function riskVisible(r, st) {
@@ -545,39 +580,65 @@ addTab("review", "변경 검토", null, function (p) {
         if (st.q && (fname + " " + k).toLowerCase().indexOf(st.q) < 0) return;
         var dv = b.direct.filter(function (r) { return riskVisible(r, st); });
         var pv = b.prop.filter(function (r) { return riskVisible(r, st); });
-        if (st.mode !== "all" && !dv.length && !pv.length) return;
+        var rvHot = b.review.some(function (f) { return f["class"] === "위반 경로 확인" || f["class"] === "위험 후보 탐지"; });
+        if (st.mode !== "all" && !dv.length && !pv.length && !(st.mode === "priority" && rvHot)) return;
         var badges = [];
         var nn = b.direct.concat(b.prop).filter(function (r) { return r.status_code === "NEW_REGRESSION"; }).length;
         var np = b.direct.concat(b.prop).filter(function (r) { return r.status_code === "PENDING"; }).length;
         if (nn) badges.push(el("span", {class: "sev c", text: "신규 위험 " + nn}));
         if (np) badges.push(el("span", {class: "sev u", text: "판정 보류 " + np}));
         if (b.deps) badges.push(el("span", {class: "tag t3", text: "의존성 변화"}));
+        var nq = b.review.filter(function (f) { return f["class"] !== "변경 사실 확인"; }).length;
+        if (nq) badges.push(el("span", {class: "tag t2", text: "검증자 확인 " + nq}));
         var range = b.changes.length ? (b.lo === b.hi ? "라인 " + b.lo : "라인 " + b.lo + "–" + b.hi) : "";
         var kids = [el("summary", {}, [el("b", {}, [code(k)]), " ", el("span", {class: "small muted", text: range + (b.changes.length ? " · 변경점 " + b.changes.length + "곳" : "")}), " "].concat(badges.map(function (x) { return frag([x, " "]); })))];
+        var sem = {};
+        b.review.forEach(function (f) { if (f.item === "1-3") sem[f.line] = f.summary.split("`: ").slice(-1)[0]; });
+        kids.push(el("h4", {class: "step", text: "① 무엇이 변경되었나"}));
         if (b.changes.length) {
-          kids.push(el("h4", {text: "변경점"}));
-          kids.push(changeRows(b.changes.slice(0, 8)));
-          if (b.changes.length > 8) kids.push(el("details", {class: "more-d"}, [el("summary", {text: "나머지 변경점 " + (b.changes.length - 8) + "곳"}), changeRows(b.changes.slice(8))]));
-        }
-        if (dv.length) { kids.push(el("h4", {text: "이 함수의 보안 위험 · 후보 (직접 연결)"})); dv.forEach(function (r) { kids.push(riskCard(r)); }); }
-        if (pv.length) { kids.push(el("h4", {text: "다른 함수로 전파된 위험 (의존 경로 확보)"})); pv.forEach(function (r) { kids.push(riskCard(r)); }); }
-        if (b.deps && (st.mode === "all" || dv.length || pv.length)) {
-          kids.push(el("h4", {text: "의존성 변화 (영향 분석 — 취약점 아님)"}));
-          kids.push(depBlock(b.deps));
-        }
+          var withSem = function (list) { return changeRows(list.map(function (c) { return c.kind === "수정" && sem[c.line] ? Object.assign({}, c, {detail: "의미 차이: " + sem[c.line] + (c.detail ? " · " + c.detail : "")}) : c; })); };
+          kids.push(withSem(b.changes.slice(0, 8)));
+          if (b.changes.length > 8) kids.push(el("details", {class: "more-d"}, [el("summary", {text: "나머지 변경점 " + (b.changes.length - 8) + "곳"}), withSem(b.changes.slice(8))]));
+        } else kids.push(el("div", {class: "small muted", text: "이 함수 안의 변경점 없음 (다른 함수의 변경이 전파됨)"}));
+        kids.push(el("h4", {class: "step", text: "② 확인된 코드 위험과 의존성 변화"}));
+        var risky = b.review.filter(function (f) { return (f["class"] === "위반 경로 확인" || f["class"] === "위험 후보 탐지") && f.summary.charAt(0) !== "["; });
+        if (dv.length) { kids.push(el("div", {class: "small muted", text: "보안 위험 · 후보 (이 함수와 직접 연결)"})); dv.forEach(function (r) { kids.push(riskCard(r)); }); }
+        if (pv.length) { kids.push(el("div", {class: "small muted", text: "다른 함수로 전파된 위험 (의존 경로 확보)"})); pv.forEach(function (r) { kids.push(riskCard(r)); }); }
+        if (risky.length) { kids.push(el("div", {class: "small muted", text: "검토 항목에서 찾은 결함 후보"})); risky.forEach(function (f) { kids.push(reviewLine(f)); }); }
+        if (b.deps) { kids.push(el("div", {class: "small muted", text: "의존성 변화 (영향 분석 — 취약점 아님)"})); kids.push(depBlock(b.deps)); }
+        if (!dv.length && !pv.length && !risky.length && !b.deps) kids.push(el("div", {class: "small muted", text: "확인된 위험·의존성 변화 없음"}));
+        kids.push(el("h4", {class: "step", text: "③ 검증자가 추가로 확인할 것"}));
+        var order3 = ["위반 경로 확인", "위험 후보 탐지", "검증자 확인 필요", "분석 불충분"];
+        var qs = b.review.filter(function (f) { return order3.indexOf(f["class"]) >= 0 && f.reviewer && f.item !== "1-3"; })
+          .sort(function (x, y) { return order3.indexOf(x["class"]) - order3.indexOf(y["class"]) || (x.item < y.item ? -1 : 1); });
+        var nsem = Object.keys(sem).length;
+        var ql = [];
+        if (nsem) ql.push(questionLine({"class": "검증자 확인 필요", item: "1-3", reviewer: "①의 의미 차이 " + nsem + "곳(연산자·상수·인자 등)이 의도한 동작 변경인지 변경 요청과 대조하세요.", summary: "AST 비교로 찾은 의미 차이"}));
+        qs.forEach(function (f) { ql.push(questionLine(f)); });
+        dv.concat(pv).forEach(function (r) { if (r.verification) ql.push(questionLine({"class": r.state === "violated" ? "위반 경로 확인" : "위험 후보 탐지", item: r.id, reviewer: r.verification, summary: r.kind_label + " " + r.expr})); });
+        kids.push(ql.length ? el("ul", {class: "ql"}, ql) : el("div", {class: "small muted", text: "추가로 확인할 사항 없음 (변경 사실만 확인됨)"}));
         var d = el("details", {class: "fn"}, kids);
-        if (st.mode !== "all" || dv.length || pv.length) d.open = true;
+        if (st.mode !== "all" || dv.length || pv.length || rvHot) d.open = true;
         blocks.push(d);
       });
       if (!blocks.length && !(st.mode === "all" && !st.q)) return;
+      var fileLevel = F.review.length ? el("details", {class: "fn"}, [el("summary", {}, [el("b", {text: "파일 수준 검토 (매크로·헤더·상태 변수 등) "}), el("span", {class: "tag t2", text: F.review.length + "건"})]),
+        el("div", {}, F.review.map(function (f) { return reviewLine(f); })),
+        el("ul", {class: "ql"}, F.review.filter(function (f) { return f["class"] !== "변경 사실 확인" && f.reviewer; }).map(questionLine))]) : null;
       shown++;
       var nRisk = 0;
       F.forder.forEach(function (k) { nRisk += F.funcs[k].direct.concat(F.funcs[k].prop).filter(function (r) { return riskVisible(r, st); }).length; });
       body.appendChild(el("section", {class: "fileblk on"}, [
         el("div", {class: "fh"}, [el("b", {}, [code(fname)]), " ", el("span", {class: "small muted", text: (F.status || "") + " · 변경 함수 " + F.forder.length + "개" + (nRisk ? " · 표시된 위험 " + nRisk + "개" : "")})]),
+        fileLevel,
         blocks.length ? frag(blocks) : el("div", {class: "small muted", text: "함수 단위 변경 없음 (주석·공백·선언만 바뀌었거나, 이 파일을 쓰는 .c 쪽에 변경점이 표시됨)"})
       ]));
     });
+    if (M.globalReview.length) {
+      body.insertBefore(el("section", {class: "fileblk on"}, [el("div", {class: "fh"}, [el("b", {text: "전역 검토 (enum·실행 모델·분석 한계)"})]),
+        el("div", {}, M.globalReview.map(function (f) { return reviewLine(f); })),
+        el("ul", {class: "ql"}, M.globalReview.filter(function (f) { return f["class"] !== "변경 사실 확인" && f.reviewer; }).map(questionLine))]), body.firstChild);
+    }
     if (st.mode === "all" && M.restDeps.length) {
       body.appendChild(el("section", {class: "fileblk on"}, [el("div", {class: "fh"}, [el("b", {text: "변경점 없이 의존성만 바뀐 함수"})]),
         frag(M.restDeps.map(function (row) { return el("details", {class: "fn"}, [el("summary", {}, [code(row.func), " ", el("span", {class: "tag t3", text: "의존성 변화"})]), depBlock(row)]); }))]));
@@ -589,6 +650,32 @@ addTab("review", "변경 검토", null, function (p) {
     if (!shown) body.appendChild(el("p", {class: "muted", text: st.mode === "new" ? "변경으로 새로 생긴 위험이 없습니다. '우선 검토'나 '판정 보류'에서 후보를 확인하세요." : "표시할 항목이 없습니다."}));
   }
   draw();
+});
+
+if (D.review) addTab("checklist", "검토 항목", (D.review.items || []).length, function (p) {
+  var R = D.review;
+  head(p, "검토 항목 체크리스트", "변경점에 대해 자동 분석으로 검토한 항목과 결과입니다. 결과는 적합/부적합이 아니라 아래 다섯 가지로 구분합니다. '해당 변경 없음'은 검토했지만 해당하는 변경이 없었다는 뜻입니다.");
+  p.appendChild(el("div", {class: "box small"}, R.classes.map(function (c) { return el("div", {}, [cls(c.name), " " + c.desc]); })));
+  var tot = R.totals || {};
+  p.appendChild(el("div", {class: "cards"}, R.classes.map(function (c) { return el("div", {class: "card" + (c.name === "위반 경로 확인" && tot[c.name] ? " alert" : "")}, [el("div", {class: "v", text: tot[c.name] || 0}), el("div", {class: "k", text: c.name})]); })));
+  R.groups.forEach(function (g) {
+    var items = R.items.filter(function (it) { return it.group === g.name; });
+    p.appendChild(el("h3", {text: g.id + ". " + g.name}));
+    p.appendChild(el("div", {class: "small muted", text: "적용 알고리즘: " + g.algorithms}));
+    p.appendChild(el("div", {class: "tw", style: "margin:6px 0 14px"}, [el("table", {}, [el("thead", {}, [el("tr", {}, ["번호", "자동 분석으로 확인할 내용", "결과", "분류별 건수", "검토한 내용", "검증자가 추가로 판단할 내용"].map(function (h) { return el("th", {text: h}); }))]),
+      el("tbody", {}, [].concat.apply([], items.map(function (it) {
+        var counts = Object.keys(it.counts).filter(function (k) { return it.counts[k]; }).map(function (k) { return frag([cls(k), " " + it.counts[k] + " "]); });
+        var tr = el("tr", {class: "row" + (it.findings.length ? " click" : "")}, [el("td", {}, [el("b", {text: it.id})]), el("td", {text: it.title}), el("td", {}, [cls(it.overall)]),
+          el("td", {}, counts.length ? counts : ["-"]), el("td", {class: "small", text: it.notes.join(" · ")}), el("td", {class: "small", text: it.reviewer_focus})]);
+        var det = el("tr", {class: "det", style: "display:none"}, [el("td", {colspan: 6}, it.findings.map(function (f) {
+          return el("div", {class: "rv"}, [cls(f["class"]), " ", el("span", {class: "small muted", text: (f.func || "") + (f.file ? " " + f.file + (f.line ? ":" + f.line : "") : "")}),
+            el("div", {class: "rv-s", text: f.summary}), f.reviewer ? el("div", {class: "small"}, [el("b", {text: "검증자: "}), f.reviewer]) : null,
+            (f.evidence || []).length ? el("div", {class: "small muted", text: "근거: " + f.evidence.join(" · ")}) : null]);
+        }))]);
+        tr.addEventListener("click", function () { det.style.display = det.style.display === "none" ? "" : "none"; tr.classList.toggle("open"); });
+        return [tr, det];
+      })))])]));
+  });
 });
 
 if (A) {
