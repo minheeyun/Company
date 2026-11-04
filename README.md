@@ -337,19 +337,27 @@ CWE 분류는 기본으로 표시하지 않으며, `--cwe` 를 주면 각 항목
 
 | 단계 | 근거 |
 |---|---|
-| 컴파일러 | 빌드 파일(*.gpj·*.ewp·.cproject·Makefile·*.mk·*.bat·CMakeLists.txt)의 컴파일러 이름 → 없으면 Compiler.h 폴더 이름 |
+| 컴파일러 | ① 빌드 파일(*.gpj·*.ewp·.cproject·Makefile·*.mk·*.bat·CMakeLists.txt, 프로젝트 폴더와 그 **상위 폴더**)의 컴파일러 이름 → ② 없으면 후보 컴파일러 매크로마다 **분석 대상 파일을 실제로 전처리·파싱해 보고** 오류가 가장 적은 것 → ③ 결과가 같으면 소스의 컴파일러 고유 구문(`#pragma ghs`, `__no_init`, `__mfcr()` …)·링커 파일(*.lsl·*.icf·*.sct) 점수. 어떤 매크로로도 전처리 결과가 같으면 '분석에 영향 없음'(참고)으로 표시 |
 | 컴파일러 매크로 | 계열별 미리 정의 매크로 (GHS `__ghs__`, TASKING `__TASKING__`, IAR `__IAR_SYSTEMS_ICC__` …) |
 | Compiler.h | 여러 개면 컴파일러 계열 폴더 |
 | 메모리 클래스 헤더 | VAR·FUNC·P2VAR 의 memclass 이름을 빈 매크로로 정의 (memclass_shim 과 같은 방식) |
-| 보드·변형 매크로 | 표본 .c 를 실제로 전처리해 `#error` 가 나면 그 `#if/#elif` 사슬에서 선택 (계열 이름 → 빌드 파일 -D → 첫 번째 순), 대안도 기록 |
-| include 경로 | 못 찾은 헤더를 프로젝트에서 찾아 추가, 없으면 '생성 파일 없음'으로 기록 |
+| 보드·변형 매크로 | `#error` 가 나면 그 `#if/#elif` 사슬에서 선택 (계열 이름 → 빌드 파일 -D → 첫 번째 순), 대안도 기록 |
+| 컴파일러 확장 키워드 | 파서가 멈춘 줄의 `__interrupt`, `__far`, `__no_init` 같은 키워드를 `-D 이름=` 으로 지움 (나아지지 않으면 되돌림). IAR 의 `int x @ 0x100;` 은 cpp_filter 가 지움 |
+| include 경로 | 못 찾은 헤더를 프로젝트에서, 그다음 `--search` 위치에서 찾아 추가. 어디에도 없으면 '헤더 없음'으로 기록 |
 | 제외 폴더 | SAMPLECODE·example·demo 등 예제 폴더 |
+
+시험하는 파일은 실제로 분석할 파일(`--scope changed`: 변경 파일과 그 헤더를 쓰는 파일, 변경 전·후 모두)이 먼저이고,
+모자라면 무작위 표본(`--sample`, 기본 60)을 더합니다. 그래도 남은 실패는 원인별(헤더 없음 · #error · 컴파일러 확장 키워드 ·
+정의되지 않은 타입 · 구문 오류)로 묶어 해결 방법과 함께 보고합니다. 정의되지 않은 타입은 그 typedef 가 있는 헤더 위치도 알려 줍니다.
+`--auto-config` 없이 실행해도 summary.md·report.html 에 같은 '파싱 실패 원인' 표가 나옵니다.
 
 결정마다 근거와 확신도(높음·중간·낮음)를 남기고, '낮음'은 보고서 경고와 '분석 근거 및 범위' 탭에 표시합니다.
 
 ```powershell
 python detect_config.py "변경전폴더" "변경후폴더"            # cia_config.json, run_auto.ps1 생성 (확인 후 실행)
 python folder_impact.py "변경전폴더" "변경후폴더" -o result --scope changed --auto-config   # 탐지 후 바로 분석
+python folder_impact.py "변경전폴더" "변경후폴더" -o result --scope changed --auto-config --search "S:\MCAL" --search "C:\ghs\comp_201754"
+                                                    # 프로젝트 밖 헤더(MCAL·BSW·컴파일러 include)도 찾기
 ```
 
 직접 준 `-D`·`-I`·`--exclude` 는 자동 탐지 결과에 더해지고, `--cpp` 를 직접 주면 그 값을 씁니다.

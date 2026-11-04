@@ -784,8 +784,16 @@ addTab("scope", "🔍 분석 근거 및 범위", null, function (p) {
   }
   if (A) {
     var pe = Object.keys(ex.parse_errors || {});
+    var PD = D.parse_diag || [];
     p.appendChild(el("div", {class: "box" + (pe.length ? " warn" : "")}, [el("h3", {text: "파싱 실패 (분석 제외) " + pe.length + "개"}),
-      pe.length ? el("ul", {}, pe.map(function (f) { return el("li", {}, [code(f), " ", el("span", {class: "small muted", text: String(ex.parse_errors[f] || "").split("\n")[0]})]); }))
+      PD.length ? el("table", {class: "cl"}, [el("thead", {}, [el("tr", {}, ["원인", "대상", "파일 수", "예", "해결 방법"].map(function (h) { return el("th", {text: h}); }))]),
+        el("tbody", {}, PD.map(function (g) {
+          var adv = (g.fix ? "-D \"" + g.fix + "\" — " : "") + ((g.defined_in || []).length ? "정의 위치: " + g.defined_in.slice(0, 3).join(", ") + " — " : "") + g.advice;
+          return el("tr", {}, [el("td", {}, [el("b", {text: g.cause})]), el("td", {}, [code(g.detail)]), el("td", {text: String(g.count)}),
+            el("td", {class: "small"}, [code(g.files[0] || ""), g.where ? " (" + g.where + ")" : "", g.line_text ? el("div", {class: "muted"}, [code(g.line_text)]) : null]),
+            el("td", {class: "small", text: adv})]);
+        }))]) : null,
+      pe.length ? el("details", {class: "fn"}, [el("summary", {text: "파일별 오류 " + pe.length + "개"}), el("ul", {}, pe.map(function (f) { return el("li", {}, [code(f), " ", el("span", {class: "small muted", text: String(ex.parse_errors[f] || "").split("\n").filter(function (x) { return x.trim(); }).slice(-1)[0] || ""})]); }))])
                 : el("div", {class: "muted", text: "없음 (변경 전 " + m.analyzed.old + "개 / 변경 후 " + m.analyzed.new + "개 파일 모두 분석)"})]));
     var secBox = function (title, desc, xs, fmt) {
       if (!xs || !xs.length) return;

@@ -43,7 +43,7 @@ from pathlib import Path
 
 from c_impact import deps as deps_mod
 from c_impact import html_report, report
-from c_impact import external
+from c_impact import external, parsediag
 from c_impact import review as review_mod
 from c_impact import units as units_mod
 from c_impact.analysis import load_programs, public, run_analysis
@@ -608,7 +608,22 @@ def render_summary(s: dict) -> str:
     if r is not None:
         pe = r["excluded"]["parse_errors"]
         if pe:
-            out.append(f"- 파싱하지 못해 분석에서 빠진 파일 {len(pe)}개: {_list(pe, 20)} (상세 보고서 '분석에서 제외되거나 가정한 구성' 절)")
+            out.append(f"- 파싱하지 못해 분석에서 빠진 파일 {len(pe)}개 — 원인별로 아래 표에 정리했습니다 (파일별 오류 전문: 상세 보고서 "
+                       "'분석에서 제외되거나 가정한 구성' 절)")
+            diag = s.get("parse_diag") or []
+            if diag:
+                out += ["", "**파싱 실패 원인**", "", "| 원인 | 대상 | 파일 수 | 예 | 해결 방법 |", "|---|---|---|---|---|"]
+                for g in diag[:15]:
+                    ex = g["files"][0] + (f" ({g['where']})" if g.get("where") else "")
+                    adv = g["advice"]
+                    if g.get("defined_in"):
+                        adv = f"정의 위치: {', '.join(g['defined_in'][:3])} — " + adv
+                    if g.get("fix"):
+                        adv = f"`-D \"{g['fix']}\"` — " + adv
+                    out.append(f"| {g['cause']} | `{_c(_s(g['detail'], 60))}` | {g['count']} | `{_c(_s(ex, 80))}` | {_c(adv)} |")
+                if len(diag) > 15:
+                    out.append(f"| … | 그 밖의 원인 {len(diag) - 15}가지 | {sum(g['count'] for g in diag[15:])} | | |")
+                out.append("")
         if r["excluded"]["extern_functions"]:
             out.append(f"- 본문 없는 외부 함수 {len(r['excluded']['extern_functions'])}개는 보수적으로 가정했습니다 (상세 보고서 '분석에서 제외되거나 가정한 구성' 절).")
         if not pe:
@@ -623,6 +638,8 @@ def html_payload(s: dict) -> dict:
     ch = s["file_changes"]
     data: dict = {
         "auto_config": [d for d in ((s.get("auto_config") or {}).get("decisions") or [])],
+        "parse_diag": [{k: g.get(k) for k in ("cause", "detail", "count", "where", "fix", "advice", "defined_in", "line_text")}
+                       | {"files": g["files"][:10]} for g in (s.get("parse_diag") or [])],
         "meta": {k: s.get(k) for k in ("old_dir", "new_dir", "time", "elapsed", "scope_reason", "analyzed",
                                        "warnings", "duplicate_headers", "outputs")},
         "include": {"auto": len(s["auto_include"]), "user": len(s["user_include"]), "cc": bool(s["compile_commands"])},
@@ -820,7 +837,8 @@ def run(args) -> int:
     if getattr(args, "auto_config", False):
         import detect_config
         log("0/5 빌드 설정 자동 탐지 중 (--auto-config)...")
-        auto = detect_config.detect(old_dir, new_dir, exclude, out_dir=out, jobs=args.jobs)
+        auto = detect_config.detect(old_dir, new_dir, exclude, out_dir=out, jobs=args.jobs, scope=args.scope,
+                                    search=args.search)
         log(detect_config.render(auto))
         exclude = auto["exclude"]
         args.defines = auto["defines"] + [d for d in args.defines if d not in auto["defines"]]
@@ -886,6 +904,8 @@ def run(args) -> int:
                                 sil_cycles=args.cycles, rules=rules, symbolic=not args.no_symbolic,
                                 sym_paths=args.sym_paths, sym_budget=args.sym_budget, cwe=args.cwe)
         summary["outputs"] += security_outputs(analysis, out / "security", new_dir, cfg, rules, args)
+        pe = analysis["excluded"]["parse_errors"]
+        summary["parse_diag"] = parsediag.summarize(pe, {**old_files, **new_files}) if pe else []
 
         log("4/5 의존성 비교 중...")
         t_old = deps_mod.dependency_table(old, args.entry, args.isr)
@@ -947,6 +967,8 @@ def run(args) -> int:
         print(f"상세: {out / 'impact' / 'impact_report.md'}")
         if analysis["excluded"]["parse_errors"]:
             log(f"경고: 파싱하지 못한 파일 {len(analysis['excluded']['parse_errors'])}개 (summary.md '분석 범위와 주의' 절)")
+            for g in (summary.get("parse_diag") or [])[:5]:
+                log(f"  - {g['cause']} '{g['detail']}': {g['count']}개 파일")
         if args.fail_on_impact and analysis["items"]:
             return 3
     return 0
@@ -989,6 +1011,8 @@ def main(argv: list[str] | None = None) -> int:
 
     b.add_argument("--auto-config", action="store_true",
                    help="컴파일러·매크로(-D)·include(-I)·제외 폴더·메모리 클래스 헤더를 프로젝트에서 자동 탐지해 적용 (detect_config.py)")
+    b.add_argument("--search", action="append", default=[], metavar="DIR",
+                   help="--auto-config 가 프로젝트 밖에서 헤더를 찾을 위치 (MCAL·BSW·컴파일러 include 폴더, 여러 번 가능)")
 
     sec = ap.add_argument_group("보안 취약점 분석 (CPG + Taint + Symbolic Execution)")
     sec.add_argument("--rules", help="Source·Sink·보안 검사 규칙 (YAML·JSON). 기본: config/security_rules.yaml")

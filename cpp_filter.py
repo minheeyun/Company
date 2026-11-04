@@ -7,6 +7,7 @@ folder_impact.py / auto_include.py / change_impact.py 의 --cpp 로 지정해서
   - 인라인 어셈블리: __asm volatile ("..." ::: "memory"), asm goto (...), __asm__ __volatile__ (...)
     (괄호가 바로 붙은 __asm("...") 은 기본 매크로로도 지워지지만, volatile 이 끼면 매크로로는 못 지운다)
   - #pragma 줄과 _Pragma("...") : 구조체 안 등 파서가 받지 않는 위치에 나오는 경우가 있다 (분석과 무관)
+  - IAR 의 변수 주소·섹션 지정: int x @ 0x1000; / int y @ ".noinit"; → @ 부분만 지운다
   - 문자 인코딩 통일: 소스가 UTF-8·CP949 가 섞여 있어도, 호출한 Python 이 읽는 인코딩(로캘 기본값)으로 맞춘다
     (문자열·주석 안의 한글만 해당하므로 분석 결과에는 영향이 없다)
 
@@ -63,7 +64,36 @@ def remove_balanced(text: str, start_re: re.Pattern) -> str:
     return "".join(out)
 
 
+AT_OPERAND_RE = re.compile(r'@\s*(?:"(?:[^"\\]|\\.)*"|\([^()]*\)|[\w.]+)')
+
+
+def strip_at(line: str) -> str:
+    """문자열·문자 상수 밖의 '@ 주소' 를 지운다 (C 에는 @ 연산자가 없다)."""
+    if "@" not in line:
+        return line
+    out, i, n = [], 0, len(line)
+    while i < n:
+        c = line[i]
+        if c in "\"'":
+            j = i + 1
+            while j < n and line[j] != c:
+                j += 2 if line[j] == "\\" else 1
+            out.append(line[i:j + 1])
+            i = j + 1
+            continue
+        if c == "@":
+            m = AT_OPERAND_RE.match(line, i)
+            if m:
+                i = m.end()
+                continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def clean(text: str) -> str:
+    if "@" in text:
+        text = "".join(strip_at(ln) for ln in text.splitlines(keepends=True))
     text = PRAGMA_LINE_RE.sub("", text)
     text = remove_balanced(text, PRAGMA_OP_RE)
     text = remove_balanced(text, ASM_RE)
