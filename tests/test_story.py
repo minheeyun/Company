@@ -118,5 +118,52 @@ class StoryTests(unittest.TestCase):
             self.assertIn(t, html)
 
 
+class StoryEdgeCaseTests(unittest.TestCase):
+    """새 조건이나 안쪽 조건에서 경계값을 뽑을 수 없는 경우 (함수 호출 조건, 변수끼리 비교)."""
+
+    def test_gating_without_numeric_boundary(self):
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            out = tmp / "out"
+            data = ROOT / "tests" / "data" / "story2"
+            self.assertEqual(fi.main([str(data / "old"), str(data / "new"), "-o", str(out), "-q"]), 0)
+            s = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+            st = s["story"]
+            self.assertEqual(st["errors"], [])
+            by_func = {c["func"]: c for c in st["changes"]}
+            ta = [t for t in st["tests"] if t["change"] == by_func["App_A"]["id"]][0]
+            self.assertEqual(ta["condition"], "`s_cnt` 9/10/11")  # IsReady() != 0U 는 경계값 없음
+            tb = [t for t in st["tests"] if t["change"] == by_func["App_B"]["id"]][0]
+            self.assertEqual(tb["condition"], "`s_ok` 0/1")  # s_cnt < g_limit 는 경계값 없음
+            self.assertTrue((out / "report.html").is_file())
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_one_failing_change_does_not_stop_report(self):
+        from c_impact import story
+        tmp = Path(tempfile.mkdtemp())
+        orig = story._analyze_unit
+
+        def boom(u, *a, **k):
+            if u["func"] == "App_B":
+                raise ValueError("테스트용 실패")
+            return orig(u, *a, **k)
+        story._analyze_unit = boom
+        try:
+            out = tmp / "out"
+            data = ROOT / "tests" / "data" / "story2"
+            self.assertEqual(fi.main([str(data / "old"), str(data / "new"), "-o", str(out), "-q"]), 0)
+            s = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+            c = next(c for c in s["story"]["changes"] if c["func"] == "App_B")
+            self.assertEqual(c["judgment"], "분석 불충분")
+            self.assertTrue(c["code"])  # 코드 차이는 그대로 보여 준다
+            self.assertTrue(any("App_B" in w for w in s["warnings"]))
+            self.assertTrue(any(c["func"] == "App_A" and c["judgment"] != "분석 불충분" for c in s["story"]["changes"]))
+            self.assertTrue((out / "report.html").is_file())
+        finally:
+            story._analyze_unit = orig
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()

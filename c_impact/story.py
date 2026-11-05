@@ -591,260 +591,269 @@ def build(old: Program, new: Program, units_out: dict, analysis: dict, review: d
                 merged_into[u["id"]] = user["id"]
 
     changes, findings, tests = [], [], []
+    errors: list[str] = []
     fnum = 0
     for u in units:
         if u["id"] in merged_into:
             continue
-        g = u.get("_g") or []
-        A = _analyze_unit(u, g, new, old, L, ctl_by_unit.get(u["id"], []))
-        imp = _impact(u, items, extern_names)
-        cid = f"C{len(changes) + 1:02d}"
-        old_lines = [x.o.line for x in g if x.o is not None] + [x.line for x in g if x.version == "old"]
-        rv = review_by_unit.get(u["id"], [])
-        flags = [f for f in rv if f["class"] not in ("변경 사실 확인",)]
+        try:
+            g = u.get("_g") or []
+            A = _analyze_unit(u, g, new, old, L, ctl_by_unit.get(u["id"], []))
+            imp = _impact(u, items, extern_names)
+            cid = f"C{len(changes) + 1:02d}"
+            old_lines = [x.o.line for x in g if x.o is not None] + [x.line for x in g if x.version == "old"]
+            rv = review_by_unit.get(u["id"], [])
+            flags = [f for f in rv if f["class"] not in ("변경 사실 확인",)]
 
-        # ② 스크립트가 확인한 것
-        checks = []
+            # ② 스크립트가 확인한 것
+            checks = []
 
-        def chk(item, status, confirmed, cannot):
-            checks.append({"id": f"{cid}-K{len(checks) + 1}", "item": item, "status": status, "confirmed": confirmed, "cannot": cannot})
+            def chk(item, status, confirmed, cannot):
+                checks.append({"id": f"{cid}-K{len(checks) + 1}", "item": item, "status": status, "confirmed": confirmed, "cannot": cannot})
 
-        kinds = []
-        if ctl_by_unit.get(u["id"]):
-            kinds.append("변수 추가")
-        for lab, lst in (("조건문 추가", [x for x in g if x.kind == "added" and x.n.kind == "cond"]),
-                         ("조건 변경", A["changed_conds"]), ("조건 삭제", A["removed_conds"]),
-                         ("문장 추가", A["added"]), ("문장 삭제", A["removed"]), ("문장 변경", A["changed"]),
-                         ("기존 문장 이동", A["moved"])):
-            if lst:
-                kinds.append(f"{lab} {len(lst)}개" if len(lst) > 1 else lab)
-        chk("변경 전후 코드 비교", "분석 결과 있음", ", ".join(kinds) or u["detail_summary"], "변경이 요구사항에 맞는지")
-        cond_facts = []
-        for x in A["moved"]:
-            if x.n.kind == "cond" and cond_expr(x.o.text) == cond_expr(x.n.text):
-                cond_facts.append(f"`{cond_expr(x.n.text)}` 식은 동일하지만 감싸는 조건이 변경됨")
-        for x in A["changed_conds"]:
-            cond_facts.append(f"`{cond_expr(x.o.text)}` → `{cond_expr(x.n.text)}`")
-        for gt in A["gating"]:
-            cond_facts.append(f"상위 조건 `{gt['expr']}` 추가")
-        for x in A["removed_conds"]:
-            cond_facts.append(f"`{cond_expr(x.n.text)}` 삭제")
-        if cond_facts:
-            counterish = any(P["counter"].search(f) for f in cond_facts)
-            chk("조건·분기 비교", "분석 결과 있음", "; ".join(cond_facts[:3]),
-                "실제 재시도 횟수와 복구 동작" if counterish else "조건 경계에서의 실제 분기 결과")
-        if imp["n_paths"]:
-            if imp["core"]:
-                st = imp["core"][0]["stages"]
-                names = [re.findall(r"`([^`]+)`", x["basis"]) for x in st]
-                first = names[0][-1] if names and names[0] else u["func"]
-                mid = [n[-1] for n in names[1:-1] if n]
-                last = names[-1][-1] if names[-1] else st[-1]["func"]
-                confirmed = f"`{first}` 에서 " + "".join(f"`{m}` 를 거쳐 " for m in mid[:2]) + f"`{last}` 까지의 의존 관계"
+            kinds = []
+            if ctl_by_unit.get(u["id"]):
+                kinds.append("변수 추가")
+            for lab, lst in (("조건문 추가", [x for x in g if x.kind == "added" and x.n.kind == "cond"]),
+                             ("조건 변경", A["changed_conds"]), ("조건 삭제", A["removed_conds"]),
+                             ("문장 추가", A["added"]), ("문장 삭제", A["removed"]), ("문장 변경", A["changed"]),
+                             ("기존 문장 이동", A["moved"])):
+                if lst:
+                    kinds.append(f"{lab} {len(lst)}개" if len(lst) > 1 else lab)
+            chk("변경 전후 코드 비교", "분석 결과 있음", ", ".join(kinds) or u["detail_summary"], "변경이 요구사항에 맞는지")
+            cond_facts = []
+            for x in A["moved"]:
+                if x.n.kind == "cond" and cond_expr(x.o.text) == cond_expr(x.n.text):
+                    cond_facts.append(f"`{cond_expr(x.n.text)}` 식은 동일하지만 감싸는 조건이 변경됨")
+            for x in A["changed_conds"]:
+                cond_facts.append(f"`{cond_expr(x.o.text)}` → `{cond_expr(x.n.text)}`")
+            for gt in A["gating"]:
+                cond_facts.append(f"상위 조건 `{gt['expr']}` 추가")
+            for x in A["removed_conds"]:
+                cond_facts.append(f"`{cond_expr(x.n.text)}` 삭제")
+            if cond_facts:
+                counterish = any(P["counter"].search(f) for f in cond_facts)
+                chk("조건·분기 비교", "분석 결과 있음", "; ".join(cond_facts[:3]),
+                    "실제 재시도 횟수와 복구 동작" if counterish else "조건 경계에서의 실제 분기 결과")
+            if imp["n_paths"]:
+                if imp["core"]:
+                    st = imp["core"][0]["stages"]
+                    names = [re.findall(r"`([^`]+)`", x["basis"]) for x in st]
+                    first = names[0][-1] if names and names[0] else u["func"]
+                    mid = [n[-1] for n in names[1:-1] if n]
+                    last = names[-1][-1] if names[-1] else st[-1]["func"]
+                    confirmed = f"`{first}` 에서 " + "".join(f"`{m}` 를 거쳐 " for m in mid[:2]) + f"`{last}` 까지의 의존 관계"
+                else:
+                    confirmed = f"`{u['func']}()` 안에서 변경 문장의 값·실행 여부를 쓰는 문장 {imp['n_paths']}곳"
+                chk("영향 경로 추적", f"분석 결과 있음 (경로 {imp['n_paths']}개, 다른 함수로 {imp['n_cross']}개)", confirmed,
+                    "실제 송신값·송신 시점" if imp["outputs"] else "실제 실행 순서와 값")
             else:
-                confirmed = f"`{u['func']}()` 안에서 변경 문장의 값·실행 여부를 쓰는 문장 {imp['n_paths']}곳"
-            chk("영향 경로 추적", f"분석 결과 있음 (경로 {imp['n_paths']}개, 다른 함수로 {imp['n_cross']}개)", confirmed,
-                "실제 송신값·송신 시점" if imp["outputs"] else "실제 실행 순서와 값")
-        else:
-            chk("영향 경로 추적", "실행 — 영향 경로 없음", "이번 분석 범위에서 다른 문장·함수로 이어지는 의존 경로 미탐지",
-                "분석 범위 밖(다른 C 파일·비활성 #if) 영향")
-        chk("자동 검토 항목 (25개)", f"실행 — 해당 지적 {len(flags)}건" if flags else "실행 — 해당 지적 없음",
-            ", ".join(sorted({f['item'] for f in flags})) and "지적 항목: " + ", ".join(sorted({f['item'] for f in flags}))
-            or "이번 분석 범위에서 25개 검토 규칙의 지적 미탐지", "지적 사항이 실제 결함인지")
-        urisks = [risks[r] for r in u["risks"] + u["prop_risks"] if r in risks]
-        if urisks:
-            chk("보안·안전 규칙, Taint", "분석 결과 있음", "위험 후보 " + ", ".join(r["id"] for r in urisks),
-                "실제 오류·공격 입력이 들어오는지")
-        else:
-            chk("보안·안전 규칙, Taint", "실행 — 위반 미탐지", "이번 분석 범위에서 해당 규칙의 위반 미탐지", "규칙에 없는 결함")
-        if urisks:
-            done = [r for r in urisks if r.get("symbolic")]
-            notdone = [r for r in urisks if not r.get("symbolic")]
-            if done:
-                chk("기호 실행", "실행", "; ".join(f"{r['id']}: " + ("반례 발견" if r.get("state") == "violated" else
-                                                                "위반 없음(속성 성립)" if r.get("state") == "holds" else "판정 불가")
-                                                 for r in done), "분석 모델 밖의 실제 동작")
-            if notdone:
-                chk("기호 실행", "미실행", ", ".join(r["id"] for r in notdone) + " 의 기호 실행 기록 없음", "위반 입력이나 경로 존재 여부")
-        else:
-            chk("기호 실행", "해당 없음", "대상 위험 연산 없음", "-")
-        chk("실제 실행 비교 (SIL·자동 탐색)", "실행" if sil_ran else "결과 미첨부",
-            "SIL·자동 탐색 결과는 근거 상세 참고" if sil_ran else "이 report 에서 확인할 실행 증거 없음", "변경 전후 실제 동작 차이")
+                chk("영향 경로 추적", "실행 — 영향 경로 없음", "이번 분석 범위에서 다른 문장·함수로 이어지는 의존 경로 미탐지",
+                    "분석 범위 밖(다른 C 파일·비활성 #if) 영향")
+            chk("자동 검토 항목 (25개)", f"실행 — 해당 지적 {len(flags)}건" if flags else "실행 — 해당 지적 없음",
+                ", ".join(sorted({f['item'] for f in flags})) and "지적 항목: " + ", ".join(sorted({f['item'] for f in flags}))
+                or "이번 분석 범위에서 25개 검토 규칙의 지적 미탐지", "지적 사항이 실제 결함인지")
+            urisks = [risks[r] for r in u["risks"] + u["prop_risks"] if r in risks]
+            if urisks:
+                chk("보안·안전 규칙, Taint", "분석 결과 있음", "위험 후보 " + ", ".join(r["id"] for r in urisks),
+                    "실제 오류·공격 입력이 들어오는지")
+            else:
+                chk("보안·안전 규칙, Taint", "실행 — 위반 미탐지", "이번 분석 범위에서 해당 규칙의 위반 미탐지", "규칙에 없는 결함")
+            if urisks:
+                done = [r for r in urisks if r.get("symbolic")]
+                notdone = [r for r in urisks if not r.get("symbolic")]
+                if done:
+                    chk("기호 실행", "실행", "; ".join(f"{r['id']}: " + ("반례 발견" if r.get("state") == "violated" else
+                                                                    "위반 없음(속성 성립)" if r.get("state") == "holds" else "판정 불가")
+                                                     for r in done), "분석 모델 밖의 실제 동작")
+                if notdone:
+                    chk("기호 실행", "미실행", ", ".join(r["id"] for r in notdone) + " 의 기호 실행 기록 없음", "위반 입력이나 경로 존재 여부")
+            else:
+                chk("기호 실행", "해당 없음", "대상 위험 연산 없음", "-")
+            chk("실제 실행 비교 (SIL·자동 탐색)", "실행" if sil_ran else "결과 미첨부",
+                "SIL·자동 탐색 결과는 근거 상세 참고" if sil_ran else "이 report 에서 확인할 실행 증거 없음", "변경 전후 실제 동작 차이")
 
-        # ③ 발견 사항: 위험 후보 + 검토 항목의 위험 후보를 같은 문장끼리 묶는다
-        groups: dict = {}
-        for r in urisks:
-            key = r["line"]
-            groups.setdefault(key, {"risks": [], "review": []})["risks"].append(r)
-        for f in rv:
-            if f["class"] not in ("위험 후보 탐지", "위반 경로 확인", "분석 불충분") or f["summary"].startswith("["):
-                continue
-            key = f["line"]
-            hit = next((k for k in groups if k == key), None)
-            groups.setdefault(hit if hit is not None else key, {"risks": [], "review": []})["review"].append(f)
-        fids = []
-        for key, grp in sorted(groups.items(), key=lambda kv: kv[0] or 0):
-            r = grp["risks"][0] if grp["risks"] else None
-            gt = next((gt for gt in A["gating"] if r is not None and any(x.n.line == r["line"] for x in gt["moved"] + gt["added"])), None)
-            if gt is None and A["gating"] and r is not None and (r.get("change") or {}).get("kind") == "moved":
-                gt = A["gating"][0]
-            if r is not None:
-                fid = r["id"]
+            # ③ 발견 사항: 위험 후보 + 검토 항목의 위험 후보를 같은 문장끼리 묶는다
+            groups: dict = {}
+            for r in urisks:
+                key = r["line"]
+                groups.setdefault(key, {"risks": [], "review": []})["risks"].append(r)
+            for f in rv:
+                if f["class"] not in ("위험 후보 탐지", "위반 경로 확인", "분석 불충분") or f["summary"].startswith("["):
+                    continue
+                key = f["line"]
+                hit = next((k for k in groups if k == key), None)
+                groups.setdefault(hit if hit is not None else key, {"risks": [], "review": []})["review"].append(f)
+            fids = []
+            for key, grp in sorted(groups.items(), key=lambda kv: kv[0] or 0):
+                r = grp["risks"][0] if grp["risks"] else None
+                gt = next((gt for gt in A["gating"] if r is not None and any(x.n.line == r["line"] for x in gt["moved"] + gt["added"])), None)
+                if gt is None and A["gating"] and r is not None and (r.get("change") or {}).get("kind") == "moved":
+                    gt = A["gating"][0]
+                if r is not None:
+                    fid = r["id"]
+                else:
+                    fnum += 1
+                    fid = f"F{fnum}"
+                fkind = "gating" if gt is not None else ("threshold" if r is not None and (r.get("change") or {}).get("kind") == "changed"
+                                                        else "removed" if r is not None and (r.get("change") or {}).get("kind") == "removed"
+                                                        else "risk" if r is not None else "review")
+                if gt is not None:
+                    title = f"새 {'플래그 ' if gt['flag'] else ''}조건에서 {gt['block']} 정책 확인 필요"
+                    fact = (f"`{cond_expr(r['expr'])}` 검사가 다른 상위 조건(`{gt['expr']}`) 아래로 이동함" if r is not None
+                            else f"`{gt['expr']}` 조건이 기존 처리를 감쌈")
+                    situation = f"`{gt['expr']}` 조건이 거짓이어서 해당 블록이 실행되지 않을 때, 필요한 {_proc(gt['block'])}가 다른 경로에서 보장되지 않는 경우"
+                    remaining = "이 조건에서 처리를 생략하는 것이 요구사항에 맞는지"
+                elif r is not None and (r.get("change") or {}).get("kind") == "changed" and r["kind"] == "check":
+                    ch = r["change"]
+                    title = f"{_topic(u['type_label'])} 판정 기준 변경 확인 필요"
+                    fact = f"`{cond_expr(ch.get('before', ''))}` → `{cond_expr(ch.get('after', ''))}`"
+                    situation = "경계값 근처 입력에서 분기 결과가 바뀌어 처리 여부가 의도와 다르게 되는 경우"
+                    remaining = "새 기준값이 요구사항과 일치하는지"
+                elif r is not None and (r.get("change") or {}).get("kind") == "removed":
+                    title = f"{_topic(u['type_label'])} 검사 삭제로 보호 동작이 빠지지 않는지 확인 필요"
+                    fact = f"`{_short((r.get('change') or {}).get('before') or r['expr'], 60)}` 삭제"
+                    situation = "삭제된 검사가 막던 입력·상태가 그대로 처리되는 경우"
+                    remaining = "검사 삭제가 의도된 것인지, 다른 위치에서 같은 검사를 하는지"
+                elif r is not None:
+                    title = f"{_topic(u['type_label'])}: `{_short(r['expr'], 50)}` 동작 확인 필요"
+                    fact = (r.get("change") or {}).get("detail") or r.get("evidence") or r.get("how", "")
+                    situation = re.sub(r"\s*\(요구사항 확인 필요\)", "", r.get("risk", "")) or "변경된 연산이 의도와 다른 값을 만드는 경우"
+                    remaining = r.get("verification") or "요구사항에 맞는 동작인지"
+                else:
+                    f0 = grp["review"][0]
+                    title = _short(re.sub(r"`", "", f0["summary"]), 90) + " — 확인 필요"
+                    fact = f0["summary"]
+                    situation = f"검토 항목 {f0['item']} 이 지적한 상태가 실제 실행에서도 생기는 경우"
+                    remaining = f0.get("reviewer") or "요구사항에 맞는 동작인지"
+                core = imp["core"][0]["stages"] if imp["core"] and fkind != "review" else []
+                if core:
+                    st0 = core[0]["basis"]
+                    rest = [s for s in core[1:]]
+                    eff = (st0.split(" — ")[-1] if " — " in st0 else st0) + (
+                        " 및 " + ", ".join(f"{s['func']}()" + ("의 외부 출력" if s["stage"] == "외부 출력 후보" else "") for s in rest)
+                        + "에 영향 가능" if rest else "")
+                else:
+                    eff = "변경 함수 내부 동작에 영향 가능" + (f" ({', '.join(e.replace('`', '') for e in A['effects'][:3])})" if A["effects"] else "")
+                judgment = _judge_risk(r) if r is not None else (
+                    "분석 모델 내 위반 확인" if any(f["class"] == "위반 경로 확인" for f in grp["review"]) else
+                    "분석 불충분" if all(f["class"] == "분석 불충분" for f in grp["review"]) else "위험 후보")
+                sources = [{"id": x["id"], "rule": x.get("kind_label", ""), "category": x.get("category", ""), "risk": x.get("risk", ""),
+                            "how": x.get("how", ""), "verification_level": x.get("verification_level", ""),
+                            "evidence": x.get("evidence", ""), "expr": x.get("expr", ""), "line": x.get("line"),
+                            "status": x.get("status", ""), "baseline": (x.get("baseline") or {}).get("old_state_label", ""),
+                            "symbolic": x.get("symbolic"), "taint": bool((x.get("taint") or {}).get("flow_detected")),
+                            "bounds": (x.get("bounds") or {}).get("change", "")} for x in grp["risks"]]
+                findings.append({
+                    "id": fid, "change": cid, "title": title, "fact": fact, "situation": situation, "impact": eff,
+                    "judgment": judgment, "comparison": _cmp_status(r.get("status_code")) if r is not None else "판정 보류",
+                    "evidence_level": _evidence_level(r, imp, sil_ran), "remaining": remaining,
+                    "merged": [x["id"] for x in grp["risks"][1:]] + [f"검토 {f['item']}" for f in grp["review"]],
+                    "sources": sources, "review": [{"item": f["item"], "class": f["class"], "summary": f["summary"],
+                                                    "reviewer": f.get("reviewer", "")} for f in grp["review"]],
+                    "line": key, "tests": [], "_kind": fkind, "_items": [f["item"] for f in grp["review"]],
+                })
+                fids.append(fid)
+            fk = {f["id"]: f for f in findings if f["change"] == cid}
+
+            def linked(kinds=(), items=()):
+                return [i for i, f in fk.items() if f["_kind"] in kinds or set(f["_items"]) & set(items)]
+
+            # ④ 추가 검증
+            tl = []
+
+            def test(title, cond, observe, criteria, links, kind="시험"):
+                t = {"id": f"T{cid[1:]}-{len(tl) + 1}", "change": cid, "findings": links, "kind": kind, "title": title,
+                     "condition": cond, "observe": observe, "criteria": criteria}
+                tl.append(t)
+                return t
+
+            for gt in A["gating"]:
+                gv = _boundary(gt["expr"])
+                inner = [x for x in gt["moved"] if x.n.kind == "cond"]
+                ib = _boundary(cond_expr(inner[0].n.text)) if inner else None
+                parts = [b for b in (gv, ib) if b and b[0]]
+                cond = " × ".join(f"`{v}` {'/'.join(vals)}" for v, vals in parts) if parts else f"`{gt['expr']}` 참/거짓"
+                obs = ", ".join(e for e in gt["effects"][:4]) or "블록 안 처리 실행 여부"
+                test(f"{'플래그' if gt['flag'] else '조건'}별 {_proc(gt['block'])}", cond, obs,
+                     f"승인된 {gt['block']} 정책과 일치 — {NO_REQ}", linked(("gating",)))
+                var = gt.get("var")
+                if var:
+                    vals = _var_values(new, var)
+                    if len(vals) >= 2:
+                        seq = f"{vals[0]} → {vals[1]} → {vals[0]}"
+                        back = any(v == vals[0] for v in vals[1:]) or len(vals) > 2
+                        note = "" if back else f" (다시 {vals[0]} 으로 바뀌는 코드는 이번 분석 범위에서 찾지 못함 — 의도 확인)"
+                        test(f"{'플래그' if gt['flag'] else var} 전이 후 처리", f"`{var}` {seq} 전이를 포함한 연속 실행{note}",
+                             "처리 생략·재개 시점, 상태 잔류", f"필요한 처리가 누락되거나 중복되지 않음 — {NO_REQ}", linked(("gating",)))
+            for x in A["changed_conds"]:
+                b1 = _boundary(cond_expr(x.o.text))
+                b2 = _boundary(cond_expr(x.n.text))
+                vals = sorted({int(v) for b in (b1, b2) if b for v in b[1] if v.isdigit()})
+                var = (b2 or b1 or ("", []))[0]
+                cond = f"`{var}` {'/'.join(map(str, vals))}" if var and vals else f"`{cond_expr(x.n.text)}` 경계값"
+                test("판정 경계 시험", cond, "분기 결과와 그 아래 상태 갱신", f"새 기준값이 요구사항과 일치 — {NO_REQ}",
+                     linked(("threshold", "risk")))
+            for x in A["removed"] + A["removed_conds"]:
+                what = cond_expr(x.n.text) if x.n.kind == "cond" else _short(x.n.text, 50)
+                test("삭제된 처리의 대체 경로 확인", f"변경 전 `{what}` 가 실행되던 입력·상태",
+                     f"`{what}` 가 하던 처리가 다른 경로에서 수행되는지", f"처리 누락이 의도된 것 — {NO_REQ}", linked(("removed",)))
+                if len(tl) > 6:
+                    break
+            if imp["outputs"]:
+                core = imp["core"][0]["stages"] if imp["core"] else []
+                state = next((re.findall(r"`([^`]+)`", s["basis"]) for s in core if s["stage"] == "변경 발생"), [])
+                field_ = next((re.findall(r"`([^`]+)`", s["basis"]) for s in core if s["stage"] == "상태 판단"), [])
+                sv = state[-1] if state else "변경된 상태"
+                fv = field_[-1] if field_ else "출력 값"
+                test("외부 응답 확인", f"`{sv}` 설정·해제 조건", f"`{fv}` 값과 `{imp['outputs'][0]}()` 출력 시점",
+                     f"메시지 사양과 일치 — {NO_REQ}", linked(("gating", "threshold", "removed", "risk")))
+            for r in urisks:
+                if r.get("verification") and not A["gating"]:
+                    test(f"{r['id']} 재현 시험", (r.get("bounds") or {}).get("change") or f"`{_short(r['expr'], 50)}` 경계 조건",
+                         "해당 연산·분기의 결과", f"{_short(r['verification'], 120)} — {NO_REQ}", [r["id"]])
+            writes = sorted({w for x in g if x.version == "new" for w in _writes(new, x.n)})
+            test("변경 전후 회귀 비교", "같은 입력·초기 상태·빌드 설정",
+                 "내부 상태" + (f"({', '.join('`' + w + '`' for w in writes[:4])})" if writes else "") + "와 외부 출력"
+                 + (f"({', '.join('`' + e + '()`' for e in imp['external'][:2])})" if imp["external"] else "") + "의 차이",
+                 "승인된 동작 변경 범위와 일치 — 변경 의도 확인 필요", fids)
+            # 판단 질문 (검토 항목에서 온 것)
+            for q in u.get("checklist", []):
+                if q["item"].startswith("V") or q["item"] == "-":
+                    continue
+                test(q["area"], f"자동 검토 {q['item']} 지적: {q['basis']}", q["question"],
+                     "요구사항·설계 근거와 대조해 판단 (근거를 판정 근거에 기록)", linked((), (q["item"],)), kind="판단")
+            for f in findings:
+                if f["change"] == cid:
+                    f["tests"] = [t["id"] for t in tl if f["id"] in t["findings"]]
+            tests += tl
+
+            js = [f["judgment"] for f in findings if f["change"] == cid]
+            judgment = min(js, key=JUDGE.index) if js else "변경 사실 확인"
+            cmp_ = [f["comparison"] for f in findings if f["change"] == cid]
+            comparison = "신규" if "신규" in cmp_ else ("판정 보류" if "판정 보류" in cmp_ else (cmp_[0] if cmp_ else "-"))
+            if judgment in ("실행 재현 확인", "분석 모델 내 위반 확인") or (judgment == "위험 후보" and (comparison == "신규" or imp["outputs"])):
+                prio = "높음"
+            elif judgment == "위험 후보" or imp["n_cross"] or flags:
+                prio = "중간"
             else:
-                fnum += 1
-                fid = f"F{fnum}"
-            fkind = "gating" if gt is not None else ("threshold" if r is not None and (r.get("change") or {}).get("kind") == "changed"
-                                                    else "removed" if r is not None and (r.get("change") or {}).get("kind") == "removed"
-                                                    else "risk" if r is not None else "review")
-            if gt is not None:
-                title = f"새 {'플래그 ' if gt['flag'] else ''}조건에서 {gt['block']} 정책 확인 필요"
-                fact = (f"`{cond_expr(r['expr'])}` 검사가 다른 상위 조건(`{gt['expr']}`) 아래로 이동함" if r is not None
-                        else f"`{gt['expr']}` 조건이 기존 처리를 감쌈")
-                situation = f"`{gt['expr']}` 조건이 거짓이어서 해당 블록이 실행되지 않을 때, 필요한 {_proc(gt['block'])}가 다른 경로에서 보장되지 않는 경우"
-                remaining = "이 조건에서 처리를 생략하는 것이 요구사항에 맞는지"
-            elif r is not None and (r.get("change") or {}).get("kind") == "changed" and r["kind"] == "check":
-                ch = r["change"]
-                title = f"{_topic(u['type_label'])} 판정 기준 변경 확인 필요"
-                fact = f"`{cond_expr(ch.get('before', ''))}` → `{cond_expr(ch.get('after', ''))}`"
-                situation = "경계값 근처 입력에서 분기 결과가 바뀌어 처리 여부가 의도와 다르게 되는 경우"
-                remaining = "새 기준값이 요구사항과 일치하는지"
-            elif r is not None and (r.get("change") or {}).get("kind") == "removed":
-                title = f"{_topic(u['type_label'])} 검사 삭제로 보호 동작이 빠지지 않는지 확인 필요"
-                fact = f"`{_short((r.get('change') or {}).get('before') or r['expr'], 60)}` 삭제"
-                situation = "삭제된 검사가 막던 입력·상태가 그대로 처리되는 경우"
-                remaining = "검사 삭제가 의도된 것인지, 다른 위치에서 같은 검사를 하는지"
-            elif r is not None:
-                title = f"{_topic(u['type_label'])}: `{_short(r['expr'], 50)}` 동작 확인 필요"
-                fact = (r.get("change") or {}).get("detail") or r.get("evidence") or r.get("how", "")
-                situation = re.sub(r"\s*\(요구사항 확인 필요\)", "", r.get("risk", "")) or "변경된 연산이 의도와 다른 값을 만드는 경우"
-                remaining = r.get("verification") or "요구사항에 맞는 동작인지"
-            else:
-                f0 = grp["review"][0]
-                title = _short(re.sub(r"`", "", f0["summary"]), 90) + " — 확인 필요"
-                fact = f0["summary"]
-                situation = f"검토 항목 {f0['item']} 이 지적한 상태가 실제 실행에서도 생기는 경우"
-                remaining = f0.get("reviewer") or "요구사항에 맞는 동작인지"
-            core = imp["core"][0]["stages"] if imp["core"] and fkind != "review" else []
-            if core:
-                st0 = core[0]["basis"]
-                rest = [s for s in core[1:]]
-                eff = (st0.split(" — ")[-1] if " — " in st0 else st0) + (
-                    " 및 " + ", ".join(f"{s['func']}()" + ("의 외부 출력" if s["stage"] == "외부 출력 후보" else "") for s in rest)
-                    + "에 영향 가능" if rest else "")
-            else:
-                eff = "변경 함수 내부 동작에 영향 가능" + (f" ({', '.join(e.replace('`', '') for e in A['effects'][:3])})" if A["effects"] else "")
-            judgment = _judge_risk(r) if r is not None else (
-                "분석 모델 내 위반 확인" if any(f["class"] == "위반 경로 확인" for f in grp["review"]) else
-                "분석 불충분" if all(f["class"] == "분석 불충분" for f in grp["review"]) else "위험 후보")
-            sources = [{"id": x["id"], "rule": x.get("kind_label", ""), "category": x.get("category", ""), "risk": x.get("risk", ""),
-                        "how": x.get("how", ""), "verification_level": x.get("verification_level", ""),
-                        "evidence": x.get("evidence", ""), "expr": x.get("expr", ""), "line": x.get("line"),
-                        "status": x.get("status", ""), "baseline": (x.get("baseline") or {}).get("old_state_label", ""),
-                        "symbolic": x.get("symbolic"), "taint": bool((x.get("taint") or {}).get("flow_detected")),
-                        "bounds": (x.get("bounds") or {}).get("change", "")} for x in grp["risks"]]
-            findings.append({
-                "id": fid, "change": cid, "title": title, "fact": fact, "situation": situation, "impact": eff,
-                "judgment": judgment, "comparison": _cmp_status(r.get("status_code")) if r is not None else "판정 보류",
-                "evidence_level": _evidence_level(r, imp, sil_ran), "remaining": remaining,
-                "merged": [x["id"] for x in grp["risks"][1:]] + [f"검토 {f['item']}" for f in grp["review"]],
-                "sources": sources, "review": [{"item": f["item"], "class": f["class"], "summary": f["summary"],
-                                                "reviewer": f.get("reviewer", "")} for f in grp["review"]],
-                "line": key, "tests": [], "_kind": fkind, "_items": [f["item"] for f in grp["review"]],
+                prio = "낮음"
+            changes.append({
+                "id": cid, "unit": u["id"], "title": A["title"], "sentences": A["sentences"], "func": u["func"], "file": u["file"],
+                "lo": u["lo"], "hi": u["hi"], "old_lo": min(old_lines) if old_lines else None, "old_hi": max(old_lines) if old_lines else None,
+                "intent": "요구사항 확인 필요 (변경 이유·요구사항이 첨부되지 않음)", "type_label": u["type_label"],
+                "compare": A["rows"], "compare_more": A["more_rows"], "impact": imp, "checks": checks,
+                "findings": [f["id"] for f in findings if f["change"] == cid], "tests": [t["id"] for t in tl],
+                "judgment": judgment, "comparison": comparison, "priority": prio,
+                "review_flags": [{"item": f["item"], "class": f["class"], "summary": f["summary"]} for f in flags],
+                "phrases": [c["phrase"] for c in u["changes"]], "merged_globals": ctl_by_unit.get(u["id"], []),
             })
-            fids.append(fid)
-        fk = {f["id"]: f for f in findings if f["change"] == cid}
-
-        def linked(kinds=(), items=()):
-            return [i for i, f in fk.items() if f["_kind"] in kinds or set(f["_items"]) & set(items)]
-
-        # ④ 추가 검증
-        tl = []
-
-        def test(title, cond, observe, criteria, links, kind="시험"):
-            t = {"id": f"T{cid[1:]}-{len(tl) + 1}", "change": cid, "findings": links, "kind": kind, "title": title,
-                 "condition": cond, "observe": observe, "criteria": criteria}
-            tl.append(t)
-            return t
-
-        for gt in A["gating"]:
-            gv = _boundary(gt["expr"])
-            inner = [x for x in gt["moved"] if x.n.kind == "cond"]
-            ib = _boundary(cond_expr(inner[0].n.text)) if inner else None
-            cond = " × ".join(f"`{v}` {'/'.join(vals)}" for v, vals in [gv, ib] if v) if (gv or ib) else f"`{gt['expr']}` 참/거짓"
-            obs = ", ".join(e for e in gt["effects"][:4]) or "블록 안 처리 실행 여부"
-            test(f"{'플래그' if gt['flag'] else '조건'}별 {_proc(gt['block'])}", cond, obs,
-                 f"승인된 {gt['block']} 정책과 일치 — {NO_REQ}", linked(("gating",)))
-            var = gt.get("var")
-            if var:
-                vals = _var_values(new, var)
-                if len(vals) >= 2:
-                    seq = f"{vals[0]} → {vals[1]} → {vals[0]}"
-                    back = any(v == vals[0] for v in vals[1:]) or len(vals) > 2
-                    note = "" if back else f" (다시 {vals[0]} 으로 바뀌는 코드는 이번 분석 범위에서 찾지 못함 — 의도 확인)"
-                    test(f"{'플래그' if gt['flag'] else var} 전이 후 처리", f"`{var}` {seq} 전이를 포함한 연속 실행{note}",
-                         "처리 생략·재개 시점, 상태 잔류", f"필요한 처리가 누락되거나 중복되지 않음 — {NO_REQ}", linked(("gating",)))
-        for x in A["changed_conds"]:
-            b1 = _boundary(cond_expr(x.o.text))
-            b2 = _boundary(cond_expr(x.n.text))
-            vals = sorted({int(v) for b in (b1, b2) if b for v in b[1] if v.isdigit()})
-            var = (b2 or b1 or ("", []))[0]
-            cond = f"`{var}` {'/'.join(map(str, vals))}" if var and vals else f"`{cond_expr(x.n.text)}` 경계값"
-            test("판정 경계 시험", cond, "분기 결과와 그 아래 상태 갱신", f"새 기준값이 요구사항과 일치 — {NO_REQ}",
-                 linked(("threshold", "risk")))
-        for x in A["removed"] + A["removed_conds"]:
-            what = cond_expr(x.n.text) if x.n.kind == "cond" else _short(x.n.text, 50)
-            test("삭제된 처리의 대체 경로 확인", f"변경 전 `{what}` 가 실행되던 입력·상태",
-                 f"`{what}` 가 하던 처리가 다른 경로에서 수행되는지", f"처리 누락이 의도된 것 — {NO_REQ}", linked(("removed",)))
-            if len(tl) > 6:
-                break
-        if imp["outputs"]:
-            core = imp["core"][0]["stages"] if imp["core"] else []
-            state = next((re.findall(r"`([^`]+)`", s["basis"]) for s in core if s["stage"] == "변경 발생"), [])
-            field_ = next((re.findall(r"`([^`]+)`", s["basis"]) for s in core if s["stage"] == "상태 판단"), [])
-            sv = state[-1] if state else "변경된 상태"
-            fv = field_[-1] if field_ else "출력 값"
-            test("외부 응답 확인", f"`{sv}` 설정·해제 조건", f"`{fv}` 값과 `{imp['outputs'][0]}()` 출력 시점",
-                 f"메시지 사양과 일치 — {NO_REQ}", linked(("gating", "threshold", "removed", "risk")))
-        for r in urisks:
-            if r.get("verification") and not A["gating"]:
-                test(f"{r['id']} 재현 시험", (r.get("bounds") or {}).get("change") or f"`{_short(r['expr'], 50)}` 경계 조건",
-                     "해당 연산·분기의 결과", f"{_short(r['verification'], 120)} — {NO_REQ}", [r["id"]])
-        writes = sorted({w for x in g if x.version == "new" for w in _writes(new, x.n)})
-        test("변경 전후 회귀 비교", "같은 입력·초기 상태·빌드 설정",
-             "내부 상태" + (f"({', '.join('`' + w + '`' for w in writes[:4])})" if writes else "") + "와 외부 출력"
-             + (f"({', '.join('`' + e + '()`' for e in imp['external'][:2])})" if imp["external"] else "") + "의 차이",
-             "승인된 동작 변경 범위와 일치 — 변경 의도 확인 필요", fids)
-        # 판단 질문 (검토 항목에서 온 것)
-        for q in u.get("checklist", []):
-            if q["item"].startswith("V") or q["item"] == "-":
-                continue
-            test(q["area"], f"자동 검토 {q['item']} 지적: {q['basis']}", q["question"],
-                 "요구사항·설계 근거와 대조해 판단 (근거를 판정 근거에 기록)", linked((), (q["item"],)), kind="판단")
-        for f in findings:
-            if f["change"] == cid:
-                f["tests"] = [t["id"] for t in tl if f["id"] in t["findings"]]
-        tests += tl
-
-        js = [f["judgment"] for f in findings if f["change"] == cid]
-        judgment = min(js, key=JUDGE.index) if js else "변경 사실 확인"
-        cmp_ = [f["comparison"] for f in findings if f["change"] == cid]
-        comparison = "신규" if "신규" in cmp_ else ("판정 보류" if "판정 보류" in cmp_ else (cmp_[0] if cmp_ else "-"))
-        if judgment in ("실행 재현 확인", "분석 모델 내 위반 확인") or (judgment == "위험 후보" and (comparison == "신규" or imp["outputs"])):
-            prio = "높음"
-        elif judgment == "위험 후보" or imp["n_cross"] or flags:
-            prio = "중간"
-        else:
-            prio = "낮음"
-        changes.append({
-            "id": cid, "unit": u["id"], "title": A["title"], "sentences": A["sentences"], "func": u["func"], "file": u["file"],
-            "lo": u["lo"], "hi": u["hi"], "old_lo": min(old_lines) if old_lines else None, "old_hi": max(old_lines) if old_lines else None,
-            "intent": "요구사항 확인 필요 (변경 이유·요구사항이 첨부되지 않음)", "type_label": u["type_label"],
-            "compare": A["rows"], "compare_more": A["more_rows"], "impact": imp, "checks": checks,
-            "findings": [f["id"] for f in findings if f["change"] == cid], "tests": [t["id"] for t in tl],
-            "judgment": judgment, "comparison": comparison, "priority": prio,
-            "review_flags": [{"item": f["item"], "class": f["class"], "summary": f["summary"]} for f in flags],
-            "phrases": [c["phrase"] for c in u["changes"]], "merged_globals": ctl_by_unit.get(u["id"], []),
-        })
+        except Exception as e:  # noqa: BLE001 — 한 변경의 설명을 만들지 못해도 보고서 전체는 만든다
+            cid = f"C{len(changes) + 1:02d}"
+            findings[:] = [f for f in findings if f["change"] != cid]
+            tests[:] = [t for t in tests if t["change"] != cid]
+            errors.append(f"{u['func']}() {u['file']}:{u['lo']} — {type(e).__name__}: {e}")
+            changes.append(_fallback_change(cid, u, e))
     changes.sort(key=lambda c: (PRIO.index(c["priority"]), -len(c["findings"]), -c["impact"]["n_cross"], c["file"], c["lo"]))
     # 정렬 뒤 번호를 다시 매긴다 (C01 이 가장 먼저 볼 변경)
     remap = {c["id"]: f"C{i + 1:02d}" for i, c in enumerate(changes)}
@@ -871,8 +880,30 @@ def build(old: Program, new: Program, units_out: dict, analysis: dict, review: d
         f.pop("_kind", None)
         f.pop("_items", None)
     tests.sort(key=lambda t: (int(t["id"][1:].split("-")[0]), int(t["id"].split("-")[1])))
-    return {"overview": _overview(ctx, changes, findings, tests, analysis, review), "changes": changes,
-            "findings": findings, "tests": tests}
+    ov = _overview(ctx, changes, findings, tests, analysis, review)
+    if errors:
+        ov["pending"].insert(0, {"item": "변경 설명 생성", "status": f"{len(errors)}건은 자동 설명을 만들지 못해 기본 정보만 표시 (근거 상세에서 코드 확인)",
+                                 "done": False})
+    return {"overview": ov, "changes": changes, "findings": findings, "tests": tests, "errors": errors}
+
+
+def _fallback_change(cid: str, u: dict, e: Exception) -> dict:
+    """설명 생성에 실패한 변경: 코드 변경 사실만 보여 준다."""
+    return {
+        "id": cid, "unit": u["id"], "title": u.get("type_label") or "코드 변경", "sentences": [u.get("summary", "")],
+        "func": u["func"], "file": u["file"], "lo": u["lo"], "hi": u["hi"], "old_lo": None, "old_hi": None,
+        "intent": "요구사항 확인 필요 (변경 이유·요구사항이 첨부되지 않음)", "type_label": u.get("type_label", ""),
+        "compare": [{"item": c.get("category", "변경"), "before": f"`{_short(c['old'], 80)}`" if c.get("old") else "없음",
+                     "after": f"`{_short(c['new'], 80)}`" if c.get("new") else "삭제"} for c in u.get("changes", [])[:12]],
+        "compare_more": [], "impact": {"core": [], "paths": [], "items": [], "n_paths": 0, "n_cross": 0, "funcs": [],
+                                       "external": [], "outputs": [], "note": ""},
+        "checks": [{"id": f"{cid}-K1", "item": "변경 전후 코드 비교", "status": "분석 결과 있음",
+                    "confirmed": "; ".join(c["phrase"] for c in u.get("changes", [])[:4]), "cannot": "변경이 요구사항에 맞는지"},
+                   {"id": f"{cid}-K2", "item": "변경 설명·영향 정리", "status": "미실행",
+                    "confirmed": f"자동 설명 생성 실패 ({type(e).__name__}) — 코드 차이는 근거 상세에서 확인", "cannot": "영향 범위와 위험 여부"}],
+        "findings": [], "tests": [], "judgment": "분석 불충분", "comparison": "-", "priority": "중간",
+        "review_flags": [], "phrases": [c["phrase"] for c in u.get("changes", [])], "merged_globals": [],
+    }
 
 
 def _overview(ctx, changes, findings, tests, analysis, review) -> dict:

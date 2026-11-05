@@ -684,14 +684,20 @@ def _attach_code(st: dict, old_dir: Path, new_dir: Path, old, new) -> None:
               and Path(n.file).name == Path(rel).name]
         return (min(ls), max(ls)) if ls else (None, None)
     for c in st["changes"]:
-        ol, nl = lines(old_dir, c["file"]), lines(new_dir, c["file"])
-        c["code"] = story_mod.side_by_side(ol, nl, c["lo"], c["hi"], c.get("old_lo"), c.get("old_hi"), ctx=3)
-        nlo, nhi = span(new, c["func"], c["file"])
-        olo, ohi = span(old, c["func"], c["file"])
-        if nlo and c["func"] != "(전역 초기화)":
-            c["code_full"] = story_mod.side_by_side(ol, nl, nlo - 1, nhi + 1, olo and olo - 1, ohi and ohi + 1, ctx=1)
-        else:
-            c["code_full"] = []
+        c["code"], c["code_full"] = [], []
+        try:
+            _code_rows(c, lines, span, old_dir, new_dir, old, new)
+        except Exception:  # noqa: BLE001 — 코드 표시 실패는 그 변경만 비운다
+            pass
+
+
+def _code_rows(c, lines, span, old_dir, new_dir, old, new):
+    ol, nl = lines(old_dir, c["file"]), lines(new_dir, c["file"])
+    c["code"] = story_mod.side_by_side(ol, nl, c["lo"], c["hi"], c.get("old_lo"), c.get("old_hi"), ctx=3)
+    nlo, nhi = span(new, c["func"], c["file"])
+    olo, ohi = span(old, c["func"], c["file"])
+    if nlo and c["func"] != "(전역 초기화)":
+        c["code_full"] = story_mod.side_by_side(ol, nl, nlo - 1, nhi + 1, olo and olo - 1, ohi and ohi + 1, ctx=1)
 
 
 def html_payload(s: dict) -> dict:
@@ -985,11 +991,19 @@ def run(args) -> int:
                                               changes, cfg.defines, getattr(rules, "review_patterns", None))
         summary["units"] = units_mod.build(old, new, internal["cs"], analysis, summary["review"], summary["deps_diff"],
                                            getattr(rules, "review_patterns", None))
-        summary["story"] = story_mod.build(old, new, summary["units"], analysis, summary["review"], {
-            "versions": {"old": old_dir.name, "new": new_dir.name}, "time": summary["time"], "file_changes": changes,
-            "analyzed": summary["analyzed"], "scope": args.scope, "scope_reason": why,
-            "sil": summary.get("sil"), "explore": summary.get("explore")}, getattr(rules, "review_patterns", None))
-        _attach_code(summary["story"], old_dir, new_dir, old, new)
+        try:
+            summary["story"] = story_mod.build(old, new, summary["units"], analysis, summary["review"], {
+                "versions": {"old": old_dir.name, "new": new_dir.name}, "time": summary["time"], "file_changes": changes,
+                "analyzed": summary["analyzed"], "scope": args.scope, "scope_reason": why,
+                "sil": summary.get("sil"), "explore": summary.get("explore")}, getattr(rules, "review_patterns", None))
+            _attach_code(summary["story"], old_dir, new_dir, old, new)
+            for e in summary["story"].get("errors", []):
+                warnings.append(f"변경 설명 생성 실패 (기본 정보만 표시): {e}")
+        except Exception as e:  # noqa: BLE001 — 변경 카드를 못 만들어도 나머지 보고서는 만든다
+            import traceback
+            log(traceback.format_exc())
+            warnings.append(f"변경 검토 화면 생성 실패: {type(e).__name__}: {e} — summary.md 와 impact/impact_report.md 를 참고하세요")
+            summary["story"] = None
         for u in summary["units"]["units"]:
             u.pop("_g", None)
         dd = out / "deps"

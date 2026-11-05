@@ -247,9 +247,10 @@ def build(old: Program, new: Program, cs, result: dict, review: dict | None, dep
         prog, other = (new, old) if c.version == "new" else (old, new)
         chs.append(_Ch(c, prog, other))
     # 같은 줄에 문장·조건 변경이 있으면 그 안의 호출 인자·호출 노드 변경은 중복이므로 뺀다
-    stmt_lines = {(ch.version, ch.c.func, ch.c.file, ch.line) for ch in chs if ch.n.kind not in ("actual_in", "call", "actual_out")}
-    chs = [ch for ch in chs if ch.n.kind not in ("actual_in", "call", "actual_out")
-           or (ch.version, ch.c.func, ch.c.file, ch.line) not in stmt_lines]
+    # (조건식 안의 외부 함수 호출 노드도 같다: `if (IsReady() != 0U)` 의 IsReady() 는 조건 변경에 포함)
+    sub = ("actual_in", "call", "actual_out", "extcall")
+    stmt_lines = {(ch.version, ch.c.func, ch.c.file, ch.line) for ch in chs if ch.n.kind not in sub}
+    chs = [ch for ch in chs if ch.n.kind not in sub or (ch.version, ch.c.func, ch.c.file, ch.line) not in stmt_lines]
     by_func = defaultdict(list)
     for ch in chs:
         func = ch.prog.func_display(ch.c.func or "")
