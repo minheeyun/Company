@@ -23,7 +23,9 @@ git 이 없어도 되는 폴더 비교 전용 실행기다. 내부 분석은 c_i
   -o 를 상대 경로로 주면 같은 상위 폴더 아래에 만든다 (예: -o result_26A22 → S:\Proj\result_26A22).
   다른 곳에 두려면 절대 경로를 준다. 결과 폴더에는 표식 파일(.cia_output)을 두어, 그 안의 산출물
   (cia_memclass_auto.h, KLEE 하네스 .c 등)은 다음 실행에서 소스로 읽지 않는다.
-  report.html                   모든 결과를 항목별 탭으로 묶은 HTML 보고서 (브라우저로 열기, 검색·필터·경로 펼치기)
+  report.html                   모든 결과를 항목별 탭으로 묶은 HTML 보고서 (브라우저로 열기, 검색·필터·경로 펼치기, 결과 대조)
+  run_log.txt                   실행 기록: 명령·환경·단계별 시간·파싱 실패 원인·경고 (오류로 멈춰도 남음)
+  cia_project.suggested.yaml    (프로젝트 설정이 없을 때) 이름 규칙·우선순위·제외 규칙 시작 파일 → 상위 폴더에 cia_project.yaml 로
   security/vulnerability_report.json, cpg.json, joern/, codeql/, klee/   보안 분석 결과와 외부 도구 입력
   summary.md / summary.json     폴더 비교 요약 (파일 변경, 영향 요약, 의존성 변화, 실행 확인, 분석 범위)
   impact/impact_report.md       변경 영향 분석 보고서 (변경 위치, 영향 함수·변수 표, 경로, 진입점, 테스트 후보, 제외 구성)
@@ -47,7 +49,8 @@ from pathlib import Path
 
 from c_impact import deps as deps_mod
 from c_impact import html_report, report
-from c_impact import external, parsediag
+from c_impact import external, names as names_mod, parsediag
+from c_impact import project as project_mod
 from c_impact import review as review_mod
 from c_impact import story as story_mod
 from c_impact import units as units_mod
@@ -700,6 +703,108 @@ def _code_rows(c, lines, span, old_dir, new_dir, old, new):
         c["code_full"] = story_mod.side_by_side(ol, nl, nlo - 1, nhi + 1, olo and olo - 1, ohi and ohi + 1, ctx=1)
 
 
+def _patterns(rules, project: dict, new_files: dict, auto: dict | None) -> tuple[dict, dict]:
+    """검토·설명에 쓸 이름 규칙: 기본 ← security_rules.yaml ← cia_project.yaml (← --auto-config 이면 이름에서 찾은 약어)."""
+    base = project_mod.merge_patterns(review_mod.DEFAULT_PATTERNS, getattr(rules, "review_patterns", None), project)
+    info = {"source": "프로젝트 설정" if project.get("review_patterns") else "기본값", "added": {}, "roles": {}, "unclassified": []}
+    try:
+        sug = names_mod.suggest(new_files, base)
+    except Exception:  # noqa: BLE001 — 이름 분석 실패는 무시 (기본 규칙으로 진행)
+        return base, info
+    info["roles"] = {k: [[t, n, ex] for t, n, ex in v] for k, v in sug["roles"].items()}
+    info["unclassified"] = [[t, n, ex] for t, n, ex in sug["unclassified"]]
+    info["suggested"] = sug["patterns"]
+    if auto is not None and not project.get("review_patterns") and sug["patterns"]:
+        # --auto-config: 프로젝트 설정이 이름 규칙을 정하지 않았으면 이름에서 찾은 약어를 더한다
+        for role, rx in sug["patterns"].items():
+            base[role] = f"(?:{base[role]})|(?:{rx})" if base.get(role) else rx
+            toks = [t for t, _n, _ex in sug["roles"][role] if t in rx.lower() or t.upper() in rx or t.capitalize() in rx]
+            info["added"][role] = toks
+            auto["decisions"].append({"item": f"이름 규칙 ({names_mod.ROLE_KO.get(role, role)})", "value": ", ".join(toks),
+                                      "evidence": "변수 이름에서 찾은 약어 — " + "; ".join(
+                                          f"{t}: {n}개 (예: {', '.join(ex[:2])})" for t, n, ex in sug["roles"][role] if t in toks),
+                                      "confidence": "중간", "alternatives": []})
+        info["source"] = "기본값 + 이름에서 찾은 약어 (--auto-config)"
+    return base, info
+
+
+def _project_template(s: dict) -> str:
+    """cia_project.yaml 시작 파일: 이름에서 찾은 약어, 기본 우선순위 규칙, 빈 제외 목록."""
+    info = s.get("name_rules") or {}
+    pats = {}
+    for role, rx in (info.get("suggested") or {}).items():
+        pats[role] = rx
+    head = ["# 프로젝트 보정 설정 — 이 파일을 변경 후 폴더의 상위 폴더에 cia_project.yaml 로 복사해 고쳐 쓰세요.",
+            "# (calibrate.py 가 결과 대조 내용을 보고 고칠 부분을 제안합니다. 키 설명: c_impact/project.py)",
+            "# 분류되지 않은 이름 조각 (역할이 있으면 review_patterns 에 추가): "
+            + ", ".join(f"{t}({n})" for t, n, _ in (info.get("unclassified") or [])[:15]), ""]
+    body = {"pattern_mode": "add", "review_patterns": pats, "call_verbs": {},
+            "priority_rules": project_mod.DEFAULT_PRIORITY_RULES,
+            "suppress": {"review_items": [], "risk_rules": []}, "tests": dict(project_mod.DEFAULT_TESTS)}
+    return "\n".join(head) + project_mod.to_yaml(body)
+
+
+def write_run_log(out: Path, s: dict, args, error: str = "") -> None:
+    """실행 기록: 명령, 환경, 단계별 시간, 파싱 실패 원인, 경고 (결과를 보내 줄 때 이 파일을 함께)."""
+    import platform
+    lines = ["CIA 실행 기록", "=" * 60, f"시각: {s.get('time') or time.strftime('%Y-%m-%d %H:%M:%S')}",
+             f"명령: {' '.join(s.get('command') or sys.argv)}", f"Python {platform.python_version()} · {platform.platform()}"]
+    for mod in ("pycparser", "z3", "yaml"):
+        try:
+            m = __import__(mod)
+            lines.append(f"  {mod} {getattr(m, '__version__', '') or getattr(m, 'get_version_string', lambda: '')()}")
+        except Exception:  # noqa: BLE001
+            lines.append(f"  {mod} 없음")
+    lines += [f"변경 전: {s.get('old_dir', args.old_dir)}", f"변경 후: {s.get('new_dir', args.new_dir)}", f"결과: {out}",
+              f"프로젝트 설정: {s.get('project_config') or '없음 (cia_project.suggested.yaml 참고)'}", ""]
+    ch = s.get("file_changes") or {}
+    if ch:
+        lines.append(f"파일: 수정 {len(ch.get('modified', []))} · 추가 {len(ch.get('added', []))} · 삭제 {len(ch.get('removed', []))}")
+    an = s.get("analyzed") or {}
+    if an:
+        lines.append(f"분석한 C 파일: 변경 전 {an.get('old', 0)} · 변경 후 {an.get('new', 0)}")
+    lines += ["", "[단계별 시간]"]
+    for name, sec in s.get("timing") or getattr(args, "_stages", []) or []:
+        lines.append(f"  {sec:8.1f}초  {name}")
+    if s.get("elapsed"):
+        lines.append(f"  {s['elapsed']:8.1f}초  전체")
+    pd = s.get("parse_diag") or []
+    pe = ((s.get("analysis") or {}).get("excluded") or {}).get("parse_errors") or {}
+    lines += ["", f"[파싱 실패] {len(pe)}개 파일"]
+    for g in pd[:20]:
+        lines.append(f"  - {g['cause']} '{g['detail']}': {g['count']}개 (예: {g['files'][0]}) → {g.get('fix') or g.get('advice', '')}")
+    st = s.get("story") or {}
+    if st:
+        c = (st.get("overview") or {}).get("counts") or {}
+        lines += ["", f"[결과] 변경 {c.get('changes', 0)} · 고유 문제 {c.get('findings', 0)} · 검토 지적 {c.get('review_flags', 0)} · "
+                      f"영향 경로 {c.get('impact_paths', 0)} · 검증 항목 {c.get('tests', 0) + c.get('questions', 0)}"]
+        for e in st.get("errors") or []:
+            lines.append(f"  변경 설명 실패: {e}")
+    ni = s.get("name_rules") or {}
+    if ni:
+        lines += ["", f"[이름 규칙] {ni.get('source', '')}"]
+        for role, toks in (ni.get("added") or {}).items():
+            lines.append(f"  추가 ({role}): {', '.join(toks)}")
+    if s.get("warnings"):
+        lines += ["", "[경고]"] + [f"  - {w}" for w in s["warnings"]]
+    if error:
+        lines += ["", "[오류]", error]
+    try:
+        (Path(out) / "run_log.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _crash_log(args, e: Exception) -> None:
+    import traceback
+    out = getattr(args, "_out", None)
+    if out is None:
+        return
+    write_run_log(out, {"timing": getattr(args, "_stages", []), "command": sys.argv[:]}, args,
+                  error="".join(traceback.format_exception(type(e), e, e.__traceback__)))
+    log(f"오류 내용을 기록했습니다: {Path(out) / 'run_log.txt'} (문의할 때 이 파일을 보내 주세요)")
+
+
 def html_payload(s: dict) -> dict:
     """report.html 에 넣을 데이터. 표시용으로 정렬·우선순위·원인 변경을 미리 계산해 둔다."""
     ch = s["file_changes"]
@@ -708,7 +813,8 @@ def html_payload(s: dict) -> dict:
         "parse_diag": [{k: g.get(k) for k in ("cause", "detail", "count", "where", "fix", "advice", "defined_in", "line_text")}
                        | {"files": g["files"][:10]} for g in (s.get("parse_diag") or [])],
         "meta": {k: s.get(k) for k in ("old_dir", "new_dir", "time", "elapsed", "scope_reason", "analyzed",
-                                       "warnings", "duplicate_headers", "outputs")},
+                                       "warnings", "duplicate_headers", "outputs", "timing", "project_config",
+                                       "name_rules")},
         "include": {"auto": len(s["auto_include"]), "user": len(s["user_include"]), "cc": bool(s["compile_commands"])},
         "files": [{"status": st, "file": rel} for st, key in (("수정", "modified"), ("추가", "added"), ("삭제", "removed"))
                   for rel in ch[key]],
@@ -905,6 +1011,23 @@ def run(args) -> int:
         log("      그 위치에 쓸 수 없으면 -o 로 다른 위치의 절대 경로를 지정하세요.")
         return 1
     log(f"결과 폴더: {out}")
+    args._out = out
+    stages: list[list] = []
+    mark = [time.time()]
+
+    def lap(name: str):
+        now = time.time()
+        stages.append([name, round(now - mark[0], 2)])
+        mark[0] = now
+    args._stages = stages
+    try:
+        proj_path = project_mod.find(new_dir, getattr(args, "project_config", None))
+        project = project_mod.load(proj_path)
+    except ValueError as e:
+        log(f"오류: {e}")
+        return 1
+    if proj_path:
+        log(f"프로젝트 설정: {proj_path}")
     exclude = list(args.exclude or [])
     warnings: list[str] = []
     auto = None
@@ -923,6 +1046,7 @@ def run(args) -> int:
         if low:
             warnings.append("자동 탐지 설정 중 확신도 '낮음' " + str(len(low)) + "건: "
                             + "; ".join(f"{d['item']} {d['value']}" for d in low[:4]) + " — 실제 빌드 설정과 확인하세요")
+        lap("빌드 설정 자동 탐지")
 
     log("1/5 파일 비교 중...")
     old_files, new_files = list_c_files(old_dir, exclude), list_c_files(new_dir, exclude)
@@ -940,7 +1064,10 @@ def run(args) -> int:
         "duplicate_headers": duplicate_headers(old_files, new_files) if auto_inc else {},
         "warnings": warnings, "outputs": [],
         "auto_config": auto,
+        "project_config": str(proj_path) if proj_path else "",
+        "timing": stages, "command": sys.argv[:],
     }
+    lap("파일 비교")
     any_change = changes["added"] or changes["removed"] or changes["modified"]
     files, why = analysis_scope(changes, old_files, new_files, args.scope)
     summary["scope_reason"] = why
@@ -969,15 +1096,21 @@ def run(args) -> int:
         log("2/5 전처리·파싱·의존성 분석 중...")
         old, new = load_programs(old_dir, new_dir, cfg, globs, exclude or None, args.extern_model, args.jobs)
         summary["analyzed"] = {"old": len(old.tus), "new": len(new.tus)}
+        lap(f"전처리·파싱 (변경 전 {len(old.tus)}개 · 변경 후 {len(new.tus)}개 파일)")
         log("3/5 변경 영향 분석(전방 슬라이싱) 중...")
         rules, rules_note = _load_rules(args.rules)
         if rules_note:
             warnings.append(rules_note)
+        patterns, name_info = _patterns(rules, project, new_files, auto)
+        summary["review_patterns"] = patterns
+        summary["name_rules"] = name_info
         log("    보안 취약점 분석 (CPG · Taint · Symbolic Execution)...")
         analysis = run_analysis(old, new, cfg, k=args.context_depth, entries=args.entry, isr=args.isr,
                                 sil_cycles=args.cycles, rules=rules, symbolic=not args.no_symbolic,
                                 sym_paths=args.sym_paths, sym_budget=args.sym_budget, cwe=args.cwe)
+        lap("변경 영향·보안 분석")
         summary["outputs"] += security_outputs(analysis, out / "security", new_dir, cfg, rules, args)
+        lap("외부 도구 입력 생성 (CPG·Joern·CodeQL·KLEE)")
         pe = analysis["excluded"]["parse_errors"]
         summary["parse_diag"] = parsediag.summarize(pe, {**old_files, **new_files}) if pe else []
 
@@ -985,17 +1118,19 @@ def run(args) -> int:
         t_old = deps_mod.dependency_table(old, args.entry, args.isr)
         t_new = deps_mod.dependency_table(new, args.entry, args.isr)
         summary["deps_diff"] = deps_diff(t_old, t_new)
+        lap("의존성 비교")
         log("    변경점 검토 체크리스트...")
         internal = analysis.get("_internal") or {}
         summary["review"] = review_mod.review(old, new, internal["cs"], analysis, summary["deps_diff"],
-                                              changes, cfg.defines, getattr(rules, "review_patterns", None))
+                                              changes, cfg.defines, patterns)
         summary["units"] = units_mod.build(old, new, internal["cs"], analysis, summary["review"], summary["deps_diff"],
-                                           getattr(rules, "review_patterns", None))
+                                           patterns)
+        lap("검토 항목·변경 묶음")
         try:
             summary["story"] = story_mod.build(old, new, summary["units"], analysis, summary["review"], {
                 "versions": {"old": old_dir.name, "new": new_dir.name}, "time": summary["time"], "file_changes": changes,
                 "analyzed": summary["analyzed"], "scope": args.scope, "scope_reason": why,
-                "sil": summary.get("sil"), "explore": summary.get("explore")}, getattr(rules, "review_patterns", None))
+                "sil": summary.get("sil"), "explore": summary.get("explore")}, patterns, project)
             _attach_code(summary["story"], old_dir, new_dir, old, new)
             for e in summary["story"].get("errors", []):
                 warnings.append(f"변경 설명 생성 실패 (기본 정보만 표시): {e}")
@@ -1039,6 +1174,11 @@ def run(args) -> int:
                                        sil_template=bool(args.scenario or args.explore))
         summary["outputs"] = [str(p) for p in written] + summary["outputs"]
         summary["analysis"] = public(analysis)
+        lap("변경 설명·보고서 데이터")
+        if not proj_path:
+            tpl = out / "cia_project.suggested.yaml"
+            tpl.write_text(_project_template(summary), encoding="utf-8")
+            summary["outputs"].append(str(tpl))
 
     summary["elapsed"] = time.time() - t0
     summary["outputs"] = [str(out / "summary.md"), str(out / "summary.json")] + summary["outputs"]
@@ -1046,12 +1186,16 @@ def run(args) -> int:
     (out / "summary.md").write_text(render_summary(summary), encoding="utf-8")
     (out / "report.html").write_text(html_report.render(html_payload(summary)), encoding="utf-8")
     (out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    lap("결과 파일 쓰기")
+    summary["elapsed"] = time.time() - t0
+    write_run_log(out, summary, args)
 
     if not args.quiet:
         print(terminal(summary))
         print()
     print(f"보고서(HTML): {out / 'report.html'}")
     print(f"요약: {out / 'summary.md'}")
+    print(f"실행 기록: {out / 'run_log.txt'}  (총 {summary['elapsed'] / 60:.1f}분)")
     if analysis is not None:
         print(f"상세: {out / 'impact' / 'impact_report.md'}")
         if analysis["excluded"]["parse_errors"]:
@@ -1102,6 +1246,8 @@ def main(argv: list[str] | None = None) -> int:
 
     b.add_argument("--auto-config", action="store_true",
                    help="컴파일러·매크로(-D)·include(-I)·제외 폴더·메모리 클래스 헤더를 프로젝트에서 자동 탐지해 적용 (detect_config.py)")
+    b.add_argument("--project-config", metavar="YAML",
+                   help="프로젝트 보정 설정 (이름 규칙·우선순위·제외 규칙·검증 항목). 기본: 변경 후 폴더의 상위 폴더/cia_project.yaml")
     b.add_argument("--search", action="append", default=[], metavar="DIR",
                    help="--auto-config 가 프로젝트 밖에서 헤더를 찾을 위치 (MCAL·BSW·컴파일러 include 폴더, 여러 번 가능)")
 
@@ -1132,7 +1278,11 @@ def main(argv: list[str] | None = None) -> int:
         return run(args)
     except (RuntimeError, OSError) as e:
         log(f"오류: {e}")
+        _crash_log(args, e)
         return 1
+    except Exception as e:
+        _crash_log(args, e)
+        raise
 
 
 if __name__ == "__main__":

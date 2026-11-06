@@ -159,6 +159,12 @@ ol.path { margin: 4px 0 8px; padding-left: 22px; font-size: 12.5px; }
 .hl { animation: hl 1.6s ease-out; }
 @keyframes hl { from { box-shadow: 0 0 0 3px var(--accent); } to { box-shadow: 0 0 0 0 transparent; } }
 .legend td:first-child { white-space: nowrap; }
+.fbox { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 4px; }
+h4.step.fb { background: var(--p2-bg); color: var(--p2); }
+.fbnote { font: inherit; font-size: 12.5px; padding: 3px 6px; border: 1px solid var(--line); border-radius: 5px; background: var(--panel); color: var(--text); min-width: 260px; width: 100%; }
+table.fbt td:first-child { width: 40%; }
+.fbox select, .toolbar select { font: inherit; font-size: 12.5px; padding: 3px 6px; border: 1px solid var(--line); border-radius: 5px; background: var(--panel); color: var(--text); }
+.toolbar input[type=text] { font: inherit; font-size: 12.5px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 5px; background: var(--panel); color: var(--text); }
 </style>
 </head>
 <body>
@@ -276,6 +282,105 @@ function statusCell(id) {
   return c;
 }
 
+// ---------------------------------------------------------------- 결과 대조 (표본 대조 · 오탐 · 누락)
+var FKEY = "cia-feedback|" + (M.time || "") + "|" + (M.new_dir || "");
+var FB = {};
+try { FB = JSON.parse(localStorage.getItem(FKEY) || "{}") || {}; } catch (e) { FB = {}; }
+FB.changes = FB.changes || {}; FB.findings = FB.findings || {}; FB.missed = FB.missed || [];
+if (!FB.sample) FB.sample = (OV.sample || []).slice();
+function fsave() { FB.at = new Date().toISOString(); try { localStorage.setItem(FKEY, JSON.stringify(FB)); } catch (e) {} fbListeners.forEach(function (f) { f(); }); }
+var fbListeners = [];
+function inSample(id) { return FB.sample.indexOf(id) >= 0; }
+var FB_Q = [["title", "제목·설명이 실제 변경과 맞는가", ["정확", "부정확"]],
+  ["priority", "우선순위가 적절한가", ["적절", "높여야 함", "낮춰야 함"]],
+  ["impact", "영향 범위가 맞는가", ["정확", "과다 (불필요한 경로)", "누락 있음"]]];
+var FB_F = ["정확", "오탐 (불필요한 경고)", "판정 수준 다름", "중복"];
+function fbState(c) {
+  var r = FB.changes[c.id] || {}, need = FB_Q.length + c.findings.length, got = 0;
+  FB_Q.forEach(function (q) { if (r[q[0]]) got++; });
+  c.findings.forEach(function (f) { if ((FB.findings[f] || {}).verdict) got++; });
+  return got === 0 ? "미대조" : got >= need ? "대조 완료" : "대조 중 " + got + "/" + need;
+}
+function fbSelect(val, opts, on) {
+  var s = el("select", {onchange: function (e) { on(e.target.value); }}, [""].concat(opts).map(function (v) {
+    var o = el("option", {value: v, text: v || "선택"}); if (v === val) o.selected = true; return o; }));
+  return s;
+}
+function feedbackBox(c) {
+  var box = el("div", {class: "fbox"});
+  box.appendChild(el("h4", {class: "step fb"}, ["⑤ 결과 대조", span("표본 대조용 — 이 결과가 맞는지 검증자가 기록 (오탐·누락 → calibrate.py 로 보정)", "q")]));
+  var r = FB.changes[c.id] = FB.changes[c.id] || {};
+  var rows = FB_Q.map(function (q) {
+    return el("tr", {}, [td(q[1]), el("td", {}, [fbSelect(r[q[0]] || "", q[2], function (v) { r[q[0]] = v; fsave(); })])]);
+  });
+  c.findings.forEach(function (fid) {
+    var f = FI[fid], fr = FB.findings[fid] = FB.findings[fid] || {};
+    rows.push(el("tr", {}, [el("td", {}, [span(fid, "idl"), rich(f.title)]), el("td", {}, [fbSelect(fr.verdict || "", FB_F, function (v) { fr.verdict = v; fsave(); }),
+      el("input", {type: "text", class: "fbnote", placeholder: "이유 (예: 의도된 변경, 다른 곳에서 처리)", value: fr.note || "", onchange: function (e) { fr.note = e.target.value; fsave(); }})])]));
+  });
+  rows.push(el("tr", {}, [td("메모 (누락된 영향·고칠 문구 등)"), el("td", {}, [el("textarea", {class: "fbnote", placeholder: "예: Runnable_X 로 가는 영향이 빠짐", onchange: function (e) { r.note = e.target.value; fsave(); }},
+    [document.createTextNode(r.note || "")])])]));
+  box.appendChild(table(["대조 항목", "결과"], rows, "fbt"));
+  var kind = fbSelect("영향 누락", ["영향 누락", "문제 누락", "변경 누락"], function () {});
+  var desc = el("input", {type: "text", class: "fbnote", placeholder: "보고서가 놓친 내용 (함수·변수·이유)"});
+  box.appendChild(el("div", {class: "toolbar"}, [span("누락 추가:", "small"), kind, desc, el("button", {class: "btn", text: "추가", onclick: function () {
+    if (!desc.value.trim()) return; FB.missed.push({kind: kind.value, change: c.id, where: c.func + "() " + c.file + ":" + c.lo, desc: desc.value.trim()}); desc.value = ""; fsave(); }})]));
+  var st = span("", "small muted");
+  function draw() { st.textContent = "대조 상태: " + fbState(c) + " · 이 변경의 누락 기록 " + FB.missed.filter(function (m) { return m.change === c.id; }).length + "건"; }
+  draw(); fbListeners.push(draw); box.appendChild(st);
+  return box;
+}
+function feedbackExport() {
+  var out = {format: "cia-feedback/1", versions: OV.versions, report_time: M.time, new_dir: M.new_dir, reviewer: FB.reviewer || "",
+    exported_at: new Date().toISOString(), sample: FB.sample, project_config: M.project_config || "",
+    changes: ST.changes.filter(function (c) { return inSample(c.id) || FB.changes[c.id] && Object.keys(FB.changes[c.id]).some(function (k) { return FB.changes[c.id][k]; }); }).map(function (c) {
+      return {id: c.id, title: c.title, func: c.func, file: c.file, line: c.lo, type_label: c.type_label, priority: c.priority, priority_reason: c.priority_reason,
+        judgment: c.judgment, comparison: c.comparison, external_output: ((c.impact || {}).outputs || []).length > 0, cross_function: (c.impact || {}).n_cross || 0,
+        review_items: (c.review_flags || []).map(function (r) { return r.item; }), feedback: FB.changes[c.id] || {},
+        findings: c.findings.map(function (fid) { var f = FI[fid]; return {id: fid, title: f.title, judgment: f.judgment, comparison: f.comparison,
+          rules: (f.sources || []).map(function (x) { return x.rule; }), review_items: (f.review || []).map(function (x) { return x.item; }), feedback: FB.findings[fid] || {}}; })};
+    }), missed: FB.missed};
+  var a = el("a", {href: URL.createObjectURL(new Blob([JSON.stringify(out, null, 2)], {type: "application/json"})), download: "cia_feedback_" + ((OV.versions || {}).new || "report") + ".json"});
+  document.body.appendChild(a); a.click(); a.remove();
+}
+function buildFeedback(sec) {
+  sec.appendChild(el("h2", {text: "결과 대조 (표본 검증)"}));
+  sec.appendChild(el("p", {class: "desc", text: "이 보고서를 믿고 쓸 수 있는지 확인하는 단계입니다. ① 아래 표본(우선순위·판정별로 골고루 자동 선정)을 열어 각 변경 카드의 ‘⑤ 결과 대조’를 기록하고 ② 보고서가 놓친 변경·영향·문제를 ‘누락’으로 남긴 뒤 ③ 대조 결과를 내보내 calibrate.py 로 집계하면, 오탐이 많은 규칙과 우선순위 보정안이 나옵니다."}));
+  var who = el("input", {type: "text", value: FB.reviewer || "", placeholder: "대조한 사람", onchange: function (e) { FB.reviewer = e.target.value; fsave(); }});
+  var sum = span("", "count");
+  sec.appendChild(el("div", {class: "toolbar"}, [span("검증자:", "small"), who, el("button", {class: "btn", text: "표본만 보기 (변경 검토)", onclick: function () { show("changes"); if (CF.setMode) CF.setMode("sample"); }}),
+    el("button", {class: "btn", text: "대조 결과 내보내기 (JSON)", onclick: feedbackExport}),
+    el("button", {class: "btn", text: "표본 다시 선정", onclick: function () { FB.sample = (OV.sample || []).slice(); fsave(); redraw(); }}), sum]));
+  var tb = el("div", {}), mb = el("div", {});
+  sec.appendChild(el("h3", {text: "대조 표본"})); sec.appendChild(tb);
+  sec.appendChild(el("h3", {text: "누락 기록 (보고서가 놓친 것)"})); sec.appendChild(mb);
+  function redraw() {
+    tb.textContent = "";
+    tb.appendChild(table(["표본", "ID", "변경", "우선순위", "판정", "발견", "대조 상태"], ST.changes.map(function (c) {
+      var chk = el("input", {type: "checkbox", onchange: function (e) { var i = FB.sample.indexOf(c.id); if (e.target.checked && i < 0) FB.sample.push(c.id); if (!e.target.checked && i >= 0) FB.sample.splice(i, 1); fsave(); }});
+      chk.checked = inSample(c.id);
+      return el("tr", {}, [el("td", {}, [chk]), el("td", {}, [idLink(c.id)]), td(c.title), el("td", {}, [prioTag(c.priority)]), el("td", {}, [judgeTag(c.judgment)]),
+        td(String(c.findings.length)), td(fbState(c))]);
+    })));
+    mb.textContent = "";
+    var kind = fbSelect("영향 누락", ["영향 누락", "문제 누락", "변경 누락"], function () {});
+    var where = el("input", {type: "text", placeholder: "위치 (파일:줄 / 함수)"}), chg = el("input", {type: "text", placeholder: "관련 변경 ID (선택)", style: "width:120px"});
+    var desc = el("input", {type: "text", class: "fbnote", placeholder: "놓친 내용과 이유"});
+    mb.appendChild(el("div", {class: "toolbar"}, [kind, where, chg, desc, el("button", {class: "btn", text: "추가", onclick: function () {
+      if (!desc.value.trim()) return; FB.missed.push({kind: kind.value, change: chg.value.trim(), where: where.value.trim(), desc: desc.value.trim()}); fsave(); redraw(); }})]));
+    mb.appendChild(FB.missed.length ? table(["종류", "관련 변경", "위치", "내용", ""], FB.missed.map(function (m, i) {
+      return el("tr", {}, [td(m.kind), el("td", {}, [m.change ? idLink(m.change) : span("-", "muted")]), td(m.where || "-"), td(m.desc),
+        el("td", {}, [el("button", {class: "lnk small", text: "삭제", onclick: function () { FB.missed.splice(i, 1); fsave(); redraw(); }})])]);
+    })) : span("기록된 누락 없음", "muted small"));
+  }
+  function count() {
+    var done = FB.sample.filter(function (id) { return CH[id] && fbState(CH[id]) === "대조 완료"; }).length, fp = 0, ok = 0;
+    Object.keys(FB.findings).forEach(function (k) { var v = FB.findings[k].verdict || ""; if (v.indexOf("오탐") === 0) fp++; if (v === "정확") ok++; });
+    sum.textContent = "표본 " + FB.sample.length + "건 중 대조 완료 " + done + " · 발견 정확 " + ok + " · 오탐 " + fp + " · 누락 " + FB.missed.length;
+  }
+  redraw(); count(); fbListeners.push(count);
+}
+
 // ---------------------------------------------------------------- 상단 요약
 function header() {
   var h = document.getElementById("top");
@@ -368,10 +473,12 @@ function changeCard(c) {
   stTag.textContent = "검토: " + cs.label;
   var card = el("article", {class: "ccard p" + c.priority + (c.priority === "낮음" ? " closed" : ""), id: "C-" + c.id, "data-id": c.id});
   var hd = el("div", {class: "hd", onclick: function () { card.classList.toggle("closed"); }}, [
-    el("div", {}, [span(c.id, "idb"), " ", prioTag(c.priority), judgeTag(c.judgment), cmpTag(c.comparison), stTag]),
+    el("div", {}, [span(c.id, "idb"), " ", prioTag(c.priority), judgeTag(c.judgment), cmpTag(c.comparison), stTag,
+      inSample(c.id) ? span("대조 표본", "tag t2") : null]),
     el("h3", {text: c.title}),
     el("p", {class: "lead"}, [rich(c.sentences.join(" "))]),
-    el("div", {class: "loc"}, [code(c.func + "()"), " · " + c.file + ":" + c.lo + (c.hi !== c.lo ? "–" + c.hi : "") + "  ·  변경 의도: ", el("b", {text: c.intent})])]);
+    el("div", {class: "loc"}, [code(c.func + "()"), " · " + c.file + ":" + c.lo + (c.hi !== c.lo ? "–" + c.hi : "") + "  ·  변경 의도: ", el("b", {text: c.intent}),
+      c.priority_reason ? "  ·  우선순위 근거: " + c.priority_reason : ""])]);
   var bd = el("div", {class: "bd"});
   // ①
   bd.appendChild(el("h4", {class: "step"}, ["① 무엇이 변경되었는가", span("동작 설명 → 변경 전후 비교 → 영향 범위", "q")]));
@@ -410,6 +517,7 @@ function changeCard(c) {
   bd.appendChild(el("h4", {class: "step"}, ["④ 검증자는 무엇을 추가로 확인해야 하는가", span("결과 · 증거 · 판정 근거를 모두 기록해야 완료", "q")]));
   bd.appendChild(testTable(c.tests.map(function (id) { return TE[id]; }), false));
   bd.appendChild(el("div", {class: "small", style: "margin-top:8px"}, [el("button", {class: "lnk", text: "근거 상세 보기 → (자동 분류 규칙 원문 · 전체 경로 · 검토 항목 지적)", onclick: function () { goEvidence(c.id); }})]));
+  bd.appendChild(feedbackBox(c));
   card.appendChild(hd); card.appendChild(bd);
   return card;
 }
@@ -441,7 +549,7 @@ function buildChanges(sec) {
   sec.appendChild(el("h2", {text: "변경 검토"}));
   sec.appendChild(el("p", {class: "desc", text: "우선순위가 높은 변경부터 정렬했습니다. 변경마다 ① 변경 내용 → ② 자동 분석 → ③ 발견 사항 → ④ 추가 검증 순서로 읽고, 파일·함수 이름으로 위치를 찾으세요. 행을 누르면 해당 변경으로 이동합니다."}));
   var seg = el("div", {class: "seg"});
-  [["all", "전체"], ["new", "신규 위험만"], ["risk", "위험 후보 이상"], ["todo", "검토 미완료"]].forEach(function (m) {
+  [["all", "전체"], ["new", "신규 위험만"], ["risk", "위험 후보 이상"], ["todo", "검토 미완료"], ["sample", "대조 표본"]].forEach(function (m) {
     seg.appendChild(el("button", {class: m[0] === CF.mode ? "on" : "", text: m[1], onclick: function () { CF.mode = m[0]; Array.prototype.forEach.call(seg.children, function (b) { b.classList.remove("on"); }); this.classList.add("on"); apply(); }}));
   });
   var q = el("input", {type: "search", placeholder: "제목·함수·파일·ID 검색", oninput: function (e) { CF.q = e.target.value.toLowerCase(); apply(); }});
@@ -467,6 +575,7 @@ function buildChanges(sec) {
     if (CF.mode === "new" && c.comparison !== "신규") return false;
     if (CF.mode === "risk" && ["실행 재현 확인", "분석 모델 내 위반 확인", "위험 후보"].indexOf(c.judgment) < 0) return false;
     if (CF.mode === "todo" && changeStatus(c).label.indexOf("완료") === 0) return false;
+    if (CF.mode === "sample" && !inSample(c.id)) return false;
     if (CF.q && (c.id + " " + c.title + " " + c.func + " " + c.file + " " + c.sentences.join(" ")).toLowerCase().indexOf(CF.q) < 0) return false;
     return true;
   }
@@ -476,6 +585,7 @@ function buildChanges(sec) {
     cnt.textContent = n + " / " + ST.changes.length + "건";
   }
   apply();
+  CF.setMode = function (mode) { CF.mode = mode; Array.prototype.forEach.call(seg.children, function (b, i) { b.classList.toggle("on", ["all", "new", "risk", "todo", "sample"][i] === mode); }); apply(); };
   CF.reset = function () { CF.mode = "all"; CF.q = ""; q.value = ""; Array.prototype.forEach.call(seg.children, function (b, i) { b.classList.toggle("on", i === 0); }); apply(); };
 }
 function goChange(id, anchor) {
@@ -576,6 +686,10 @@ function buildEvidence(sec) {
       (f.review || []).forEach(function (r) { box.appendChild(el("div", {class: "small"}, [span("검토 " + r.item + " · " + r.class + ": ", "muted"), rich(r.summary)])); });
       d.appendChild(box);
     });
+    if ((c.suppressed || []).length) {
+      d.appendChild(el("h5", {text: "보정 설정으로 제외한 결과 " + c.suppressed.length + "건 (cia_project.yaml suppress)"}));
+      d.appendChild(table(["구분", "ID", "내용"], c.suppressed.map(function (r) { return el("tr", {}, [td(r.kind), td(r.id), td(r.summary)]); })));
+    }
     if ((c.review_flags || []).length) {
       d.appendChild(el("h5", {text: "자동 검토 항목 지적 " + c.review_flags.length + "건"}));
       d.appendChild(table(["항목", "결과 분류", "내용"], c.review_flags.map(function (r) { return el("tr", {}, [td(r.item), td(r.class), td(r.summary)]); })));
@@ -587,8 +701,27 @@ function buildEvidence(sec) {
   var sett = [["변경 전 폴더", M.old_dir], ["변경 후 폴더", M.new_dir], ["분석 범위", (OV.scope === "changed" ? "변경 파일 + 변경 헤더 사용 파일" : "전체") + " — " + (OV.scope_reason || []).join(", ")],
     ["분석한 C 파일", "변경 전 " + ((OV.analyzed || {}).old || 0) + "개 / 변경 후 " + ((OV.analyzed || {}).new || 0) + "개"],
     ["include 경로", "프로젝트 헤더 폴더 " + ((D.include || {}).auto || 0) + "개 자동 등록, 직접 지정 " + ((D.include || {}).user || 0) + "개" + ((D.include || {}).cc ? ", compile_commands.json 사용" : "")],
-    ["분석 시간", M.elapsed ? (M.elapsed / 60).toFixed(1) + "분" : "-"]];
+    ["분석 시간", M.elapsed ? (M.elapsed / 60).toFixed(1) + "분 (단계별 시간은 아래, run_log.txt 에도 기록)" : "-"],
+    ["프로젝트 보정 설정", M.project_config || "없음 — 결과 폴더의 cia_project.suggested.yaml 을 상위 폴더에 cia_project.yaml 로 두면 다음 실행에 반영"]];
   sec.appendChild(table(["항목", "값"], sett.map(function (r) { return el("tr", {}, [td(r[0], "nowrap"), td(String(r[1] == null ? "" : r[1]))]); })));
+  if ((M.timing || []).length) {
+    sec.appendChild(el("h5", {text: "단계별 실행 시간"}));
+    var tot = M.timing.reduce(function (a, r) { return a + r[1]; }, 0) || 1;
+    sec.appendChild(table(["단계", "시간", "비율"], M.timing.map(function (r) {
+      return el("tr", {}, [td(r[0]), td(r[1] >= 60 ? (r[1] / 60).toFixed(1) + "분" : r[1].toFixed(1) + "초", "nowrap"), td(Math.round(r[1] * 100 / tot) + "%")]);
+    })));
+  }
+  var NR = M.name_rules || {};
+  if (NR.roles) {
+    sec.appendChild(el("h5", {text: "이름 규칙 (변수 역할 판단) — " + (NR.source || "")}));
+    var RK = {counter: "카운터", timer: "타이머", error_state: "오류 상태", flag: "플래그"};
+    sec.appendChild(table(["역할", "프로젝트에서 찾은 약어 (이름 수 · 예)", "이번 실행에 추가"], Object.keys(RK).map(function (k) {
+      return el("tr", {}, [td(RK[k]), td(((NR.roles || {})[k] || []).map(function (x) { return x[0] + " " + x[1] + "개 (" + x[2].slice(0, 2).join(", ") + ")"; }).join(" · ") || "-", "small"),
+        td(((NR.added || {})[k] || []).join(", ") || "-")]);
+    })));
+    if ((NR.unclassified || []).length) sec.appendChild(el("div", {class: "small muted", text: "분류되지 않은 이름 조각 (역할이 있으면 cia_project.yaml 의 review_patterns 에 추가): " +
+      NR.unclassified.slice(0, 20).map(function (x) { return x[0] + "(" + x[1] + ")"; }).join(", ")}));
+  }
   if ((D.auto_config || []).length) {
     sec.appendChild(el("h5", {text: "자동 탐지한 빌드 설정 (--auto-config)"}));
     sec.appendChild(table(["확신도", "항목", "값", "근거"], D.auto_config.map(function (d) {
@@ -651,6 +784,7 @@ addTab("changes", "변경 검토", ST.changes.length, buildChanges);
 addTab("findings", "발견 사항", ST.findings.length, buildFindings);
 addTab("verify", "검증 기록", ST.tests.length, buildVerify);
 addTab("evidence", "근거 상세", null, buildEvidence);
+addTab("feedback", "결과 대조", (OV.sample || []).length, buildFeedback);
 var start = (location.hash || "").slice(1);
 show(panes[start] ? start : "changes");
 })();

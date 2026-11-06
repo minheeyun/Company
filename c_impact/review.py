@@ -85,6 +85,9 @@ DEFAULT_PATTERNS = {
     "critical": r"(SuspendAllInterrupts|SuspendOSInterrupts|DisableAllInterrupts|SchM_Enter|EnterCritical|"
                 r"Os_Enter|GetResource|osEnterCritical|__disable_irq)",
     "feature_switch": r"(_ENABLE|_ENABLED|_SUPPORT|_USED|_API\b|_ACTIVE|FEATURE|_USE_|DEV_ERROR_DETECT|_ON\b|_OFF\b)",
+    # 변수 역할 (변경 제목·설명·검증 항목에 쓰임)
+    "error_state": r"(err|fault|fail|dtc|diag|abnormal)",
+    "flag": r"(flag|flg|_f\b|enable|ena\b|req\b|lock)",
 }
 
 

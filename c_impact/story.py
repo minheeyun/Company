@@ -22,11 +22,10 @@ from pathlib import Path
 from pycparser import c_ast
 
 from .cexpr import gen
+from . import project as project_mod
 from .program import Program, display_path
 from .review import DEFAULT_PATTERNS, _expr, _iter, expr_diff
 
-ERR_VAR = re.compile(r"(?i)(err|fault|fail|dtc|diag|abnormal)")
-FLAG_VAR = re.compile(r"(?i)(flag|flg|_f\b|enable|ena\b|req\b|lock)")
 COND_RE = re.compile(r"^(?:if|while|switch|for)\s*\((.*)\)$", re.S)
 NO_REQ = "기대값 미확정 — 관련 요구사항 확인 필요"
 JUDGE = ["실행 재현 확인", "분석 모델 내 위반 확인", "위험 후보", "분석 불충분", "변경 사실 확인"]
@@ -104,28 +103,29 @@ VERBS = [("adjust", "조정"), ("adj", "조정"), ("reset", "리셋"), ("init", 
          ("stop", "정지"), ("set", "설정"), ("get", "조회"), ("enable", "활성화"), ("disable", "비활성화")]
 
 
-def call_verb(name: str) -> str | None:
+def call_verb(name: str, verbs=None) -> str | None:
     toks = [t.lower() for t in re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+", name.split("_")[-1] or name)] or [name.lower()]
     for t in reversed(toks):
-        for k, v in VERBS:
+        for k, v in (verbs or VERBS):
             if t == k:
                 return v
     return None
 
 
 class _Labeler:
-    def __init__(self, P):
+    def __init__(self, P, verbs=None):
         self.P = P
+        self.verbs = verbs or VERBS
 
     def var(self, name: str) -> str:
         """상태 갱신 대상의 이름 (갱신 경로 설명용)."""
         if self.P["counter"].search(name):
             return "재시도 카운터" if re.search(r"(?i)retry|rtry", name) else "카운터"
-        if ERR_VAR.search(name):
+        if self.P["error_state"].search(name):
             return "오류 상태"
         if self.P["timer"].search(name):
             return "타이머"
-        if FLAG_VAR.search(name):
+        if self.P["flag"].search(name):
             return "플래그"
         return f"`{name}`"
 
@@ -133,11 +133,11 @@ class _Labeler:
         """처리 이름 (블록 이름용)."""
         if self.P["counter"].search(name):
             return "재시도" if re.search(r"(?i)retry|rtry", name) else "카운터"
-        if ERR_VAR.search(name):
+        if self.P["error_state"].search(name):
             return "오류 처리"
         if self.P["timer"].search(name):
             return "타이머"
-        if FLAG_VAR.search(name):
+        if self.P["flag"].search(name):
             return "플래그"
         return f"`{name}`"
 
@@ -149,7 +149,7 @@ class _Labeler:
     def call_short(self, name: str) -> str:
         if self.P["error_call"].search(name):
             return "오류 처리"
-        return call_verb(name) or f"`{name}()`"
+        return call_verb(name, self.verbs) or f"`{name}()`"
 
     def _collect(self, prog, nodes, fc, fv, skip=()):
         labs = []
@@ -241,7 +241,7 @@ def _analyze_unit(u: dict, g: list, new: Program, old: Program, L: _Labeler, ctl
         after_b = f"추가된 `{gt['expr']}` 조건도 만족해야 해당 블록 실행"
         behaviors.append((before_b, after_b))
         uses_var = next((v for v in var_names if re.search(r"\b" + re.escape(v) + r"\b", gt["expr"])), None)
-        flagish = bool(uses_var and FLAG_VAR.search(uses_var)) or bool(re.search(r"(?i)flag|flg", gt["expr"]))
+        flagish = bool(uses_var and L.P["flag"].search(uses_var)) or bool(L.P["flag"].search(gt["expr"]))
         gt["flag"] = flagish
         gt["var"] = uses_var or (re.findall(r"[A-Za-z_]\w*", gt["expr"]) or [""])[0]
         lead = f"`{uses_var}` 변수가 추가되고, " if uses_var else ""
@@ -559,10 +559,15 @@ def _var_values(prog: Program, var: str) -> list[str]:
 
 
 def build(old: Program, new: Program, units_out: dict, analysis: dict, review: dict | None, ctx: dict,
-          patterns: dict | None = None) -> dict:
-    """ctx: versions, file_changes, analyzed, scope, tools, sil, explore, parse_errors."""
+          patterns: dict | None = None, project: dict | None = None) -> dict:
+    """ctx: versions, file_changes, analyzed, scope, tools, sil, explore, parse_errors.
+    project: cia_project.yaml 내용 (call_verbs, priority_rules, suppress, tests)."""
+    proj = project or {}
     P = {k: re.compile(v, re.I) for k, v in {**DEFAULT_PATTERNS, **(patterns or {})}.items()}
-    L = _Labeler(P)
+    verbs = [(str(k).lower(), str(v)) for k, v in (proj.get("call_verbs") or {}).items()] + VERBS
+    L = _Labeler(P, verbs)
+    sup_items, sup_rules = project_mod.suppressed(proj)
+    enabled = project_mod.tests_enabled(proj)
     units = units_out["units"]
     risks = {r["id"]: r for r in analysis.get("risks", [])}
     items = analysis.get("items", [])
@@ -603,6 +608,9 @@ def build(old: Program, new: Program, units_out: dict, analysis: dict, review: d
             cid = f"C{len(changes) + 1:02d}"
             old_lines = [x.o.line for x in g if x.o is not None] + [x.line for x in g if x.version == "old"]
             rv = review_by_unit.get(u["id"], [])
+            suppressed = [{"kind": "검토 항목", "id": f["item"], "summary": f["summary"]} for f in rv
+                          if f["item"] in sup_items and f["class"] != "변경 사실 확인"]
+            rv = [f for f in rv if f["item"] not in sup_items]
             flags = [f for f in rv if f["class"] not in ("변경 사실 확인",)]
 
             # ② 스크립트가 확인한 것
@@ -654,6 +662,9 @@ def build(old: Program, new: Program, units_out: dict, analysis: dict, review: d
                 ", ".join(sorted({f['item'] for f in flags})) and "지적 항목: " + ", ".join(sorted({f['item'] for f in flags}))
                 or "이번 분석 범위에서 25개 검토 규칙의 지적 미탐지", "지적 사항이 실제 결함인지")
             urisks = [risks[r] for r in u["risks"] + u["prop_risks"] if r in risks]
+            suppressed += [{"kind": "자동 분류", "id": r["id"], "summary": f"{r.get('kind_label', '')} — {r['expr']}"}
+                           for r in urisks if r.get("kind_label") in sup_rules]
+            urisks = [r for r in urisks if r.get("kind_label") not in sup_rules]
             if urisks:
                 chk("보안·안전 규칙, Taint", "분석 결과 있음", "위험 후보 " + ", ".join(r["id"] for r in urisks),
                     "실제 오류·공격 입력이 들어오는지")
@@ -762,7 +773,9 @@ def build(old: Program, new: Program, units_out: dict, analysis: dict, review: d
             # ④ 추가 검증
             tl = []
 
-            def test(title, cond, observe, criteria, links, kind="시험"):
+            def test(title, cond, observe, criteria, links, kind="시험", key="boundary"):
+                if not enabled.get(key, True):
+                    return None
                 t = {"id": f"T{cid[1:]}-{len(tl) + 1}", "change": cid, "findings": links, "kind": kind, "title": title,
                      "condition": cond, "observe": observe, "criteria": criteria}
                 tl.append(t)
@@ -785,7 +798,8 @@ def build(old: Program, new: Program, units_out: dict, analysis: dict, review: d
                         back = any(v == vals[0] for v in vals[1:]) or len(vals) > 2
                         note = "" if back else f" (다시 {vals[0]} 으로 바뀌는 코드는 이번 분석 범위에서 찾지 못함 — 의도 확인)"
                         test(f"{'플래그' if gt['flag'] else var} 전이 후 처리", f"`{var}` {seq} 전이를 포함한 연속 실행{note}",
-                             "처리 생략·재개 시점, 상태 잔류", f"필요한 처리가 누락되거나 중복되지 않음 — {NO_REQ}", linked(("gating",)))
+                             "처리 생략·재개 시점, 상태 잔류", f"필요한 처리가 누락되거나 중복되지 않음 — {NO_REQ}", linked(("gating",)),
+                             key="transition")
             for x in A["changed_conds"]:
                 b1 = _boundary(cond_expr(x.o.text))
                 b2 = _boundary(cond_expr(x.n.text))
@@ -807,7 +821,7 @@ def build(old: Program, new: Program, units_out: dict, analysis: dict, review: d
                 sv = state[-1] if state else "변경된 상태"
                 fv = field_[-1] if field_ else "출력 값"
                 test("외부 응답 확인", f"`{sv}` 설정·해제 조건", f"`{fv}` 값과 `{imp['outputs'][0]}()` 출력 시점",
-                     f"메시지 사양과 일치 — {NO_REQ}", linked(("gating", "threshold", "removed", "risk")))
+                     f"메시지 사양과 일치 — {NO_REQ}", linked(("gating", "threshold", "removed", "risk")), key="external")
             for r in urisks:
                 if r.get("verification") and not A["gating"]:
                     test(f"{r['id']} 재현 시험", (r.get("bounds") or {}).get("change") or f"`{_short(r['expr'], 50)}` 경계 조건",
@@ -816,13 +830,14 @@ def build(old: Program, new: Program, units_out: dict, analysis: dict, review: d
             test("변경 전후 회귀 비교", "같은 입력·초기 상태·빌드 설정",
                  "내부 상태" + (f"({', '.join('`' + w + '`' for w in writes[:4])})" if writes else "") + "와 외부 출력"
                  + (f"({', '.join('`' + e + '()`' for e in imp['external'][:2])})" if imp["external"] else "") + "의 차이",
-                 "승인된 동작 변경 범위와 일치 — 변경 의도 확인 필요", fids)
+                 "승인된 동작 변경 범위와 일치 — 변경 의도 확인 필요", fids, key="regression")
             # 판단 질문 (검토 항목에서 온 것)
             for q in u.get("checklist", []):
-                if q["item"].startswith("V") or q["item"] == "-":
+                if q["item"].startswith("V") or q["item"] == "-" or q["item"] in sup_items:
                     continue
                 test(q["area"], f"자동 검토 {q['item']} 지적: {q['basis']}", q["question"],
-                     "요구사항·설계 근거와 대조해 판단 (근거를 판정 근거에 기록)", linked((), (q["item"],)), kind="판단")
+                     "요구사항·설계 근거와 대조해 판단 (근거를 판정 근거에 기록)", linked((), (q["item"],)), kind="판단",
+                     key="questions")
             for f in findings:
                 if f["change"] == cid:
                     f["tests"] = [t["id"] for t in tl if f["id"] in t["findings"]]
@@ -832,19 +847,19 @@ def build(old: Program, new: Program, units_out: dict, analysis: dict, review: d
             judgment = min(js, key=JUDGE.index) if js else "변경 사실 확인"
             cmp_ = [f["comparison"] for f in findings if f["change"] == cid]
             comparison = "신규" if "신규" in cmp_ else ("판정 보류" if "판정 보류" in cmp_ else (cmp_[0] if cmp_ else "-"))
-            if judgment in ("실행 재현 확인", "분석 모델 내 위반 확인") or (judgment == "위험 후보" and (comparison == "신규" or imp["outputs"])):
-                prio = "높음"
-            elif judgment == "위험 후보" or imp["n_cross"] or flags:
+            prio, prio_reason = project_mod.priority_of(proj.get("priority_rules"), {
+                "judgment": judgment, "comparison": comparison, "external_output": bool(imp["outputs"]),
+                "cross_function": bool(imp["n_cross"]), "review_flags": bool(flags), "file": u["file"], "func": u["func"]})
+            if prio not in PRIO:
                 prio = "중간"
-            else:
-                prio = "낮음"
             changes.append({
                 "id": cid, "unit": u["id"], "title": A["title"], "sentences": A["sentences"], "func": u["func"], "file": u["file"],
                 "lo": u["lo"], "hi": u["hi"], "old_lo": min(old_lines) if old_lines else None, "old_hi": max(old_lines) if old_lines else None,
                 "intent": "요구사항 확인 필요 (변경 이유·요구사항이 첨부되지 않음)", "type_label": u["type_label"],
                 "compare": A["rows"], "compare_more": A["more_rows"], "impact": imp, "checks": checks,
                 "findings": [f["id"] for f in findings if f["change"] == cid], "tests": [t["id"] for t in tl],
-                "judgment": judgment, "comparison": comparison, "priority": prio,
+                "judgment": judgment, "comparison": comparison, "priority": prio, "priority_reason": prio_reason,
+                "suppressed": suppressed,
                 "review_flags": [{"item": f["item"], "class": f["class"], "summary": f["summary"]} for f in flags],
                 "phrases": [c["phrase"] for c in u["changes"]], "merged_globals": ctl_by_unit.get(u["id"], []),
             })
@@ -881,10 +896,28 @@ def build(old: Program, new: Program, units_out: dict, analysis: dict, review: d
         f.pop("_items", None)
     tests.sort(key=lambda t: (int(t["id"][1:].split("-")[0]), int(t["id"].split("-")[1])))
     ov = _overview(ctx, changes, findings, tests, analysis, review)
+    ov["sample"] = sample_changes(changes)
+    ov["project_config"] = proj.get("_path", "")
     if errors:
         ov["pending"].insert(0, {"item": "변경 설명 생성", "status": f"{len(errors)}건은 자동 설명을 만들지 못해 기본 정보만 표시 (근거 상세에서 코드 확인)",
                                  "done": False})
     return {"overview": ov, "changes": changes, "findings": findings, "tests": tests, "errors": errors}
+
+
+def sample_changes(changes: list[dict], n_max: int = 20) -> list[str]:
+    """결과 대조용 표본: 우선순위·판정 조합마다 골고루 (조합 안에서는 우선순위 순서), 최대 n_max 건."""
+    groups: dict = {}
+    for c in changes:
+        groups.setdefault((c["priority"], c["judgment"]), []).append(c["id"])
+    order = sorted(groups, key=lambda k: (PRIO.index(k[0]) if k[0] in PRIO else 9, JUDGE.index(k[1]) if k[1] in JUDGE else 9))
+    out: list[str] = []
+    i = 0
+    while len(out) < n_max and any(i < len(groups[k]) for k in order):
+        for k in order:
+            if i < len(groups[k]) and len(out) < n_max:
+                out.append(groups[k][i])
+        i += 1
+    return sorted(out, key=lambda x: int(x[1:]))
 
 
 def _fallback_change(cid: str, u: dict, e: Exception) -> dict:
@@ -902,6 +935,7 @@ def _fallback_change(cid: str, u: dict, e: Exception) -> dict:
                    {"id": f"{cid}-K2", "item": "변경 설명·영향 정리", "status": "미실행",
                     "confirmed": f"자동 설명 생성 실패 ({type(e).__name__}) — 코드 차이는 근거 상세에서 확인", "cannot": "영향 범위와 위험 여부"}],
         "findings": [], "tests": [], "judgment": "분석 불충분", "comparison": "-", "priority": "중간",
+        "priority_reason": "자동 설명 생성 실패 — 직접 확인 필요", "suppressed": [],
         "review_flags": [], "phrases": [c["phrase"] for c in u.get("changes", [])], "merged_globals": [],
     }
 
