@@ -227,3 +227,43 @@ def test_cochange_rules():
     c, s = cc.confidence("a.c", "b.c")
     assert s == 2 and abs(c - 2 / 3) < 1e-9
     assert cc.rules_from(["a.c"], min_support=2)[0]["entity"] == "b.c"
+
+
+def test_interval_analysis_widening_and_dead_branch():
+    from vfia.intervals import IntervalAnalysis, interval_report
+    src = r"""
+    int f(unsigned char u) {
+        int i, s = 0;
+        for (i = 0; i < 10; i++) { s = s + 1; }
+        if (i > 20) { return -1; }          /* 루프 뒤 i == 10 -> 항상 거짓 */
+        if (u > 300) { return -2; }         /* uint8 범위 -> 항상 거짓 */
+        if (u > 100) { return 1; }
+        return s;
+    }
+    """
+    g, _ = graph_of({"a.c": src})
+    res = IntervalAnalysis("fn:f", g.asts["fn:f"]).run()
+    by_text = {g.node(n).get("text"): v for n, v in res.items() if g.has_node(n)}
+    assert by_text["u > 300"]["can_true"] is False
+    assert by_text["u > 100"]["can_true"] and by_text["u > 100"]["can_false"]
+    assert by_text["i > 20"]["can_true"] is False            # widening 후 narrowing 또는 루프 탈출 정제로 i ∈ [10, ..]
+    dead = {d["text"] for d in interval_report(g)["static_branches"]}
+    assert {"u > 300", "i > 20"} <= dead
+
+
+def test_condition_boxes_exact_example_and_sentence():
+    import z3
+    from vfia.conditions import InputVar, condition_text, derive_boxes, explain_box, feature_sentence
+    req, spd, ok = z3.BitVec("req", 16), z3.BitVec("spd", 16), z3.BitVec("ok", 8)
+    def lim(t):
+        return z3.If(z3.And(ok != 0, z3.UGE(spd, t)), z3.BitVecVal(80, 16), z3.BitVecVal(100, 16))
+    o = z3.If(req < lim(30), req, lim(30))
+    n = z3.If(req < lim(40), req, lim(40))
+    vs = [InputVar(req, "request_pct", True, 0, 100), InputVar(spd, "speed_kph", False, 0, 300),
+          InputVar(ok, "sensor_ok", False, 0, 1)]
+    base = [req >= 0, req <= 100, z3.ULE(spd, 300), z3.ULE(ok, 1)]
+    r = derive_boxes(base, o != n, vs)
+    assert r["exact"] and condition_text(r) == "request_pct ≥ 81 ∧ 30 ≤ speed_kph ≤ 39 ∧ sensor_ok = 1"
+    e = explain_box(base, o != n, r["boxes"][0], vs, [o], [n], True)
+    assert e["old"] == "80" and e["new"] == "request_pct" and e["delta"] == [1, 20] and e["direction"] == "증가"
+    assert "반환값이 변경 전 80 → 변경 후 request_pct" in feature_sentence("F", "f() 반환값", "c", e, False)

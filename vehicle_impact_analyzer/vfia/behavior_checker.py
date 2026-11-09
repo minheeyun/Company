@@ -27,6 +27,7 @@ import z3
 
 from .config import AnalysisOptions
 from .model import EK, NK, AnalysisGraph, Status
+from .conditions import InputVar, box_text, condition_text, derive_boxes, explain_box, feature_sentence
 from .symexec import Program, PtrVal, SymExec, Unsupported, bits_of, is_signed, resize
 
 
@@ -84,9 +85,9 @@ class BehaviorChecker:
         for feat in self.gn.nodes_of(NK.FEATURE):
             for o in self.gn.succ(feat, [EK.HAS_OBSERVATION]):
                 spec = self.gn.node(o).get("spec") or {}
-                if spec.get("kind") in ("function_return", "global") and spec.get("function"):
+                if spec.get("kind") in ("function_return", "global", "signal", "mmio") and spec.get("function"):
                     out.append({"feature": self.gn.node(feat).get("fid"), "feature_node": feat, "obs": spec["id"],
-                                "spec": spec})
+                                "feature_name": self.gn.node(feat).get("name"), "spec": spec})
         return out
 
     def _fn_key(self, g: AnalysisGraph, name: str) -> Optional[str]:
@@ -140,6 +141,19 @@ class BehaviorChecker:
                 if spec["kind"] == "function_return":
                     r.values.append(ret)
                     r.signed = is_signed((prog.functions[fkey].get("ret") or {}))
+                elif spec["kind"] == "signal":
+                    v = ex.mem.get(f"rte:{spec['signal']}")
+                    if v is None:
+                        raise Unsupported(f"신호 {spec['signal']}가 실행 중 쓰이지 않음(RTE API 연결 확인)")
+                    r.values.append(v)
+                    r.signed = bool(spec.get("signed", True))
+                elif spec["kind"] == "mmio":
+                    key = next((k for k, v in (g.meta.get("mmio") or {}).items()
+                                if v.get("name") == spec.get("register") or v.get("address") == spec.get("register")), None)
+                    if key is None or key not in ex.mem:
+                        raise Unsupported(f"레지스터 {spec.get('register')}가 실행 중 쓰이지 않음")
+                    r.values.append(ex.mem[key])
+                    r.signed = bool(spec.get("signed", False))
                 else:
                     gk = [x for x in g.globals_by_name(spec["variable"])]
                     if not gk:
@@ -285,11 +299,14 @@ class BehaviorChecker:
     def check_observation(self, ob: dict, changes: List[dict]) -> dict:
         spec = ob["spec"]
         fo, fn = self._fn_key(self.go, spec["function"]), self._fn_key(self.gn, spec["function"])
-        res = {"feature": ob["feature"], "observation": ob["obs"], "function": spec["function"], "kind": spec["kind"],
-               "variable": spec.get("variable"), "domain": spec.get("params") or {},
+        default_seq = 1 if spec["kind"] == "function_return" else self.opt.sequence_length
+        res = {"feature": ob["feature"], "feature_name": ob.get("feature_name"), "observation": ob["obs"],
+               "function": spec["function"], "kind": spec["kind"], "variable": spec.get("variable"),
+               "signal": spec.get("signal"), "register": spec.get("register"),
+               "domain": spec.get("params") or {}, "input_domains": spec.get("inputs") or {},
                "bounds": {"loop_bound": self.opt.loop_bound, "inline_depth": self.opt.inline_depth,
-                          "sequence": int(spec.get("sequence") or (1 if spec["kind"] == "function_return" else self.opt.sequence_length)),
-                          "initial_state": self.opt.initial_state},
+                          "sequence": int(spec.get("sequence") or default_seq), "initial_state": self.opt.initial_state},
+               "method": "결합 프로그램(같은 입력·초기 상태·환경 입력으로 두 버전을 함께 실행) + SMT",
                "per_change": {}, "notes": []}
         if not fo or not fn:
             res["status"] = Status.INCONCLUSIVE
@@ -302,8 +319,8 @@ class BehaviorChecker:
             res["error"] = "관찰 함수의 인자 개수가 변경됨"
             return res
         inputs, dom, meta = self._inputs(spec, fast, steps)
+        self._cond_spent = 0.0
         reach_o, reach_n = self._reachable(self.go, fo), self._reachable(self.gn, fn)
-        # 이 관찰 모델이 실행하는 범위 안의 변경만 대상으로 한다
         in_scope = []
         for ch in changes:
             units_o = {u for u in [ch.get("unit_old")] if u}
@@ -321,22 +338,19 @@ class BehaviorChecker:
         watch_o, watch_n = set(), set()
         ret_watch: Dict[str, Tuple[Set, Set]] = {}
         for ch in in_scope:
-            for a in ch.get("watch", {}).get("old", []):
-                t = _anchor_to_ast(a)
-                if t:
-                    watch_o.add(t)
-            for a in ch.get("watch", {}).get("new", []):
-                t = _anchor_to_ast(a)
-                if t:
-                    watch_n.add(t)
-            ro, rn = set(), set()
+            for side, wset in (("old", watch_o), ("new", watch_n)):
+                for a in ch.get("watch", {}).get(side, []):
+                    t = _anchor_to_ast(a)
+                    if t:
+                        wset.add(t)
+            r_o, r_n = set(), set()
             if ch.get("unit_old") in self.p_old.functions:
-                ro = {(ch["unit_old"], n["id"]) for n in _walk(self.p_old.functions[ch["unit_old"]]) if n.get("k") == "Return"}
+                r_o = {(ch["unit_old"], n["id"]) for n in _walk(self.p_old.functions[ch["unit_old"]]) if n.get("k") == "Return"}
             if ch.get("unit_new") in self.p_new.functions:
-                rn = {(ch["unit_new"], n["id"]) for n in _walk(self.p_new.functions[ch["unit_new"]]) if n.get("k") == "Return"}
-            ret_watch[ch["id"]] = (ro, rn)
-            watch_o |= ro
-            watch_n |= rn
+                r_n = {(ch["unit_new"], n["id"]) for n in _walk(self.p_new.functions[ch["unit_new"]]) if n.get("k") == "Return"}
+            ret_watch[ch["id"]] = (r_o, r_n)
+            watch_o |= r_o
+            watch_n |= r_n
         ro = self._run(self.p_old, fo, spec, inputs, watch_o, "o", self.go)
         rn = self._run(self.p_new, fn, spec, inputs, watch_n, "n", self.gn)
         if ro.error or rn.error:
@@ -346,23 +360,30 @@ class BehaviorChecker:
                 res["per_change"][ch["id"]] = {"scope": "in", "status": Status.INCONCLUSIVE, "error": res["error"]}
             return res
         res["notes"] = sorted(ro.ex.notes | rn.ex.notes)
-        dom = list(dom) + self._calibration_domain(self.p_new) + self._calibration_domain(self.p_old)
-        base = list(dom) + [z3.Not(ro.ex.unwind), z3.Not(rn.ex.unwind)]
         try:
             diff = z3.Or(*[self._neq(a, b) for a, b in zip(ro.values, rn.values)])
         except Unsupported as e:
             res["status"] = Status.INCONCLUSIVE
             res["error"] = str(e)
             return res
+        # 환경 입력(ISR·volatile·RTE 신호·캘리브레이션·레지스터) 정의역
+        env = self._env_inputs([diff] + [v for v in ro.values + rn.values if v is not None and not isinstance(v, PtrVal)])
+        dom = list(dom) + self._calibration_domain(self.p_new) + self._calibration_domain(self.p_old) \
+            + self._env_domain(env, spec.get("inputs") or {})
+        base = list(dom) + [z3.Not(ro.ex.unwind), z3.Not(rn.ex.unwind)]
         unwind_possible = self._check(list(dom), z3.Or(ro.ex.unwind, rn.ex.unwind))
         res["unwind_possible"] = unwind_possible != "unsat"
         r = self._check(base, diff)
         res["diff"] = r
         terms = {"old": (ro.values, ro.signed), "new": (rn.values, rn.signed)}
+        self._vars_ctx = (inputs, meta, env, spec)
+        obs_desc = self._obs_desc(spec)
+        seq = steps > 1
         if r == "sat":
             res["status"] = Status.MODEL_DIFF
             res["witnesses"] = self._witnesses(base, diff, inputs, meta, terms, self.opt.max_witnesses)
             res["region"] = self._region(base, diff, inputs, meta)
+            res["condition"] = self._condition(base, diff, ro.values, rn.values, ro.signed, ob, obs_desc, seq)
         elif r == "unsat":
             res["status"] = Status.MODEL_NO_DIFF
         else:
@@ -371,25 +392,28 @@ class BehaviorChecker:
         if res["unwind_possible"]:
             res["notes"].append(f"반복 전개 한도({self.opt.loop_bound}) 밖의 실행이 있어 그 범위는 검증하지 않음")
         self._z3ctx = (base, diff, inputs, meta, ro, rn)
-        # ---- 변경별: 분기/값 차이와 출력 차이의 관계 ----
+        unit_changes: Dict[str, int] = {}
+        for ch in changes:
+            if ch.get("unit_old"):
+                unit_changes[ch["unit_old"]] = unit_changes.get(ch["unit_old"], 0) + 1
         for ch in in_scope:
-            pc = {"scope": "in"}
-            evo = []
-            evn = []
-            for a in ch.get("watch", {}).get("old", []):
-                t = _anchor_to_ast(a)
-                if t:
-                    evo += ro.ex.events.get(t, [])
-            for a in ch.get("watch", {}).get("new", []):
-                t = _anchor_to_ast(a)
-                if t:
-                    evn += rn.ex.events.get(t, [])
+            pc: dict = {"scope": "in"}
+            evo, evn = [], []
+            for side, lst, rr in (("old", evo, ro), ("new", evn, rn)):
+                for a in ch.get("watch", {}).get(side, []):
+                    t = _anchor_to_ast(a)
+                    if t:
+                        lst += rr.ex.events.get(t, [])
+            pc["static_ranges"] = self._static_ranges(ch)
+            iso = self._isolation(ch, fo, spec, inputs, ro, dom, meta, ob, obs_desc, seq, unit_changes)
+            if iso:
+                pc["isolated"] = iso
             if evo or evn:
                 dv = self._events_formula(evo, evn)
                 pc["divergence"] = self._check(base, dv)
-                rwo, rwn = ret_watch.get(ch["id"], (set(), set()))
-                ret_o = self._final_value([e for t in sorted(rwo) for e in ro.ex.events.get(t, [])])
-                ret_n = self._final_value([e for t in sorted(rwn) for e in rn.ex.events.get(t, [])])
+                r_wo, r_wn = ret_watch.get(ch["id"], (set(), set()))
+                ret_o = self._final_value([e for t in sorted(r_wo) for e in ro.ex.events.get(t, [])])
+                ret_n = self._final_value([e for t in sorted(r_wn) for e in rn.ex.events.get(t, [])])
                 extra = dict(terms)
                 if ret_o is not None or ret_n is not None:
                     fname = (ch.get("unit_name") or "")
@@ -398,22 +422,24 @@ class BehaviorChecker:
                     extra[f"{fname}() 반환값(old)"] = ([ret_o], sg)
                     extra[f"{fname}() 반환값(new)"] = ([ret_n], sg)
                 if pc["divergence"] == "sat":
+                    dcond = self._boxes(base, dv)
+                    pc["divergence_condition"] = dcond
                     pc["divergence_region"] = self._region(base, dv, inputs, meta)
                     pc["divergence_formula"] = _pretty(z3.simplify(dv), meta)
                     pc["with_output_diff"] = self._check(base, z3.And(dv, diff))
                     if pc["with_output_diff"] == "sat":
                         pc["examples_diff"] = self._witnesses(base, z3.And(dv, diff), inputs, meta, extra, 2)
+                        pc["output_condition"] = self._condition(base, z3.And(dv, diff), ro.values, rn.values, ro.signed,
+                                                                 ob, obs_desc, seq)
                     pc["examples_same_output"] = self._witnesses(base, z3.And(dv, z3.Not(diff)), inputs, meta, extra, 2)
+                    pc["branch_tests"] = self._branch_tests(ch, evo, evn, base, diff, inputs, meta, terms)
                 pc["divergence_term"] = dv
-            # 변경 분리(그 함수의 변경만 적용한 혼합 프로그램)
-            if ch.get("unit_old") and ch.get("unit_old") == ch.get("unit_new") and ch["unit_old"] in self.p_old.functions \
-                    and ch["unit_new"] in self.p_new.functions:
-                key = ch["unit_old"]
-                iso = self._isolation_cache(key, fo, spec, inputs, ro, base, meta, terms, dom)
-                pc["isolated"] = iso
             pc["status"] = self._change_status(pc)
+            sent = ((pc.get("isolated") or {}).get("condition") or {}).get("sentences") or \
+                (pc.get("output_condition") or {}).get("sentences")
+            if sent:
+                pc["sentences"] = sent
             res["per_change"][ch["id"]] = pc
-        # 추가/삭제된 함수: 그 함수를 호출하는 변경 함수의 분리 검증에 포함되면 그 결과를 따른다
         for ch in in_scope:
             if ch["type"] not in ("function_added", "function_removed"):
                 continue
@@ -427,27 +453,234 @@ class BehaviorChecker:
                 pc["note"] = f"호출 함수({', '.join(sorted(c.split(':')[-1] for c in callers))})의 변경 분리 검증에 포함하여 판정"
         return res
 
-    def _isolation_cache(self, key, fo, spec, inputs, ro, base, meta, terms, dom) -> dict:
+    # ---------------- 차이 조건(상자) ----------------
+    def _input_vars(self, formula) -> List[InputVar]:
+        inputs, meta, env, spec = self._vars_ctx
+        present = {d.name() for d in _free_const_decls([formula])}
+        out = []
+        steps = len(inputs)
+        for row in inputs:
+            for x in row:
+                nm = x.decl().name()
+                if nm not in present:
+                    continue
+                p, k, sg, lo, hi, w = meta[nm]
+                tlo, thi = ((-(1 << (w - 1)), (1 << (w - 1)) - 1) if sg else (0, (1 << w) - 1))
+                out.append(InputVar(x, p if steps == 1 else f"{p}[{k}]", sg,
+                                    tlo if lo is None else lo, thi if hi is None else hi))
+        doms = spec.get("inputs") or {}
+        for nm, term in env.items():
+            if nm not in present:
+                continue
+            disp = _env_name(nm)
+            base = disp.split("[")[0].split("(")[0]
+            w = term.size()
+            lo, hi = 0, (1 << w) - 1
+            if nm.startswith("cal:"):
+                key = nm[4:]
+                clo, chi = (self.p_new.calibrations.get(key) or self.p_old.calibrations.get(key) or (None, None))
+                lo = lo if clo is None else clo
+                hi = hi if chi is None else chi
+            if isinstance(doms.get(base), list):
+                lo, hi = doms[base]
+            out.append(InputVar(term, disp, False, lo, hi))
+        return out
+
+    def _boxes(self, base: List, formula) -> dict:
+        rem = float(self.opt.condition_budget_total_s) - self._cond_spent
+        if rem <= 0.5:
+            return {"text": "(이 관찰 대상의 조건 도출 시간 예산 소진: 증거 입력·경계 상자 참고)", "exact": False,
+                    "boxes": [], "skipped": "budget"}
+        vars_ = self._input_vars(formula)
+        if not vars_:
+            return {"text": "(입력 변수와 무관: 초기 상태·외부 모델에서만 차이)", "exact": False, "boxes": []}
+        if len(vars_) > 12:
+            return {"text": f"(입력 변수 {len(vars_)}개 — 상자 도출 생략, 증거 입력 참고)", "exact": False, "boxes": []}
+        r = derive_boxes(base, formula, vars_, self.opt.max_condition_boxes,
+                         min(int(self.opt.solver_timeout_ms), 3000), min(float(self.opt.condition_budget_s), rem))
+        self._cond_spent += r.get("seconds", 0.0)
+        r["text"] = condition_text(r)
+        r["variables"] = [v.name for v in vars_]
+        return r
+
+    def _condition(self, base, formula, old_vals, new_vals, signed, ob, obs_desc, seq) -> dict:
+        c = self._boxes(base, formula)
+        vars_ = self._input_vars(formula)
+        expl, sents = [], []
+        import time
+        for b in c.get("boxes", [])[:4]:
+            rem = float(self.opt.condition_budget_total_s) - self._cond_spent
+            e = None
+            if rem > 1.0:
+                t0 = time.time()
+                try:
+                    e = explain_box(base, formula, b, vars_, list(old_vals), list(new_vals), signed,
+                                    int(min(3000, rem * 1000)))
+                except (z3.Z3Exception, Unsupported):
+                    e = None
+                self._cond_spent += time.time() - t0
+            expl.append(e)
+            sents.append(feature_sentence(ob.get("feature_name") or ob["feature"], obs_desc,
+                                          box_text(b, c["domains"]), e, seq))
+        if c.get("boxes") and not c.get("exact"):
+            sents.append("(위 조건은 차이가 생기는 영역의 일부다: " + c["text"].split("[", 1)[-1].rstrip("]") + ")")
+        c["explanations"] = expl
+        c["sentences"] = sents
+        return c
+
+    def _obs_desc(self, spec: dict) -> str:
+        k = spec["kind"]
+        if k == "function_return":
+            return f"{spec['function']}() 반환값"
+        if k == "global":
+            return f"전역 상태 {spec.get('variable')}"
+        if k == "signal":
+            return f"신호 {spec.get('signal')}"
+        if k == "mmio":
+            return f"레지스터 {spec.get('register')}"
+        return spec.get("id", "관찰값")
+
+    def _env_inputs(self, exprs) -> Dict[str, object]:
+        out = {}
+        for d in _free_const_decls(exprs):
+            nm = d.name()
+            if nm.startswith(("vol:", "rte:", "cal:", "init:")):
+                out[nm] = d()
+        return out
+
+    def _env_domain(self, env: Dict[str, object], doms: dict) -> List:
+        cons = []
+        for nm, term in env.items():
+            base = _env_name(nm).split("[")[0].split("(")[0]
+            if isinstance(doms.get(base), list):
+                lo, hi = doms[base]
+                w = term.size()
+                cons.append(z3.UGE(term, z3.BitVecVal(lo % (1 << w), w)) if lo >= 0 else term >= z3.BitVecVal(lo, w))
+                cons.append(z3.ULE(term, z3.BitVecVal(hi % (1 << w), w)) if lo >= 0 else term <= z3.BitVecVal(hi, w))
+        return cons
+
+    # ---------------- 분기 차이별 시험 입력(shadow symbolic execution 방식) ----------------
+    def _branch_tests(self, ch, evo, evn, base, diff, inputs, meta, terms) -> List[dict]:
+        is_cond = any((self.gn.node(a).get("cfg_kind") if self.gn.has_node(a) else None) == "cond"
+                      for a in ch.get("watch", {}).get("new", [])) or \
+            any((self.go.node(a).get("cfg_kind") if self.go.has_node(a) else None) == "cond"
+                for a in ch.get("watch", {}).get("old", []))
+        classes = []
+        for i in range(min(len(evo), len(evn), 4)):
+            go_, vo = evo[i]
+            gn_, vn = evn[i]
+            if vo is None or vn is None or isinstance(vo, PtrVal) or isinstance(vn, PtrVal):
+                continue
+            if is_cond:
+                to, tn = vo != z3.BitVecVal(0, vo.size()), vn != z3.BitVecVal(0, vn.size())
+                classes += [(f"평가#{i}: 변경 전 참 → 변경 후 거짓", z3.And(go_, gn_, to, z3.Not(tn))),
+                            (f"평가#{i}: 변경 전 거짓 → 변경 후 참", z3.And(go_, gn_, z3.Not(to), tn))]
+            else:
+                classes.append((f"평가#{i}: 값이 달라짐", z3.And(go_, gn_, self._neq(vo, vn))))
+            classes += [(f"평가#{i}: 변경 전에만 도달", z3.And(go_, z3.Not(gn_))),
+                        (f"평가#{i}: 변경 후에만 도달", z3.And(z3.Not(go_), gn_))]
+        out = []
+        for label, f in classes:
+            ws = self._witnesses(base, f, inputs, meta, terms, 1)
+            if not ws:
+                continue
+            s = self._solver()
+            s.add(*base)
+            s.add(f)
+            s.add(diff)
+            out.append({"class": label, "inputs": ws[0]["inputs"], "environment": ws[0].get("environment"),
+                        "values": ws[0]["values"], "output_can_differ": s.check() == z3.sat})
+        return out
+
+    # ---------------- 정적 구간 정보 ----------------
+    def _static_ranges(self, ch: dict) -> dict:
+        from .intervals import IntervalAnalysis
+        cache = self.__dict__.setdefault("_itv", {})
+        out = {}
+        for side, g, prog in (("old", self.go, self.p_old), ("new", self.gn, self.p_new)):
+            for a in ch.get("watch", {}).get(side, []):
+                if not g.has_node(a) or g.node(a).get("cfg_kind") != "cond":
+                    continue
+                f = g.func_of(a)
+                key = (side, f)
+                if key not in cache:
+                    try:
+                        cache[key] = IntervalAnalysis(f, prog.functions[f]).run() if f in prog.functions else {}
+                    except Exception:
+                        cache[key] = {}
+                info = cache[key].get(a)
+                if info:
+                    out.setdefault(side, []).append({"condition": g.node(a).get("text"), **info})
+        return out
+
+    # ---------------- 변경 분리 ----------------
+    def _substituted(self, ch: dict) -> Optional[Program]:
+        """변경 전 프로그램에 이 변경의 AST 갱신(값·연산자·리터럴)만 적용한 혼합 프로그램."""
+        import copy
+        edits = ch.get("edits")
+        if not edits:
+            return None
+        p = self.p_old
+        asts = {**p.functions, **p.globals, **{f"ty:{k}": v for k, v in p.records.items()}}
+        touched = {}
+        for e in edits:
+            u = e["unit"]
+            if u not in asts:
+                return None
+            if u not in touched:
+                touched[u] = copy.deepcopy(asts[u])
+            node = next((n for n in _walk(touched[u]) if n.get("id") == e["id"]), None)
+            if node is None:
+                return None
+            for k, v in e["fields"].items():
+                if v is None:
+                    node.pop(k, None)
+                else:
+                    node[k] = v
+        asts.update(touched)
+        return Program(asts, f"old+{ch['id']}", p.external, p.volatile_globals, p.calibrations, p.rte_map)
+
+    def _isolation(self, ch, fo, spec, inputs, ro, dom, meta, ob, obs_desc, seq, unit_changes) -> Optional[dict]:
         cache = self.__dict__.setdefault("_iso", {})
-        ck = (key, spec["id"])
-        if ck in cache:
-            return cache[ck]
-        ph = self.p_old.hybrid(self.p_new, {key}, f"old+{key}")
-        rh = self._run(ph, fo, spec, inputs, set(), "h", self.go)
+        prog = self._substituted(ch)
+        gran = "change"
+        if prog is None:
+            u = ch.get("unit_old")
+            if not (u and u == ch.get("unit_new") and u in self.p_old.functions and u in self.p_new.functions):
+                return None
+            gran = "function"
+            ck = (("fn", u), spec["id"])
+            if ck in cache:
+                return cache[ck]
+            prog = self.p_old.hybrid(self.p_new, {u}, f"old+{u}")
+        else:
+            ck = (("ch", ch["id"]), spec["id"])
+            if ck in cache:
+                return cache[ck]
+        rh = self._run(prog, fo, spec, inputs, set(), "h", self.go)
         if rh.error:
-            out = {"status": "unsupported", "error": rh.error}
+            out = {"status": "unsupported", "error": rh.error, "granularity": gran}
         else:
             try:
                 d = z3.Or(*[self._neq(a, b) for a, b in zip(ro.values, rh.values)])
-                b2 = list(dom) + [z3.Not(ro.ex.unwind), z3.Not(rh.ex.unwind)]
+                env = self._env_inputs([d])
+                b2 = list(dom) + self._env_domain(env, spec.get("inputs") or {}) + \
+                    [z3.Not(ro.ex.unwind), z3.Not(rh.ex.unwind)]
                 r = self._check(b2, d)
-                out = {"status": r, "function": key.split(":")[-1]}
+                out = {"status": r, "granularity": gran,
+                       "function": (ch.get("unit_old") or "").split(":")[-1]}
+                if gran == "function" and unit_changes.get(ch.get("unit_old"), 0) > 1:
+                    out["note"] = (f"같은 함수의 다른 변경 {unit_changes[ch['unit_old']] - 1}개도 함께 적용됨"
+                                   "(삽입·삭제가 섞여 변경 단위 분리 불가)")
+                elif gran == "change":
+                    out["note"] = "이 변경의 AST 갱신만 변경 전 프로그램에 적용(다른 변경은 미적용)"
                 if r == "sat":
                     out["witnesses"] = self._witnesses(b2, d, inputs, meta,
                                                        {"old": (ro.values, ro.signed), "isolated": (rh.values, rh.signed)}, 2)
                     out["region"] = self._region(b2, d, inputs, meta)
+                    out["condition"] = self._condition(b2, d, ro.values, rh.values, ro.signed, ob, obs_desc, seq)
             except Unsupported as e:
-                out = {"status": "unsupported", "error": str(e)}
+                out = {"status": "unsupported", "error": str(e), "granularity": gran}
         cache[ck] = out
         return out
 
@@ -720,13 +953,38 @@ def _walk(n: dict):
 
 
 def _env_name(nm: str) -> str:
-    """'vol:gv:g_rx_valid@2#0' -> 'g_rx_valid[단계2, 읽기0]',  'init:gv:x|f' -> 'x.f(초기값)'"""
+    """'vol:gv:g_rx_valid@2#0' -> 'g_rx_valid[단계2, 읽기0]',  'init:gv:x|f' -> 'x.f(초기값)',
+    'rte:TqReq_Value@1' -> 'TqReq_Value[단계1]',  'cal:gv:Cal_X' -> 'Cal_X'"""
     kind, _, rest = nm.partition(":")
     if kind == "vol":
         loc, _, sc = rest.rpartition("@")
         step, _, c = sc.partition("#")
+        if loc.startswith("gv:mmio:"):
+            return f"레지스터{loc[8:]}[단계{step}, 읽기{c}]"
         return f"{_short(loc)}[단계{step}, 읽기{c}]"
+    if kind == "rte":
+        sig, _, st = rest.partition("@")
+        return f"{sig}(초기값)" if st == "init" else f"{sig}[단계{st}]"
+    if kind == "cal":
+        return _short(rest)
     return f"{_short(rest)}(초기값)"
+
+
+def _free_const_decls(exprs) -> List:
+    """식들에 나오는 0항 미해석 상수(입력 변수) 선언."""
+    seen, out, stack = set(), {}, list(e for e in exprs if e is not None and z3.is_expr(e))
+    while stack:
+        e = stack.pop()
+        i = e.get_id()
+        if i in seen:
+            continue
+        seen.add(i)
+        if z3.is_const(e) and e.decl().kind() == z3.Z3_OP_UNINTERPRETED:
+            out[e.decl().name()] = e.decl()
+            continue
+        if z3.is_app(e):
+            stack.extend(e.children())
+    return list(out.values())
 
 
 def _short(loc: str) -> str:

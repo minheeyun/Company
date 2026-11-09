@@ -573,6 +573,15 @@ class ChangeDetector:
         if not types:
             return
         main = min(types, key=lambda x: _PRIORITY.get(x, 999))
+        # 갱신(값·연산자·리터럴)만으로 이루어진 변경은 AST 치환으로 '이 변경만' 분리 검증할 수 있다
+        edits = []
+        for act in acts:
+            if act.op != "update" or t1.kind(act.a) != t2.kind(act.b):
+                edits = None
+                break
+            n2 = t2.nodes[act.b]
+            edits.append({"unit": ctx.uo, "id": act.a,
+                          "fields": {k: n2.get(k) for k in ("v", "mac", "ty", "val", "ref", "rk", "arrow")}})
         side = sorted({s for i in infos for s in i.get("side_effect", [])})
         old_side = self._side_info(ctx, t1, og, ctx.uo, self.go, self.src_old)
         new_side = self._side_info(ctx, t2, ng, ctx.un, self.gn, self.src_new)
@@ -593,7 +602,7 @@ class ChangeDetector:
         self._add(main, ctx.uo, ctx.un, summary, old_side, new_side,
                   subtypes=sorted(set(types)), side_effect=side or None,
                   related_variables=refs, actions=[f"{a.op}:{a.detail}" for a in acts],
-                  watch={k: sorted(set(v)) for k, v in watch.items()}, value_info=lit)
+                  watch={k: sorted(set(v)) for k, v in watch.items()}, value_info=lit, edits=edits or None)
 
     def _side_info(self, ctx, t: Optional[Tree], gid: Optional[int], unit: str, g: AnalysisGraph,
                    src: SourceView) -> dict:
@@ -627,7 +636,7 @@ class ChangeDetector:
                            affected_tus=sorted(set(a.get("tus") or []) | set(b.get("tus") or [])),
                            header=(a.get("file") or "").endswith(".h"),
                            value_info={"old_value": a.get("value"), "new_value": b.get("value")},
-                           expansion_sites=[], watch={"old": [], "new": []})
+                           expansion_sites=[], watch={"old": [], "new": []}, edits=[])
             self._macro_changes[a["name"]] = ch
         for k in sorted(set(mo) - set(mn)):
             if not mo[k].get("include_guard"):
@@ -655,6 +664,8 @@ class ChangeDetector:
         if not ch:
             return
         n1, n2 = ctx.t1.nodes[act.a], ctx.t2.nodes[act.b]
+        ch["edits"].append({"unit": ctx.uo, "id": act.a,
+                            "fields": {k: n2.get(k) for k in ("v", "mac", "ty", "val", "ref", "rk", "arrow")}})
         ch["expansion_sites"].append({"function": self.go.node(ctx.uo).get("name"),
                                       "old_line": n1.get("l"), "new_line": n2.get("l"),
                                       "old": n1.get("v"), "new": n2.get("v")})
