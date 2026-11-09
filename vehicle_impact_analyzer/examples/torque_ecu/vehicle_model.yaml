@@ -26,8 +26,13 @@ features:
           speed_kph: [0, 300]
           sensor_ok: [0, 1]
       - id: OBS_TQ_SIGNAL
-        kind: signal
+        kind: signal                   # 통합 관찰: 10ms 태스크 전체를 실행하고 송신 신호를 관찰
         signal: TqCmd_Value
+        function: Task_10ms
+        sequence: 3                    # 필터 지연 때문에 여러 주기 필요
+        inputs:                        # 환경 입력(ISR·RTE 수신 신호) 정의역
+          g_rx_speed_raw: [0, 300]
+          TqReq_Value: [0, 100]
   - id: F_SENSOR_DIAG
     name: 차속 센서 고장 진단(디바운스)
     description: sensor fault debounce diagnosis dtc
@@ -46,6 +51,14 @@ features:
       - id: OBS_DTC_SENSOR
         kind: global
         variable: g_dtc_sensor
+      - id: OBS_DTC_PLAUS
+        kind: global                   # 타당성 DTC: 캘리브레이션 Cal_TqPlausMax(A2L 범위)에 따라 달라짐
+        variable: g_dtc_plaus
+        function: Task_10ms
+        sequence: 3
+        inputs:
+          g_rx_speed_raw: [0, 300]
+          TqReq_Value: [0, 100]
   - id: F_OUTPUT_CUTOFF
     name: 고장 시 토크 출력 차단
     description: output cutoff when sensor fault
@@ -63,6 +76,9 @@ features:
       - id: OBS_TQ_SIGNAL_OUT
         kind: signal
         signal: TqCmd_Value
+      - id: OBS_PWM
+        kind: mmio                     # 메모리 맵 레지스터 쓰기를 관찰점으로 지정
+        register: PWM_DUTY_REG
   - id: F_SPEED_PROC
     name: 차속 신호 처리
     description: vehicle speed filter clamp
@@ -84,10 +100,18 @@ signals:
   - name: TqReq_Value
     direction: rx
     producers: [{ecu: ECU_VCU, swc: SWC_DriverDemand}]
+  - name: TqLimitActive_Value
+    direction: tx
+    swc: SWC_Torque
+    access: implicit
   - name: VehicleSpeed
     direction: rx
     can_id: 0x1A0
     readers:
       - param: Can_RxIsr.raw          # ISR 매개변수로 수신
-calibrations: []
+calibrations: []                       # A2L에 없는 캘리브레이션은 여기에 {name, variable, min, max}
+a2l: [torque_ecu.a2l]
 arxml: [swc_torque.arxml]
+os:
+  atomic_bits: 32                      # 원자적 접근 폭
+  # lock_apis: [[SuspendAllInterrupts, ResumeAllInterrupts], [GetResource, ReleaseResource]]

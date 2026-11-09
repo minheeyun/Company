@@ -16,7 +16,7 @@ int16_t CalcTorqueLimitPct(uint16_t speed_kph, bool sensor_ok)
     if (sensor_ok && speed_kph >= 40U) {
         return TQ_LIMIT_PCT;
     }
-    return 100U;
+    return (int16_t)100;
 }
 
 /* 두 값 중 작은 값 */
@@ -49,6 +49,7 @@ void Tq_Task(void)
     Spd_GetFiltered(&speed);
     limit = CalcTorqueLimitPct(speed, !Diag_IsSensorFault());
     g_tq_state.last_speed = speed;
+    Rte_IWrite_RE_TqTask_TqLimitActive_Value(limit < (int16_t)100);
     g_tq_cmd = ComputeTorqueCommand(req, speed, !Diag_IsSensorFault());
     g_tq_state.cmd_pct = g_tq_cmd;
 }

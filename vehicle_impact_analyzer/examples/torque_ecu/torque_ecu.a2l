@@ -1,0 +1,10 @@
+/* 예제 A2L(ASAM MCD-2 MC) 일부 */
+/begin PROJECT TorqueEcu ""
+  /begin MODULE ECU_PT ""
+    /begin CHARACTERISTIC Cal_TqPlausMax "토크 제한 기록 타당성 상한" VALUE 0x80001000 RL_SWORD 0 CM_IDENT 0 200
+      FORMAT "%5.0"
+    /end CHARACTERISTIC
+    /begin MEASUREMENT g_tq_cmd "최종 토크 명령" SWORD CM_IDENT 0 0 -100 100
+    /end MEASUREMENT
+  /end MODULE
+/end PROJECT

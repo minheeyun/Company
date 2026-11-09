@@ -1,20 +1,21 @@
 # VFIA — 차량 기능 분류 · 변경 영향 분석기
 
-같은 **코드 분석 그래프(SDG/CPG)** 를 공유하는 두 스크립트입니다.
+목표는 두 단계다.
+
+1. **"이 변경이 이 차량 기능에 영향을 줄 가능성이 있고, 근거는 이 경로다"를 재현 가능하게 보여준다.**
+   (문맥 민감 chopping으로 찾은 실현 가능한 의존 경로 + 실행 문맥·신호·태스크까지 연결)
+2. 그 위에 **입력 조건과 출력 차이 분석**을 더해 **"어떤 조건에서 차량 기능이 어떻게 달라지는가"**를 보인다.
+   (결합 프로그램 기반 차이 조건 — 예: `request_pct ≥ 81 ∧ 30 ≤ speed_kph ≤ 39 ∧ sensor_ok = 1 일 때
+   토크 명령이 변경 전 80 → 변경 후 request_pct (+1 ~ +20)` — 정확성은 SMT로 검증해 '정확/부분'을 표시)
+
+같은 **코드 분석 그래프(SDG/CPG)** 를 공유하는 스크립트들:
 
 | 스크립트 | 하는 일 |
 |---|---|
-| `classify_features.py` | 파일·함수·변수의 관계를 추출하고 차량 기능과 연결(역할·근거·검토 상태 포함) |
-| `analyze_impact.py` | 변경 전후 코드를 비교하고, 변경점에서 어떤 데이터·실행 경로를 거쳐 어떤 기능까지 영향이 전달되는지, 어떤 조건에서 출력이 어떻게 달라지는지 분석 |
-
-두 스크립트 모두 `vfia.pipeline.get_graph()`로 같은 그래프(`<output_dir>/graphs/<version>.db`)를 만들거나 재사용합니다.
-
-```
-변경 전 소스+빌드 설정 ─▶ 변경 전 그래프 ─┐
-                                          ├─▶ AST 대응·변경점 ─▶ 양쪽 그래프에서 각각 영향 추적 ─┐
-변경 후 소스+빌드 설정 ─▶ 변경 후 그래프 ─┘                                                      ├─▶ 기능별 영향 후보·근거 ─▶ 동작 차이 검증·보고서
-요구사항·기능·신호·태스크(차량 모델, ARXML) ─▶ 코드와 차량 기능 연결 ───────────────────────────┘
-```
+| `classify_features.py` | 파일·함수·변수와 차량 기능의 연결(역할·근거·검토 상태) |
+| `analyze_impact.py` | 변경 전후 비교 → 영향 경로 → 기능별 상태 → 차이 조건·출력 변화 (`--level function`: 2.5단계 MVP만) |
+| `evaluate.py` | 정답셋 대비 정밀도·재현율·후보 수·시간·분석 범위, 기준선(baseline) 비교 |
+| `tools/make_compile_db.py` | 빌드 로그(TASKING/GHS/Diab/HighTec/gcc) → compile_commands.json |
 
 ## 설치
 
@@ -22,10 +23,8 @@
 pip install -r requirements.txt
 ```
 
-* libclang: `pip install libclang`(휠) 또는 시스템 libclang(`VFIA_LIBCLANG=/path/libclang.so`).
-  휠에 `stdbool.h` 같은 컴파일러 내장 헤더가 없으면 시스템 `clang -print-resource-dir`을 자동으로 찾아
-  `-isystem`으로 추가합니다(`VFIA_CLANG_RESOURCE_DIR`로 지정 가능).
-* 전후 비교 실행(선택): 호스트 `gcc`/`cc`.
+libclang(휠 또는 `VFIA_LIBCLANG`), z3, networkx, PyYAML. 전후 비교 실행은 호스트 `gcc`, CBMC 기준선은
+`goto-cc`/`goto-diff`(선택)가 있으면 사용한다.
 
 ## 빠른 시작(예제 ECU)
 
@@ -37,148 +36,136 @@ python classify_features.py --config examples/torque_ecu/analysis.yaml --version
 python analyze_impact.py --config examples/torque_ecu/analysis.yaml
 ```
 
-결과: `examples/torque_ecu/out/` 아래 `features_after.{json,html}`, `impact.{json,html}`.
+```bash
+python evaluate.py --config examples/torque_ecu/analysis.yaml --impact examples/torque_ecu/out/impact.json
+```
 
 ```bash
 python -m pytest -q tests
 ```
 
+## 검토 의견 반영 내역
+
+| 검토 항목 | 반영 | 위치 |
+|---|---|---|
+| ① 전방∩후방 교집합은 함수 경계에서 부정확 | Reps–Rosay 방식 **문맥 민감 chopping**(2단계 자동자 + 요약 간선 내부 same-level chop). 단순 교집합은 비교용으로 크기·제외 노드 수만 보고 | `slicing.chop`, 보고서 3장 |
+| ② XOR은 특수한 경우 | 변경 전/후를 같은 입력·초기 상태·환경 입력으로 함께 실행하는 **결합 프로그램**에서 관찰값 차이 D를 풀고, 분기 차이도 각 버전의 실제 조건값·**도달 조건**으로 비교 | `behavior_checker`, `conditions` |
+| ③ 예제를 결론까지 | D를 **입력 상자의 합집합**으로 도출하고 SMT로 '정확/부분'을 검증. 상자별 출력 변화(전/후 형태, 변화량, 방향)와 **기능 수준 문장** 생성. 예제 MISRA 10.3 위반 수정 | `conditions.derive_boxes/explain_box`, 예제 |
+| ④ 후지배자 CD는 단일 종료점 전제 | **비종료 민감 제어 의존(NTSCD)** 기본 적용(대기 루프·태스크 무한 루프). 후지배자 방식은 `control_dependence: classic` | `cfg.ntscd` |
+| ⑤ 라벨 전파 구분, Louvain 재현성 | Zhu 등의 **harmonic function을 기능별 one-vs-rest**로 적용해 점수 사용(다중 라벨). Louvain seed·resolution 고정·기록 | `feature_mapper` |
+| ⑥ Joern/GumTree 파서 차이 | 변경 검출과 의존 분석이 **같은 Clang AST**를 쓰므로 AST 간 대응 문제가 없음. 이름 변경은 갱신으로 보고, 함수 이름 변경만 구조 유사도로 별도 해석 | `ast_diff`, `change_detector` |
+| ⑦ 사소한 것 | 텍스트 줄 대응 대신 AST 대응을 쓰는 이유를 '이동·재포맷·블록 재구성'으로 정정. 지역변수 추가 시 **스택 증가** 보고 | `change_detector`, `resources` |
+| 2-① 비Clang 빌드 환경 | TASKING/GHS/Diab/HighTec 프로필: 옵션 변환, 사전 정의 매크로, 대리 target(ILP32), `-ffreestanding`, `-nostdinc`+툴체인 헤더, 확장 키워드·intrinsic **호환 헤더**, **빌드 로그 파서**. **파싱 성공률·오류 수·누락 의심 함수·부분 AST 함수**를 단계 2 완료 기준으로 보고(`--strict`) | `build_env`, `project_indexer` |
+| 2-② 전처리 전/후 연결 | 텍스트 diff 헝크를 AST 변경·매크로 전개 지점에 대응. **비활성 #if 구간 안 변경**은 별도 변경으로 기록. RTE 함수형 매크로는 전개 문장을 신호 접근점으로 연결 | `change_detector._text_coverage`, `vehicle_context` |
+| 2-③ 번역 단위 간 심벌 통합 | 외부 링크는 이름으로 통합, static은 파일별 분리, 선언·정의 자료형 불일치 보고, static↔extern 변경 대응 | `ProjectIndex.symbol_integration` |
+| 2-④ 함수 간 알고리즘·슬라이스 크기 | HRB SDG + 요약 간선, Andersen + 매개변수 부작용의 호출 지점별 해석, 함수 포인터 반복 보강, **구간 추상 해석(widening/narrowing)**. 영향 후보 **순위**(가중 의존 거리·경로 수) | `graph_builder`, `pointsto`, `intervals`, `impact_analyzer` |
+| 2-⑤ 동시성을 그래프에 | **간섭 의존 간선**(태스크·ISR·runnable 사이). OS 설정으로 거름(init 순서), 선점 가능성·임계 구역(잠금 API)·원자 폭 기록. **AUTOSAR 암묵/명시 접근** 구분(IRead 시작 시 복사본, IWrite 종료 후 반영) | `vehicle_context._interference`, `symexec` |
+| 2-⑥ 임베디드 함정 | **캘리브레이션**(A2L)을 상수가 아닌 자유 입력으로, **MMIO 레지스터**를 이름 있는 입력·관찰점으로, **소스 없는 함수 요약 모델**(memcpy 등 + 프로젝트 스텁), **분석 가정** 항목 | `vehicle_context.parse_a2l`, `graph_builder`, `assumptions` |
+| 2-⑦ 변경 유형 추가 | 정수 부호·크기, const/volatile, static↔extern, 전역 초기값(시동 직후), switch/case/fall-through, 배열 크기·인덱스, 비기능(스택·RAM·코드 크기, 태스크 최악 호출 체인 스택) | `change_detector`, `resources` |
+| 2-⑧ 기존 도구 | **CBMC goto-diff `--forward-impact`** 기준선 자동 실행(설치 시), Frama-C Impact는 수동 비교 안내 | `evaluate.py` |
+| 2-⑨ 기능 위치 찾기 | **Software Reconnaissance**(기능 실행/비실행 시나리오 추적 차이), IR 추적성(TF-IDF), **공변경 마이닝**(git 또는 JSON) | `feature_mapper`, `cochange` |
+| 2-⑩ 평가 설계 | 정답셋, 기능·함수 단위 P/R/F1, 변경당 후보 수, 동작 판정 정확도, 분석 시간, 분석 범위(파싱 실패·미해결 간접 호출·모델 없는 외부 함수) | `evaluate.py` |
+| 3. 단계 조정(2.5단계) | **함수 단위 간이 영향 분석 MVP**(호출 그래프 + 전역 읽기/쓰기 + 함수 요약)와 호출 그래프만 쓴 기준선 | `mvp_impact`, `--level function` |
+
 ## 입력
 
-| 입력 | 설정 위치 | 용도 |
+| 입력 | 설정 | 용도 |
 |---|---|---|
-| `.c/.h`, 생성 코드 | `versions.<v>.root` | 분석 대상 소스(버전별) |
-| `compile_commands.json` | `versions.<v>.compile_commands` | 번역 단위별 include·매크로·옵션 재현. 없으면 `sources`/`args`로 **합성 compile DB**(보고서에 표시) |
-| 빌드 설정 이름·추가 인자 | `build.name`, `build.extra_args`, `build.variant_filter` | 차종별 `#ifdef` 분석 설정. 같은 파일에 설정이 여러 개면 `variant_filter`로 선택 |
-| 차량 모델(YAML/JSON, 여러 파일 병합) | `vehicle_model` 또는 `versions.<v>.vehicle_model` | 기능·요구사항·관찰 대상·태스크/ISR/콜백·신호·캘리브레이션·ARXML |
-| 검토 기록 | `review_file` | 검토자가 확정/기각한 기능 연결(재실행해도 유지) |
-| 실행 추적 | `traces: {시나리오: 파일}` | 기능 시나리오에서 실행된 함수 목록(JSON 또는 `# feature: ID` + 함수명 줄) |
+| 소스(버전별) | `versions.<v>.root` | `.c/.h`, 생성 코드 |
+| compile DB | `versions.<v>.compile_commands` | 번역 단위별 옵션. 없으면 `build.build_log`(빌드 로그) → 없으면 `sources`/`args` 합성 |
+| 컴파일러 프로필 | `build.compiler`, `build.target`, `build.system_includes`, `build.predefined`, `build.compat_defines` | 비Clang 컴파일러 재현 |
+| 빌드 설정 | `build.name`, `build.extra_args`, `build.variant_filter` | 차종별 `#ifdef`(한 실행 = 한 설정) |
+| 차량 모델 | `vehicle_model`(여러 파일 병합, 버전별 재정의 가능) | 기능·요구사항·관찰 대상·실행 문맥(`tasks/isrs/runnables/callbacks/inits`)·신호·`a2l`·`arxml`·`os` |
+| 관찰 대상 | `observations[].kind` = `function_return`/`global`/`signal`/`mmio`/`statement`/`function` | `function`+`params`(인자 정의역)+`inputs`(환경 입력 정의역)+`sequence`(주기 수)를 주면 동작 검증 |
+| 라이브러리 모델 | `analysis.library_models` | 소스 없는 함수의 읽기/쓰기 인자 요약 |
+| 레지스터 이름 | `analysis.mmio_map` | 주소 → 이름 |
+| 실행 추적 | `traces` | Software Reconnaissance(`{"scenario", "features": [...], "functions": [...]}`) |
+| 변경 이력 | `history: {git: 경로, subdir}` 또는 `{file: json}` | 공변경 규칙 |
+| 정답셋 | `ground_truth` | 평가 |
+| 검토 기록 | `review_file` | 기능 연결 확정/기각 유지 |
 
-.h는 독립 파싱하지 않고, 실제 .c에 포함되는 문맥에서만 분석합니다. 헤더 정의는 원본 위치와 포함한 번역
-단위 목록을 따로 관리하고, 매크로 문맥에 따라 다르게 전개되면 진단(`header_variant_conflict`)으로 남깁니다.
-이 빌드 설정에서 비활성인 `#if` 구간(libclang skipped ranges)과 조건 매크로를 결과에 기록합니다.
-
-### 차량 모델 예(`examples/torque_ecu/vehicle_model.yaml`)
-
-```yaml
-features:
-  - id: F_TQ_LIMIT
-    name: 속도 조건 기반 토크 제한
-    requirements: [REQ_TQ_001]
-    keywords: [torque, limit, tq]
-    seeds: {functions: [CalcTorqueLimitPct]}       # 설계 정보로 알고 있는 기준점
-    observations:                                  # 기능을 판단하는 출력·상태
-      - id: OBS_TQ_CMD
-        kind: function_return                      # function_return | global | signal | statement | function
-        function: ComputeTorqueCommand
-        params: {request_pct: [0, 100], speed_kph: [0, 300], sensor_ok: [0, 1]}   # 동작 검증 입력 정의역
-      - {id: OBS_TQ_SIGNAL, kind: signal, signal: TqCmd_Value}
-  - id: F_SENSOR_DIAG
-    observations:
-      - {id: OBS_SENSOR_FAULT, kind: global, variable: g_sensor_fault,
-         function: Diag_UpdateSensor, sequence: 5, params: {raw_fault: [0, 1]}}   # 상태 누적: 입력 시퀀스
-execution:                                         # 직접 호출로 드러나지 않는 실행 관계
-  tasks: [{name: Task_10ms, entry: Task_10ms, period_ms: 10, priority: 5}]
-  isrs:  [{name: ISR_CanRx, entry: Can_RxIsr, priority: 20}]
-signals:
-  - {name: VehicleSpeed, readers: [{param: Can_RxIsr.raw}]}   # api / variable / param / return 지점
-arxml: [swc_torque.arxml]                          # Runnable SYMBOL, TimingEvent 주기, 포트 데이터 접근
-```
-
-`Rte_Write_<P>_<E>` / `Rte_Read_<P>_<E>` / `Com_SendSignal(ID, …)` 호출은 신호 노드로 자동 연결합니다.
-ARXML이나 신호 이름만으로 기능을 확정하지 않고, 기능 연결은 이 모델(요구사항·설계 정보)에 근거합니다.
-
-## 모듈과 책임
-
-| 모듈 | 책임 |
-|---|---|
-| `project_indexer.py` | compile DB 정리, libclang 파싱, 스코프 기반 심벌 키, 일반화 AST, 매크로 정의·전개 위치, 비활성 `#if` 구간, 번역 단위 캐시(포함 헤더 해시로 무효화) |
-| `cfg.py` | CFG(분기·반복·switch·break/continue/goto·조기 return, `&&`/`||` 단락 분해), 후지배자, 제어 의존성 |
-| `dataflow.py` | worklist 고정점 Reaching Definitions(비트셋), Def-Use |
-| `pointsto.py` | Andersen points-to(필드 구분, 배열 통합), 함수 포인터·콜백 테이블 간접 호출 해석 |
-| `graph_builder.py` | SDG 구축: DATA/CONTROL, call-site·actual/formal in/out, PARAM_IN/OUT, CALL, HRB SUMMARY, 전역 상태 위치 노드, 포인터 매개변수 부작용의 호출 지점별(문맥 민감) 해석, MOD 요약(SCC 고정점) |
-| `vehicle_context.py` | 기능·요구사항·관찰 대상, 태스크/ISR/Runnable(ARXML)과 RUNS_IN, 신호 쓰기·읽기 지점, 캘리브레이션 |
-| `feature_mapper.py` | 키워드(약어 확장)·TF-IDF·Louvain·개인화 PageRank(시드 전파)·관찰 대상 후방 슬라이스·실행 추적 → 다중 라벨 역할(직접/지원/공용/후보) |
-| `ast_diff.py` | GumTree 계열 매칭(top-down 동형, bottom-up dice+내용 유사도, LCS 복구)과 update/insert/delete/move |
-| `change_detector.py` | 심벌·파일 이동·이름 변경 대응, 변경 유형 분류, 매크로 전개 지점 귀속, 그래프 앵커와 노드 대응표 |
-| `slicing.py` | 2단계(HRB) 전방/후방 슬라이싱, 근거 경로 재구성 |
-| `impact_analyzer.py` | 변경점 전방 ∩ 관찰 대상 후방(양 버전 각각), 삭제로 바뀐 사용 지점 이월, 실행 문맥·공유 상태, 타이밍 영향 |
-| `symexec.py` | z3 기반 유계 기호 실행(C 정수 비트폭·부호·승격·복합 대입, 보호 조건 인코딩, 반복 전개, 인라인, 외부 함수=공유 미해석 함수) |
-| `behavior_checker.py` | 조건 XOR(분기 차이), 출력 차이·증거 입력·입력 구간, 변경 분리(혼합 프로그램), 상태 시퀀스, gcc 전후 비교 실행 |
-| `report_generator.py` | JSON + HTML(무엇이 변경 → 무엇을 확인 → 어떤 영향 → 추가 확인 항목) |
-
-## 설계 항목과 구현 대응
-
-| 분석 목적 | 구현 |
-|---|---|
-| 변경된 문법 요소 식별 | `ast_diff.match/edit_script` (줄 번호가 아닌 구조 대응) |
-| 값의 전달 관계 | `dataflow.ReachingDefs` → `EK.DATA` |
-| 반복문 데이터흐름 | worklist 고정점 |
-| 조건의 영향 범위 | `cfg.postdominators` + `control_dependence` → `EK.CONTROL` |
-| 포인터를 통한 영향 | `pointsto.PointsTo` + 매개변수 부작용(`pmod/pref`) |
-| 함수 간 영향 전파 | SDG + HRB 요약 간선 + MOD 요약 |
-| 변경점 → 영향 범위 | `slicing.forward_slice` |
-| 기능 관련 영향만 | `slicing.backward_slice`(관찰 대상)과의 교집합 |
-| 발생 가능한 입력 조건 | `symexec` + z3 (XOR, Optimize로 구간) |
-| 실제 발생 확인 | `behavior_checker.exec_compare` (같은 입력, 프로세스별 초기 상태) |
-
-변경 유형별 추적 시작점: 조건/임계값/연산자 → 조건 노드(제어 의존), 대입·계산식 → 정의 문장(데이터),
-호출 추가·삭제 → 호출 정점(피호출 함수 전체 부작용), 인자·반환형 → 호출부 actual-in/out,
-return/break/continue/goto → 흐름 노드와 그 뒤 문장, 순서 변경 → 이동한 문장, 구조체 필드·자료형 →
-필드 사용처(+메모리 배치 검토 항목), 매크로·헤더 → 모든 번역 단위의 전개 지점, 태스크 설정 → 실행 문맥
-안 함수와 공유 상태(타이밍 검토). 사용처 없는 지역변수라도 초기화식의 호출·volatile 접근은 부작용으로 추적합니다.
+예제(`examples/torque_ecu`)의 `vehicle_model.yaml`, `execution_v*.yaml`, `torque_ecu.a2l`, `swc_torque.arxml`,
+`traces/`, `change_history.json`, `ground_truth.yaml`을 참고. 추적·이력·정답셋은 **설명용 예시 데이터**다.
 
 ## 결과 상태
 
 | 상태 | 의미 |
 |---|---|
-| 정적 영향 후보 | 의존 그래프에서 변경점 → 관찰 대상 경로가 있음 |
-| 모델에서 동작 차이 확인 | 기호 실행 모델에서 관찰값이 달라지는 입력이 존재(증거 입력 제시) |
-| 모델에서 동작 차이 미발견(검증 범위 내) | 모델·정의역·전개 범위 안에서 관찰값 동일 |
-| 실행으로 차이 확인 | 두 버전 실행에서 같은 입력으로 출력이 다름 |
-| 실행 비교에서 차이 미발견(시험 입력 범위 내) | 생성한 시험 입력에서는 같음 |
-| 분석 불완전으로 판정 유보 | 경로를 숨길 수 있는 미해결 영역(간접 호출, 대상 불명 포인터 쓰기, 어셈블리, 지원하지 않는 구문 등) |
+| 정적 영향 후보 | 문맥 민감 chop으로 변경점 → 관찰 대상의 실현 가능한 경로가 있음 |
+| 모델에서 동작 차이 확인 | 결합 프로그램에서 관찰값이 달라지는 입력이 있음(조건·증거 입력 제시) |
+| 모델에서 동작 차이 미발견(검증 범위 내) | 정의역·전개 범위·주기 수 안에서 관찰값 동일 |
+| 실행으로 차이 확인 / 실행 비교에서 차이 미발견 | 두 버전 빌드를 같은 입력으로 실행한 결과 |
+| 분석 불완전으로 판정 유보 | 경로를 숨길 수 있는 미해결 영역, 지원하지 않는 구문 |
 | 현재 분석 범위에서 영향 경로 미발견 | '영향 없음'이 아님 |
 
-## 예제가 포함한 검증 사례(`examples/torque_ecu`)
+동작 검증 결과는 변경별로 **분리 검증**한다: 값·연산자·리터럴 갱신만으로 된 변경은 그 AST 갱신만 변경 전
+프로그램에 적용(`granularity: change`), 그 밖에는 함수 단위로 적용(`function`, 같은 함수의 다른 변경도 함께
+적용됨을 표시). 관찰 함수 실행 범위 밖의 변경은 '모델 범위 밖'으로 표시하고, `Task_10ms` 같은 상위 진입
+함수 + 신호/레지스터 관찰(통합 관찰)로 범위를 넓힌다.
 
-| 사례 | 예제 변경 | 기대 결과 |
+## 예제 결과(요약)
+
+- 임계값 30→40: `request_pct ≥ 81 ∧ 30 ≤ speed_kph ≤ 39 ∧ sensor_ok = 1` 일 때 토크 명령 80 → `request_pct`
+  (+1 ~ +20), 정확·검증됨, 실행 비교로 확인.
+- 디바운스 `>`→`>=`: 연속 3회 고장 입력 창(정확한 3개 상자)에서 고장 확정이 한 주기 빨라짐.
+- `last_limit` 기록 삭제: `Cal_TqPlausMax ≤ 99`(캘리브레이션) 일 때만 타당성 DTC가 달라짐 — 상수로 접었다면
+  '차이 없음'으로 잘못 판단했을 경우.
+- `Tq_Min` 리팩터링: 분리 검증에서 동치(차이 없음). `SPD_MAX_KPH` 300→280: 차속 처리에는 영향, 3주기 통합
+  관찰 범위에서는 토크 신호 차이 없음(필터 지연으로 280에 도달하지 못함 — 범위 표시).
+- 평가(예제 정답셋 7건): 기능 단위 F1 — 문맥 민감 chop 0.83, +동작 검증 0.86, MVP 0.65, 호출 그래프만 0.42,
+  공변경만 0.36. 전체 변경 기준 함수 단위: CBMC goto-diff P 1.0/R 0.46, chop P 0.80/R 0.92.
+
+## 모듈
+
+| 모듈 | 책임 |
+|---|---|
+| `build_env` | 컴파일러 프로필·옵션 변환·호환 헤더·빌드 로그 파서·소스 텍스트 함수 정의 탐지 |
+| `project_indexer` | 번역 단위 파싱(캐시), 심벌 키, 일반화 AST, 매크로·비활성 구간, 파싱 건전성, 심벌 통합 |
+| `cfg` / `dataflow` / `intervals` | CFG, NTSCD/후지배자 CD, Reaching Definitions, 구간 추상 해석 |
+| `pointsto` / `graph_builder` | Andersen, SDG(HRB 요약), 전역 위치, MMIO, 라이브러리 모델 |
+| `vehicle_context` | 기능·관찰·실행 문맥·신호(RTE 함수/매크로)·A2L·ARXML·임계 구역·간섭 의존 |
+| `feature_mapper` / `cochange` | 기능 분류(키워드·TF-IDF·Louvain·harmonic·후방 슬라이스·Reconnaissance·공변경) |
+| `ast_diff` / `change_detector` | GumTree 계열 대응, 변경 유형, 텍스트 대응, 자원 차이, 분리 검증용 AST 갱신 |
+| `slicing` / `impact_analyzer` | HRB 슬라이싱, 문맥 민감 chop, 순위, 실행 문맥·공유 상태 |
+| `symexec` / `conditions` / `behavior_checker` | 유계 기호 실행(C 정수 의미, RTE, 캘리브레이션, MMIO), 차이 조건·설명, 분기 차이별 시험 입력, 전후 비교 실행 |
+| `mvp_impact` / `resources` / `assumptions` / `report_generator` | 2.5단계 MVP, 비기능 추정, 분석 가정, JSON/HTML |
+
+## 기존 도구와의 관계(차별점)
+
+| 도구 | 하는 일 | 이 도구와의 관계 |
 |---|---|---|
-| 임계값 변경 | `speed_kph >= TQ_SPEED_LIMIT_KPH(30)` → `>= 40U` | 분기 차이 `sensor_ok=1, 30≤speed≤39`, 출력 차이 `request_pct≥81`, request 24는 출력 동일 |
-| `>` → `>=` + 상태 누적 | 디바운스 `s_fault_cnt > 3` → `>= 3` | 5단계 시퀀스에서 고장 확정 시점 차이(실행으로 확인) |
-| 조기 반환 | `Spd_Process`에 `if (!g_rx_valid) return;` | 이후 문장 제어 의존 변화, ISR 공유 상태 경로 |
-| 대입문 삭제 | `g_tq_state.last_limit = limit;` 삭제 | 변경 전 그래프에서 진단 콜백 테이블까지 경로 |
-| 전역·포인터 전달 | `Spd_GetFiltered(&speed)`, 공용 `Flt_LowPass(&state)` | 호출 지점별 상태 구분(문맥 민감) |
-| 콜백·태스크 공유 상태 | `Diag_Events[i].cb()`, `Can_RxIsr` → `Task_10ms` | 간접 호출 대상 복원, 문맥 간 공유 상태 검토 항목 |
-| 중간 값만 다르고 출력 동일 | `(a<b)?a:b` → `Tq_Min(a,b)` | 변경 분리 검증에서 차이 없음 |
-| 헤더·매크로·자료형 | `SPD_MAX_KPH` 300→280, `TorqueState_t` 필드 추가 | 여러 번역 단위 전개 지점, 메모리 배치 검토 |
-| 사용 안 하는 지역변수 | `uint16_t dbg = Dbg_ReadCounter();` | 초기화 부작용(전역 카운터) 추적 |
-| 태스크 설정 | `Task_10ms` 10ms → 20ms | 타이밍 영향·공유 상태 검토 |
+| Frama-C Impact (Eva 기반) | 문장의 부작용이 영향을 주는 문장 집합(없음을 보장) | impact_analyzer와 같은 층위. 수동 비교 기준선 |
+| CBMC goto-diff | diff에 전방·후방 의존을 붙여 출력 | `evaluate.py`가 설치 시 자동 기준선으로 실행 |
+| CodeSurfer | 상용 SDG 슬라이서 | 같은 HRB 계열 |
+| Shadow symbolic execution / SymDiff / Equivalence-refined CIA | 두 버전 함께 실행·등가성·중간값만 다른 경우 거르기 | 결합 프로그램 기반 차이 조건·분리 검증으로 같은 문제를 다룸 |
 
-## 분석 그래프 모델
+차별점은 ① 영향 경로를 **차량 기능·신호·태스크(간섭 의존·RTE 의미)** 까지 연결, ② **Clang이 아닌 임베디드
+빌드 환경**에서 재현(파싱 건전성 보고), ③ 기능 단위로 **어떤 조건에서 어떻게 달라지는지**를 검증된 조건과
+문장으로 도출하는 데 있다.
 
-노드 ID: `fn:<name>`(static은 `fn:<file>:<name>`), `gv:…`, `lv:<func>:<name>`, `pv:<func>:<param>`,
-문장 `fn:<…>#<ast id>`, 호출 정점 `…#<id>c`, actual-in `…c:in<i>`, actual-out `…c:out`,
-`#entry/#exit/#fi<i>/#fo_ret/#fo_mem`, 메모리 위치 `loc:<key>|<field>`, `sig:`, `task:`, `feat:`, `obs:`, `req:`.
-간선 종류는 `vfia/model.py`의 `EK`. 그래프는 SQLite로 저장되며 `--graphml`로 시각화 도구용 내보내기를 지원합니다.
+## 개발 단계(조정안)
 
-## 한계와 확장 지점
+| 단계 | 내용 | 이 저장소 |
+|---|---|---|
+| 1 | 평가 지표·정답셋(과거 변경 10~20건 라벨링) 확정 | `evaluate.py`, 예제 정답셋 형식 |
+| 2 | 비Clang 컴파일러 재현, 파싱 성공률을 완료 기준으로 | `build_env`, `--strict` |
+| 2.5 | 함수 단위 간이 영향 분석 MVP | `--level function` |
+| 3 | 기능 분류기(4와 병행 가능) | `classify_features.py` |
+| 4 | AST 변경 + 전처리 전/후 대응, 매크로 확장 지점 | `change_detector` |
+| 5 | 종료점 없는 루프를 처리한 CDG | NTSCD |
+| 6 | 간섭 의존, 캘리브레이션·MMIO·라이브러리 모델 | `vehicle_context`, `graph_builder` |
+| 7 | 문맥 민감 chopping으로 기능 연결 | `slicing.chop` |
+| 8 | 결합 프로그램 기반 차이 조건, '분석 가정' | `conditions`, `assumptions` |
 
-* **정밀 프런트엔드**: libclang Python 바인딩은 프로토타입용입니다. `project_indexer.TUExtractor`가 만드는
-  일반화 AST(JSON: `k, v, ref, rk, ty, l/c/el/ec, mac, ch`)와 같은 형식을 Clang LibTooling 추출기가 내보내면
-  나머지 단계는 그대로 사용할 수 있습니다. CFG는 현재 Python에서 AST로부터 생성합니다(`clang::CFG`로 대체 가능).
-* **Joern**: 초기 검증용 CPG가 필요하면 Joern 결과를 `AnalysisGraph`로 적재하는 어댑터를 추가할 수 있습니다
-  (전처리 설정 재현 정확도는 먼저 확인 필요).
-* **포인터 정밀도**: Andersen(문맥 비민감) + 매개변수 부작용의 호출 지점별 해석입니다. 대규모/복잡한 포인터는
-  LLVM IR 기반 SVF 연동을 권장합니다.
-* **기호 실행 범위**: 정수·_Bool·enum·구조체 필드·정수 배열·함수 포인터를 지원합니다. 부동소수점, goto,
-  정수→포인터 변환, 동적 메모리는 '판정 유보'로 보고합니다. 반복 전개·인라인 깊이·시퀀스 길이를
-  결과에 기록하며, 전개 범위가 부족하면 전체 정확성을 증명한 것이 아닙니다(CBMC 연동으로 대체 가능).
-* **타이밍·동시성**: 실행 문맥과 공유 상태를 식별해 검토 항목으로 제시합니다. 실행 시간·선점 분석은
-  태스크 우선순위·실행 시간 모델을 추가해 별도로 수행해야 합니다.
-* **여러 빌드 설정**: 한 실행은 한 빌드 설정을 분석합니다. 차종별로 `build.extra_args`/`variant_filter`를
-  바꿔 각각 실행하고, 보고서의 '비활성 구간'을 확인하세요.
-* **증분 분석**: 번역 단위 파싱은 포함 헤더 해시로 캐시되어 바뀐 번역 단위(헤더 변경 시 포함한 모든
-  번역 단위)만 다시 파싱합니다. points-to·함수 요약은 정확성을 위해 매번 전체 재계산합니다.
-* **LLM 활용**: `classify_features.py --llm-prompts`는 기능 미연결 군집의 기능명 후보 생성용 프롬프트만
-  내보냅니다. 영향 경로의 존재 여부는 항상 분석 그래프로 판단합니다.
+## 한계
+
+- **프런트엔드**: libclang 바인딩 기반 프로토타입. 대리 target은 데이터 모델만 맞추며 아키텍처 고유 의미(정렬,
+  intrinsic 의미)는 근사다. LibTooling 추출기는 같은 일반화 AST(JSON)를 내면 교체 가능.
+- **포인터**: 흐름·문맥 비민감 Andersen(매개변수 부작용만 문맥별). 대규모 코드는 SVF 연동 권장. IFDS/IDE는
+  미구현(SDG 요약 간선으로 대체).
+- **기호 실행**: 정수·_Bool·enum·구조체 필드·정수 배열·함수 포인터·RTE·MMIO 지원. 부동소수점·goto·동적 메모리는
+  판정 유보. 반복 전개·인라인 깊이·주기 수 범위 밖은 검증하지 않음. 차이 조건 도출은 시간 예산이 있어 입력이
+  많고 넓으면 '부분'으로 표시.
+- **동시성**: 값 전달(간섭 의존)과 보호·원자성은 다루지만 선점 시점·실행시간(WCET)은 모델링하지 않음.
+- **도구 신뢰**: 결과는 검토 보조용이다. 안전 관련 변경관리의 근거로 직접 쓰면 ISO 26262-8 소프트웨어 도구 신뢰도
+  평가 대상이 될 수 있다.

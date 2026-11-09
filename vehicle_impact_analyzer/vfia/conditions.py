@@ -230,10 +230,10 @@ def explain_box(base: List, region, box: Dict[str, List[int]], vars_: Sequence[I
         rng.append(v.as_long() if z3.is_int_value(v) else None)
     direction = None
     if len(rng) == 2 and None not in rng:
-        if rng[0] > 0:
-            direction = "증가"
-        elif rng[1] < 0:
-            direction = "감소"
+        if rng[0] >= 0:
+            direction = "증가" if rng[0] > 0 else "증가(일부 입력은 이 주기에 같음)"
+        elif rng[1] <= 0:
+            direction = "감소" if rng[1] < 0 else "감소(일부 입력은 이 주기에 같음)"
         else:
             direction = "증가 또는 감소"
     return {"step": step, "old": old_form, "new": new_form, "example_old": sval(o), "example_new": sval(n),

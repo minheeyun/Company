@@ -66,7 +66,8 @@ def load_vehicle_model(paths: Union[None, str, List[str]]) -> VehicleModel:
         vm.features.extend(raw.get("features", []) or [])
         vm.requirements.extend(raw.get("requirements", []) or [])
         ex = raw.get("execution", {}) or {}
-        for kind_key, ctx_kind in (("tasks", "task"), ("isrs", "isr"), ("callbacks", "callback"), ("runnables", "runnable")):
+        for kind_key, ctx_kind in (("tasks", "task"), ("isrs", "isr"), ("callbacks", "callback"), ("runnables", "runnable"),
+                                   ("inits", "init")):
             for t in ex.get(kind_key, []) or []:
                 t = dict(t)
                 t.setdefault("kind", ctx_kind)
@@ -550,7 +551,9 @@ class VehicleLinker:
                     feasible_any = True
                     a, b = ok[0]
                     pre = any(self._can_interleave(x, y) for x, y in ok)
-                    prot = self._critical(w) and self._critical(r)
+                    # 보호: 양쪽이 임계 구역이거나, ISR이 쓰고 태스크가 인터럽트 잠금 안에서 읽는 경우(반대도 같음)
+                    prot = (self._critical(w) and self._critical(r)) or \
+                        (a.get("ctx_kind") == "isr" and self._critical(r)) or (b.get("ctx_kind") == "isr" and self._critical(w))
                     atomic = size_bits is not None and size_bits <= atomic_bits
                     note = (f"{a['name']}({a.get('ctx_kind')}) 쓰기 -> {b['name']}({b.get('ctx_kind')}) 읽기"
                             + (", 선점·병렬 실행 가능" if pre else ", 같은 우선순위 비선점(중간 개입 없음)")

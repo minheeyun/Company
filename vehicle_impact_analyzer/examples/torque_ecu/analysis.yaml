@@ -4,6 +4,9 @@ build:
   # 분석한 차종·빌드 설정을 결과에 항상 표시한다.
   name: "BASE 변형 (VARIANT_SPORT 미정의)"
   extra_args: []            # 예: ["-DVARIANT_SPORT"]
+  compiler: auto            # auto | tasking | ghs | diab | hightec | gcc | clang (compile DB의 컴파일러로 자동 판별)
+  # target: arm-none-eabi   # 비Clang 컴파일러일 때 데이터 모델이 같은 대리 target
+  # build_log: build.log    # compile DB가 없으면 빌드 로그에서 추출(tools/make_compile_db.py)
   variant_filter: null      # compile DB에 같은 파일의 빌드 설정이 여러 개일 때 선택 문자열
 versions:
   before:
@@ -21,8 +24,17 @@ analysis:
   solver_timeout_ms: 20000
   initial_state: initializers   # initializers | symbolic
   exec_compare: auto        # 호스트 gcc로 전후 비교 실행(auto: 가능하면 수행)
+  control_dependence: ntscd # 비종료 민감 제어 의존(대기 루프·태스크 무한 루프 대응)
+  condition_budget_total_s: 20   # 관찰 대상 하나의 차이 조건 도출 시간 예산
+  mmio_map:                 # 레지스터 이름(주소 -> 이름)
+    PWM_DUTY_REG: 0xF0003000
+  library_models: {}        # 소스 없는 함수 요약, 예: {NvM_ReadBlock: {writes: [1]}}
 output_dir: out
 review_file: feature_review.yaml   # 검토자가 기능 연결을 확정/기각한 기록(선택)
 ground_truth: ground_truth.yaml    # 평가용 정답셋(evaluate.py)
+traces:                            # Software Reconnaissance용 실행 추적(예시 데이터)
+  scn_speed_limit: traces/scn_speed_limit.json
+  scn_sensor_fault: traces/scn_sensor_fault.json
+  scn_idle: traces/scn_idle.json
 history:                           # 공변경 마이닝: git 저장소({git: 경로, subdir: ...}) 또는 JSON(예제용 샘플)
   file: change_history.json

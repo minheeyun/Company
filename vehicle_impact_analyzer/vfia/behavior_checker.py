@@ -435,10 +435,17 @@ class BehaviorChecker:
                     pc["branch_tests"] = self._branch_tests(ch, evo, evn, base, diff, inputs, meta, terms)
                 pc["divergence_term"] = dv
             pc["status"] = self._change_status(pc)
-            sent = ((pc.get("isolated") or {}).get("condition") or {}).get("sentences") or \
-                (pc.get("output_condition") or {}).get("sentences")
-            if sent:
-                pc["sentences"] = sent
+            iso = pc.get("isolated") or {}
+            if iso.get("status") == "sat":
+                pc["sentences"] = (iso.get("condition") or {}).get("sentences") or []
+            elif iso.get("status") == "unsat":
+                pc["sentences"] = [f"[{ob.get('feature_name') or ob['feature']}] 이 변경만 적용하면 {obs_desc}"
+                                   f"{'은' if obs_desc[-1:] in '값' else '의'} 차이가 없다(검증 범위 내)"]
+            elif (pc.get("output_condition") or {}).get("sentences"):
+                pc["sentences"] = pc["output_condition"]["sentences"]
+            if (pc.get("output_condition") or {}).get("sentences") and iso.get("status") in ("sat", "unsat"):
+                # 전체 변경을 적용했을 때 이 변경의 분기 차이 지점에서 생기는 관찰값 차이(다른 변경과 결합된 효과)
+                pc["combined_sentences"] = pc["output_condition"]["sentences"]
             res["per_change"][ch["id"]] = pc
         for ch in in_scope:
             if ch["type"] not in ("function_added", "function_removed"):
@@ -771,6 +778,8 @@ class BehaviorChecker:
     # ------------------------------------------------------------------
     def exec_compare(self, ob: dict, model_res: dict) -> dict:
         spec = ob["spec"]
+        if spec["kind"] not in ("function_return", "global"):
+            return {"status": "skipped", "reason": "신호·레지스터 관찰은 실행 하네스 미지원(모델 검증 결과 사용)"}
         gcc = shutil.which("gcc") or shutil.which("cc")
         if not gcc:
             return {"status": "skipped", "reason": "호스트 C 컴파일러 없음"}
@@ -787,6 +796,8 @@ class BehaviorChecker:
         params = fast.get("params", [])
         if any((p.get("ty") or {}).get("k") not in ("i", "b") for p in params):
             return {"status": "skipped", "reason": "정수가 아닌 인자"}
+        if not params:
+            return {"status": "skipped", "reason": "인자 없는 진입 함수(환경 입력만으로 구동): 실행 하네스에 환경 스텁이 필요해 모델 검증 결과 사용"}
         steps = model_res["bounds"]["sequence"]
         vectors = self._vectors(spec, params, steps, model_res)
         work = self.workdir or tempfile.mkdtemp(prefix="vfia_exec_")
@@ -875,9 +886,15 @@ class BehaviorChecker:
                         continue
                     args += [a, nxt]
                     continue
-                if a in ("-fparse-all-comments",) or a.startswith("-working-directory"):
-                    continue
-                args.append(a)
+                if a in ("-fparse-all-comments", "-ffreestanding") or a.startswith(("-working-directory", "-W", "--target=")):
+                    continue   # Clang 분석용으로 더한 옵션은 호스트 gcc 빌드에서 제외
+                if a == "-include" or a.startswith(("-I", "-D", "-U", "-std=", "-m", "-f")):
+                    args.append(a)
+                elif args and args[-1] == "-include":
+                    if "vfia_compat_" in a:
+                        args.pop()
+                    else:
+                        args.append(a)
             obj = os.path.join(objdir, re.sub(r"[^\w]", "_", t["file"]) + ".o")
             cmd = [gcc] + args + ["-w", "-O0", "-fno-common", "-Dmain=vfia_unused_main", "-c", src, "-o", obj]
             p = subprocess.run(cmd, capture_output=True, text=True, cwd=root)

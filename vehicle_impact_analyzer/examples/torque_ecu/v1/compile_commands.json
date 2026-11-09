@@ -71,6 +71,20 @@
   },
   {
     "directory": ".",
+    "file": "src/rte.c",
+    "arguments": [
+      "gcc",
+      "-Iinclude",
+      "-std=c99",
+      "-O2",
+      "-c",
+      "src/rte.c",
+      "-o",
+      "build/rte.o"
+    ]
+  },
+  {
+    "directory": ".",
     "file": "src/speed.c",
     "arguments": [
       "gcc",

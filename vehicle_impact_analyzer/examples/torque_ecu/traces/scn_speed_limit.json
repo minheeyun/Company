@@ -1,0 +1,26 @@
+{
+  "scenario": "차속 35kph, 요청 90%",
+  "features": [
+    "F_TQ_LIMIT",
+    "F_SPEED_PROC"
+  ],
+  "functions": [
+    "Task_10ms",
+    "Spd_Process",
+    "Flt_LowPass",
+    "Diag_MainFunction",
+    "Diag_UpdateSensor",
+    "Diag_CheckPlausibility",
+    "Spd_GetFiltered",
+    "Tq_Task",
+    "Diag_IsSensorFault",
+    "Out_Task",
+    "Out_ComputeOutput",
+    "Dbg_ReadCounter",
+    "ComputeTorqueCommand",
+    "CalcTorqueLimitPct",
+    "Tq_Min",
+    "Can_RxIsr"
+  ],
+  "note": "예시 데이터: 실제로는 계측 빌드(-finstrument-functions, gcov)나 HIL 로그에서 시나리오별로 수집"
+}

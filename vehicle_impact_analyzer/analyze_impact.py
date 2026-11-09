@@ -164,7 +164,7 @@ def main(argv=None) -> int:
         data["cochange"] = {"summary": cochange.summary(), "per_change": {
             c["id"]: cochange.rules_from([x for x in {(c.get("old") or {}).get("file"), (c.get("new") or {}).get("file")} if x])
             for c in results}}
-    data["review"] = review_items(results, behavior, meta, scope)
+    data["review"] = review_items(results, behavior, meta, scope, data)
     meta["seconds"] = round(time.time() - t0, 2)
     jp, hp = os.path.join(out, "impact.json"), os.path.join(out, "impact.html")
     write_json(jp, data)

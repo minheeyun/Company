@@ -6,6 +6,8 @@ bool g_sensor_fault;
 uint8_t g_dtc_sensor;
 uint8_t g_dtc_plaus;
 static uint8_t s_fault_cnt;
+/* 캘리브레이션: 토크 제한 기록 타당성 상한(XCP로 변경 가능) */
+const volatile int16_t Cal_TqPlausMax = 100;
 static uint8_t s_events;
 
 static void Diag_OnSensorFault(void)
@@ -42,6 +44,13 @@ void Diag_UpdateSensor(bool raw_fault)
     }
 }
 
+/* 시동 초기화(init 문맥) */
+void Diag_Init(void)
+{
+    s_fault_cnt = 0U;
+    g_sensor_fault = false;
+}
+
 bool Diag_IsSensorFault(void)
 {
     return g_sensor_fault;
@@ -52,7 +61,7 @@ static void Diag_CheckPlausibility(void)
 {
     uint16_t spd = 0U;
     Spd_GetFiltered(&spd);
-    if ((spd > SPD_MAX_KPH) || (g_tq_state.last_limit > 100)) {
+    if ((spd > SPD_MAX_KPH) || (g_tq_state.last_limit > Cal_TqPlausMax)) {
         s_events |= 0x02U;
     }
 }

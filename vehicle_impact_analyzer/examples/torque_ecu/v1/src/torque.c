@@ -16,7 +16,7 @@ int16_t CalcTorqueLimitPct(uint16_t speed_kph, bool sensor_ok)
     if (sensor_ok && speed_kph >= TQ_SPEED_LIMIT_KPH) {
         return TQ_LIMIT_PCT;
     }
-    return 100U;
+    return (int16_t)100;
 }
 
 /* 최종 토크 명령 = min(요청, 제한) */
@@ -43,6 +43,7 @@ void Tq_Task(void)
     limit = CalcTorqueLimitPct(speed, !Diag_IsSensorFault());
     g_tq_state.last_limit = limit;
     g_tq_state.last_speed = speed;
+    Rte_IWrite_RE_TqTask_TqLimitActive_Value(limit < (int16_t)100);
     g_tq_cmd = ComputeTorqueCommand(req, speed, !Diag_IsSensorFault());
     g_tq_state.cmd_pct = g_tq_cmd;
 }

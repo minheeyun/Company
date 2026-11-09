@@ -1,5 +1,6 @@
 #include "speed.h"
 #include "filter.h"
+#include "os.h"
 
 volatile uint16_t g_rx_speed_raw;
 volatile bool g_rx_valid;
@@ -16,7 +17,10 @@ void Can_RxIsr(uint16_t raw)
 /* 차속 신호 처리(10ms) */
 void Spd_Process(void)
 {
-    uint16_t raw = g_rx_speed_raw;
+    uint16_t raw;
+    SuspendAllInterrupts();
+    raw = g_rx_speed_raw;
+    ResumeAllInterrupts();
     uint16_t v = Flt_LowPass(&s_spd_flt, raw);
     if (v > SPD_MAX_KPH) {
         v = SPD_MAX_KPH;

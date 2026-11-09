@@ -13,4 +13,5 @@ extern uint8_t g_dtc_plaus;
 void Diag_UpdateSensor(bool raw_fault);
 bool Diag_IsSensorFault(void);
 void Diag_MainFunction(void);
+void Diag_Init(void);
 #endif

@@ -122,7 +122,8 @@ def test_interference_locks_init_filter_and_mmio():
     inter = [(g.node(s).get("text"), g.node(d).get("text"), e) for s, d, e in g.g.edges(data=True)
              if e["kind"] == EK.INTERFERENCE]
     raw = [e for s, d, e in inter if "g_raw" in s and "r = g_raw" in d]
-    assert raw and raw[0]["preemptive"] and not raw[0]["protected"]     # 쓰기 쪽(ISR)은 보호 안 됨
+    # ISR이 쓰고 태스크가 인터럽트 잠금 안에서 읽으므로 보호됨(ISR은 잠금 구간에 끼어들 수 없음)
+    assert raw and raw[0]["preemptive"] and raw[0]["protected"]
     reader = next(n for n in g.nodes_of(NK.STMT) if g.node(n).get("text") == "r = g_raw")
     assert g.node(reader).get("critical")                                # 읽기는 인터럽트 잠금 안
     wide = [e for s, d, e in inter if "g_wide" in s]
@@ -140,7 +141,6 @@ def test_interference_locks_init_filter_and_mmio():
 
 def test_symexec_rte_implicit_calibration_mmio_memcpy():
     import z3
-    from vfia.behavior_checker import BehaviorChecker  # noqa: F401
     from vfia.symexec import Program, SymExec
     src = r"""
     typedef struct { int a; int b; } S;

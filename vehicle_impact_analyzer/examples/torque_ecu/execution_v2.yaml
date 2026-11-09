@@ -1,6 +1,8 @@
 # 변경 후 실행 문맥: Task_10ms 주기 변경(10ms -> 20ms)
 execution:
   tasks:
-    - {name: Task_10ms, entry: Task_10ms, period_ms: 20, priority: 5}
+    - {name: Task_10ms, entry: Task_10ms, period_ms: 20, priority: 5, preemptive: true}
+  inits:
+    - {name: EcuM_Init, entry: Diag_Init, priority: 1}
   isrs:
     - {name: ISR_CanRx, entry: Can_RxIsr, priority: 20}

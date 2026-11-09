@@ -185,20 +185,44 @@ def _behavior_html(checks: List[dict]) -> str:
             out.append(f"<div class='mut'>판정 유보 사유: {_e(c['error'])}</div>")
         if c.get("note"):
             out.append(f"<div class='mut'>{_e(c['note'])}</div>")
+        for st in c.get("sentences") or []:
+            out.append(f"<div class='card'><b>{_e(st)}</b></div>")
         if c.get("divergence") == "sat":
-            out.append(f"<div>분기·값 선택이 달라지는 입력(경계 상자): {_region_text(c.get('divergence_region')) or '시퀀스 입력(증거 참고)'}</div>")
+            dc = c.get("divergence_condition") or {}
+            out.append(f"<div>분기·값 선택이 달라지는 조건{' (정확·검증됨)' if dc.get('exact') else ''}: "
+                       f"<code>{_e(dc.get('text') or _region_text(c.get('divergence_region')) or '증거 입력 참고')}</code></div>")
             if c.get("divergence_formula"):
-                out.append(f"<details><summary>변경 전후 조건 XOR(정규화 식)</summary><pre>{_e(c['divergence_formula'])}</pre></details>")
+                out.append(f"<details><summary>결합 프로그램의 분기 차이 식(도달 조건 포함, 정규화)</summary>"
+                           f"<pre>{_e(c['divergence_formula'])}</pre></details>")
             wd = c.get("with_output_diff")
             out.append(f"<div>그 입력에서 관찰값 차이: <b>{'발생' if wd == 'sat' else ('발생하지 않음' if wd == 'unsat' else '판정 불가')}</b></div>")
         elif c.get("divergence") == "unsat":
             out.append("<div>변경된 조건/값이 같은 입력에서 달라지는 경우 없음</div>")
         iso = c.get("isolated")
         if iso:
-            txt = {"sat": "이 함수 변경만 적용해도 관찰값이 달라짐", "unsat": "이 함수 변경만 적용하면 관찰값 동일(검증 범위 내 동치)",
+            unit = "이 변경" if iso.get("granularity") == "change" else f"이 함수({iso.get('function')}) 변경"
+            txt = {"sat": f"{unit}만 적용해도 관찰값이 달라짐", "unsat": f"{unit}만 적용하면 관찰값 동일(검증 범위 내 동치)",
                    "unknown": "판정 불가", "unsupported": f"지원하지 않는 구문: {iso.get('error')}"}.get(iso["status"], iso["status"])
-            out.append(f"<div>변경 분리 검증({_e(iso.get('function'))}): <b>{_e(txt)}</b>"
-                       + (f" — 차이 구간 {_region_text(iso.get('region'))}" if iso.get("region") else "") + "</div>")
+            cond = (iso.get("condition") or {})
+            out.append(f"<div>변경 분리 검증: <b>{_e(txt)}</b>"
+                       + (f" — 차이 조건{' (정확·검증됨)' if cond.get('exact') else ''}: <code>{_e(cond.get('text'))}</code>"
+                          if cond.get("text") else "") + "</div>")
+            if iso.get("note"):
+                out.append(f"<div class='mut'>{_e(iso['note'])}</div>")
+        for st in c.get("combined_sentences") or []:
+            out.append(f"<div class='mut'>모든 변경을 함께 적용했을 때 이 변경의 분기 차이 지점에서: {_e(st)}</div>")
+        if c.get("branch_tests"):
+            rows = "".join(
+                f"<tr><td>{_e(t['class'])}</td><td>{_e('; '.join(', '.join(f'{k}={v}' for k, v in st.items()) for st in t['inputs']))}"
+                f"{('<br><span class=mut>' + _e(', '.join(f'{k}={v}' for k, v in list((t.get('environment') or {}).items())[:6])) + '</span>') if t.get('environment') else ''}</td>"
+                f"<td>{_e(t['values'].get('old'))} → {_e(t['values'].get('new'))}</td><td>{'가능' if t['output_can_differ'] else '없음'}</td></tr>"
+                for t in c["branch_tests"])
+            out.append("<h4>분기 차이별 시험 입력(변경 전/후 실행이 갈리는 지점마다)</h4><table><tr><th>분기 차이</th><th>입력</th>"
+                       f"<th>관찰값(전→후)</th><th>관찰값 차이</th></tr>{rows}</table>")
+        for side, lst in (c.get("static_ranges") or {}).items():
+            for x in lst:
+                out.append(f"<div class='mut'>정적 구간 분석({side}) <code>{_e(x['condition'])}</code>: "
+                           f"참 {'가능' if x.get('can_true') else '불가'}/거짓 {'가능' if x.get('can_false') else '불가'}, 변수 범위 {_e(x.get('vars'))}</div>")
         out.append(_witness_table(c.get("examples_diff") or [], "관찰값이 달라지는 예"))
         out.append(_witness_table(c.get("examples_same_output") or [], "중간 값은 달라지지만 관찰값은 같은 예"))
         if c.get("exec_examples"):
@@ -220,6 +244,18 @@ def impact_report_html(data: dict, path: str) -> None:
         cards.append(f"<div class='card'><div class='mut'>{_e(f['feature'])}</div><div><b>{_e(f['name'])}</b></div>"
                      f"<div>{badge(f['overall'])}</div><div class='mut'>관련 변경 {len(f['changes'])}개</div></div>")
     b.append(f"<div class='summary-cards'>{''.join(cards)}</div>")
+    concl = []
+    for r in data.get("behavior", []):
+        for st in ((r.get("condition") or {}).get("sentences") or [])[:2]:
+            concl.append((r["observation"], "전체 변경", st, (r.get("condition") or {}).get("exact")))
+        for cid, pc in (r.get("per_change") or {}).items():
+            if pc.get("status") in (Status.MODEL_DIFF, Status.EXEC_DIFF):
+                for st in (pc.get("sentences") or [])[:1]:
+                    concl.append((r["observation"], cid, st, ((pc.get("isolated") or {}).get("condition") or {}).get("exact")))
+    if concl:
+        b.append("<h2>어떤 조건에서 차량 기능이 어떻게 달라지는가</h2><table><tr><th>관찰</th><th>변경</th><th>결론</th><th>조건</th></tr>"
+                 + "".join(f"<tr><td>{_e(o)}</td><td>{_e(c_)}</td><td>{_e(st)}</td><td>{'정확·검증됨' if ex else '부분/근사'}</td></tr>"
+                           for o, c_, st, ex in concl) + "</table>")
     b.append("<div class='card mut'>상태 구분: " + " ".join(badge(s) for s in (
         Status.EXEC_DIFF, Status.MODEL_DIFF, Status.STATIC_CANDIDATE, Status.INCONCLUSIVE, Status.MODEL_NO_DIFF,
         Status.EXEC_NO_DIFF, Status.NO_PATH)) + "<br>경로를 찾지 못한 경우 '영향 없음'이 아니라 "
@@ -256,8 +292,69 @@ def impact_report_html(data: dict, path: str) -> None:
             extra.append(f"<div class='mut'>{_e(c['note'])}</div>")
         b.append("".join(extra) + "</div>")
 
+    cov = data.get("text_coverage") or []
+    if cov:
+        cnt: Dict[str, int] = {}
+        for h in cov:
+            cnt[h["class"]] = cnt.get(h["class"], 0) + 1
+        names = {"mapped": "AST 변경으로 설명됨", "comment_or_whitespace": "주석·공백", "inactive_in_this_config": "비활성 #if 구간",
+                 "preprocessor": "전처리 지시문", "not_compiled": "컴파일 대상 아님", "unmapped": "설명되지 않음(누락 가능성)"}
+        b.append("<h3>전처리 전 텍스트 변경과 AST 변경의 대응</h3><div>" + " ".join(
+            f"<span class='pill'>{_e(names.get(k, k))} {v}</span>" for k, v in cnt.items()) + "</div>")
+        odd = [h for h in cov if h["class"] in ("unmapped", "not_compiled", "inactive_in_this_config")]
+        if odd:
+            b.append("<table><tr><th>분류</th><th>파일</th><th>줄(전→후)</th><th>변경 후 내용</th></tr>" + "".join(
+                f"<tr><td>{_e(names.get(h['class']))}</td><td>{_e(h['file_new'] or h['file_old'])}</td><td>{_e(h['old'])} → {_e(h['new'])}</td>"
+                f"<td><pre>{_e(h['text_new'] or h['text_old'])}</pre></td></tr>" for h in odd) + "</table>")
+    res_ = data.get("resources") or {}
+    if res_.get("functions") or res_.get("tasks") or res_.get("ram_old") != res_.get("ram_new"):
+        b.append("<h3>비기능 영향(추정)</h3><div class='mut'>" + _e(res_.get("note")) + "</div><table><tr><th>대상</th><th>스택(전→후)</th><th>코드 크기(전→후)</th></tr>"
+                 + "".join(f"<tr><td>{_e(x['function'])}</td><td>{_e(x['stack_old'])} → {_e(x['stack_new'])}</td>"
+                           f"<td>{_e(x['code_nodes_old'])} → {_e(x['code_nodes_new'])}</td></tr>" for x in res_.get("functions", []))
+                 + "".join(f"<tr><td>태스크 {_e(x['context'])} 최악 호출 체인</td><td>{_e(x['stack_old'])} → {_e(x['stack_new'])}</td><td></td></tr>"
+                           for x in res_.get("tasks", []))
+                 + f"<tr><td>RAM(전역 합)</td><td colspan=2>{_e(res_.get('ram_old'))} → {_e(res_.get('ram_new'))} 바이트</td></tr></table>")
+
     # 2
     b.append("<h2>2. 분석기가 무엇을 확인했는가?</h2>")
+    if data.get("assumptions"):
+        b.append("<h3>분석 가정</h3><table>" + "".join(f"<tr><th>{_e(a['topic'])}</th><td>{_e(a['text'])}</td></tr>"
+                                                        for a in data["assumptions"]) + "</table>")
+    ph = data.get("parse_health") or {}
+    if ph:
+        b.append("<h3>빌드 환경 재현·파싱 건전성(단계 2 완료 기준)</h3><table><tr><th>버전</th><th>컴파일러 프로필</th><th>파싱 성공률</th>"
+                 "<th>오류 번역 단위</th><th>누락 의심 함수</th><th>부분 AST 함수</th><th>제거된 원래 옵션</th></tr>")
+        for side, v in ph.items():
+            if not v:
+                continue
+            b.append(f"<tr><td>{_e(side)}</td><td>{_e(', '.join(v.get('compiler_profiles') or []))}</td>"
+                     f"<td>{_e(v.get('success_rate'))}</td><td>{_e(v.get('errors_by_tu') or '-')}</td>"
+                     f"<td>{_e([m['function'] for m in v.get('missing_function_candidates') or []] or '-')}</td>"
+                     f"<td>{_e([m['function'] for m in v.get('partial_ast_functions') or []] or '-')}</td>"
+                     f"<td>{_e(' '.join(v.get('dropped_options') or []) or '-')}</td></tr>")
+        b.append("</table>")
+    si = (data.get("symbol_integration") or {})
+    if si:
+        b.append("<h3>번역 단위 간 심벌 통합</h3><ul>")
+        for side, v in si.items():
+            if v:
+                b.append(f"<li>{_e(side)}: 외부 링크 {v.get('extern_symbols')}개(이름으로 통합), static {v.get('static_symbols')}개(파일별 분리), "
+                         f"선언·정의 자료형 불일치 {len(v.get('type_mismatches') or [])}건, 같은 이름 static {len(v.get('same_name_statics') or [])}건, "
+                         f"정의 없는 참조 {_e(', '.join(v.get('undefined_referenced') or []) or '-')}</li>")
+        b.append("</ul>")
+    itf = data.get("interference") or {}
+    if any(itf.values()):
+        b.append("<h3>실행 문맥 간 간섭 의존</h3><ul>" + "".join(
+            f"<li>{_e(side)}: 간섭 의존 간선 {v.get('edges')}개, 보호 없는 비원자 접근 {v.get('unprotected_non_atomic')}건, "
+            f"init 순서로 제거한 흐름 {len(v.get('filtered_flows') or [])}건</li>" for side, v in itf.items() if v) + "</ul>")
+    if data.get("static_branches"):
+        b.append("<h3>정적으로 결정되는 분기(구간 추상 해석)</h3><ul>" + "".join(
+            f"<li><code>{_e(x['text'])}</code> {_e(x['file'])}:{_e(x['line'])} — 항상 {_e(x['always'])}</li>"
+            for x in data["static_branches"]) + "</ul>")
+    if data.get("mvp"):
+        b.append("<h3>2.5단계 함수 단위 간이 분석(비교용)</h3><table><tr><th>변경</th><th>MVP 영향 기능</th><th>호출 그래프만</th></tr>" + "".join(
+            f"<tr><td>{_e(m['change'])} {_e(m['unit'])}</td><td>{_e(', '.join(m['features']) or '-')}</td>"
+            f"<td>{_e(', '.join(m['callgraph_features']) or '-')}</td></tr>" for m in data["mvp"]) + "</table>")
     b.append(f"<div class='card'>{_build_box(meta.get('build') or {}, meta.get('versions') or {})}</div>")
     scope = data.get("scope", {})
     b.append("<div class='card'><div class='kv'>" + "".join(f"<div>{_e(k)}</div><div>{_e(v)}</div>" for k, v in scope.get("method", {}).items()) + "</div></div>")
@@ -289,16 +386,19 @@ def impact_report_html(data: dict, path: str) -> None:
         b.append("</table>")
 
     # 3
-    b.append("<h2>3. 어떤 영향이 발견되었는가?</h2>")
+    b.append("<h2>3. 어떤 영향이 발견되었는가?</h2><p class='mut'>변경은 순위 점수(의존 거리·경로 수) 순으로 정렬</p>")
     for f in feats:
         b.append(f"<h3>{_e(f['feature'])} · {_e(f['name'])} {badge(f['overall'])}</h3>")
-        b.append("<table><tr><th>변경</th><th>유형</th><th>대상</th><th>상태</th></tr>" + "".join(
+        b.append("<table><tr><th>변경</th><th>유형</th><th>대상</th><th>순위 점수</th><th>상태</th></tr>" + "".join(
             f"<tr><td><a href='#{_e(x['change'])}-{_e(f['feature'])}'>{_e(x['change'])}</a></td><td>{_e(x['type'])}</td>"
-            f"<td><code>{_e(x['unit'])}</code></td><td>{badge(x['status'])}</td></tr>" for x in f["changes"]) + "</table>")
-        bh = next((r for r in data.get("behavior", []) if r["feature"] == f["feature"] and r.get("status") == Status.MODEL_DIFF), None)
-        if bh:
-            b.append(f"<div class='card'><b>전체 변경 적용 시 관찰값 차이 ({_e(bh['observation'])})</b> "
-                     + (f"— 차이 발생 입력(경계 상자): {_region_text(bh.get('region'))}" if bh.get("region") else "")
+            f"<td><code>{_e(x['unit'])}</code></td><td>{_e(x.get('rank_score'))}</td><td>{badge(x['status'])}</td></tr>"
+            for x in f["changes"]) + "</table>")
+        for bh in [r for r in data.get("behavior", []) if r["feature"] == f["feature"] and r.get("status") == Status.MODEL_DIFF]:
+            cond = bh.get("condition") or {}
+            b.append(f"<div class='card'><b>전체 변경 적용 시 관찰값 차이 ({_e(bh['observation'])}, {_e(bh.get('method'))})</b>"
+                     + (f"<div>차이 조건{' (정확·검증됨)' if cond.get('exact') else ''}: <code>{_e(cond.get('text'))}</code></div>"
+                        if cond.get("text") else "")
+                     + "".join(f"<div><b>{_e(st)}</b></div>" for st in cond.get("sentences") or [])
                      + _witness_table(bh.get("witnesses") or [], "증거 입력") + "</div>")
     for c in changes:
         im = c["impact"]
@@ -307,6 +407,15 @@ def impact_report_html(data: dict, path: str) -> None:
                      f"{badge(fi['status'])} <span class='mut'>({_e(c['type_label'])}, {_e(c.get('unit_name'))})</span>")
             if fi.get("status_note"):
                 b.append(f"<div class='mut'>{_e(fi['status_note'])}</div>")
+            for side in ("new", "old"):
+                sd = fi["sides"].get(side)
+                if sd:
+                    b.append(f"<div class='mut'>순위 점수 {fi.get('rank_score')} · 의존 거리 {sd.get('dependence_distance')} · "
+                             f"최단 경로 수 {sd.get('path_count')} · 문맥 민감 chop {sd.get('chop_size')}노드"
+                             f"(단순 교집합 {sd.get('naive_intersection_size')}노드, 실현 불가 경로로 제외 {sd.get('overapprox_removed')})</div>")
+                    for it in sd.get("interference") or []:
+                        b.append(f"<div class='mut'>간섭 의존: {_e(it.get('note'))}</div>")
+                    break
             for side, label in (("old", "변경 전 그래프"), ("new", "변경 후 그래프")):
                 sd = fi["sides"].get(side)
                 if not sd:
@@ -362,7 +471,7 @@ def _seq_text(ex: dict) -> str:
     return " → ".join(steps)
 
 
-def review_items(changes: List[dict], behavior: List[dict], meta: dict, scope: dict) -> List[dict]:
+def review_items(changes: List[dict], behavior: List[dict], meta: dict, scope: dict, data: Optional[dict] = None) -> List[dict]:
     """보고서 4장: 검증자가 추가로 확인할 항목 생성."""
     tests, timing, ext, scope_items, iface, config = [], [], [], [], [], []
     static_pairs = {(c["id"], f["feature"]) for c in changes for f in c["impact"]["features"]
@@ -438,8 +547,36 @@ def review_items(changes: List[dict], behavior: List[dict], meta: dict, scope: d
             config.append(f"{f}: 이 빌드 설정에서 비활성인 구간이 있음(조건 매크로 {', '.join(others)}). 다른 차종·빌드 설정으로 재분석 필요")
     for u in (scope.get("unresolved") or {}).get("간접 호출 미해결", []) or []:
         ext.append(f"간접 호출 미해결: {u}")
+    for c in changes:
+        if c["type"] == "inactive_code_change":
+            config.append(f"[{c['id']}] {c['summary']}")
+    for r in behavior or []:
+        cond = r.get("condition") or {}
+        if any(v.startswith("Cal_") or "cal" in v.lower() for v in cond.get("variables") or []):
+            tests.append(f"{r['feature']}/{r['observation']}: 차이가 캘리브레이션 값에 따라 달라짐 — 데이터셋(A2L/HEX)의 실제 값으로 확인: {cond.get('text')}")
+    data = data or {}
+    build = []
+    for h in data.get("text_coverage") or []:
+        if h["class"] == "unmapped":
+            build.append(f"{h['file_new'] or h['file_old']} {h['old']}→{h['new']}: 텍스트 변경이 AST 변경으로 설명되지 않음 — "
+                         "매크로·전처리·파싱 누락 여부 확인")
+        elif h["class"] == "not_compiled":
+            build.append(f"{h['file_new'] or h['file_old']}: 어느 번역 단위에도 포함되지 않은 파일의 변경 — 분석 대상 밖")
+    for side, ph in (data.get("parse_health") or {}).items():
+        if not ph:
+            continue
+        for m in ph.get("missing_function_candidates") or []:
+            build.append(f"[{side}] {m['file']}:{m['line']} {m['function']}: 소스에는 있으나 AST에 없음(컴파일러 확장·옵션 변환 확인)")
+        for m in ph.get("partial_ast_functions") or []:
+            build.append(f"[{side}] {m['file']}:{m['line']} {m['function']}: 파싱 오류로 부분 AST — {m['error']}")
+    for t in (data.get("resources") or {}).get("tasks") or []:
+        if (t.get("stack_new") or 0) > (t.get("stack_old") or 0):
+            iface.append(f"태스크 {t['context']} 최악 호출 체인 스택 추정 {t['stack_old']} -> {t['stack_new']} 바이트: 스택 여유 확인")
+    for side, v in (data.get("interference") or {}).items():
+        if v and v.get("unprotected_non_atomic"):
+            timing.append(f"[{side}] 보호 없는 비원자 공유 접근 {v['unprotected_non_atomic']}건: 임계 구역·원자 접근 검토")
     out = []
-    for title, items in (("경계값·시퀀스 시험", tests), ("타이밍·동시성 확인", timing),
+    for title, items in (("빌드 환경·파싱·전처리 대응", build), ("경계값·시퀀스 시험", tests), ("타이밍·동시성 확인", timing),
                          ("모델 범위 밖 변경(통합 시나리오 필요)", scope_items),
                          ("미해결 호출·외부 모델 검토", ext), ("인터페이스·메모리 배치·부작용·링크", iface),
                          ("빌드 설정·차종 변형", config)):

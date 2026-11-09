@@ -8,23 +8,24 @@ cases:
     description: Spd_Process 조기 반환(수신 무효 시 갱신 중단)과 그에 따른 읽기 이동
     match: [{unit: Spd_Process, type: early_exit_added}, {unit: Spd_Process, type: assignment_added},
             {unit: Spd_Process, type: code_moved}]
-    impacted_features: [F_SPEED_PROC, F_TQ_LIMIT, F_OUTPUT_CUTOFF]
-    behavior_changes: [F_SPEED_PROC]
+    impacted_features: [F_SPEED_PROC, F_TQ_LIMIT, F_OUTPUT_CUTOFF, F_SENSOR_DIAG]
+    behavior_changes: [F_SPEED_PROC, F_TQ_LIMIT, F_SENSOR_DIAG]
     impacted_functions: [Spd_Process, Flt_LowPass, Spd_GetFiltered, Tq_Task, CalcTorqueLimitPct, ComputeTorqueCommand,
                          Out_ComputeOutput, Out_Task, Diag_CheckPlausibility]
   - id: GT02
     description: 디바운스 비교 연산자 > -> >=
     match: [{unit: Diag_UpdateSensor, type: comparison_operator_change}]
     impacted_features: [F_SENSOR_DIAG, F_OUTPUT_CUTOFF, F_TQ_LIMIT]
-    behavior_changes: [F_SENSOR_DIAG]
+    behavior_changes: [F_SENSOR_DIAG, F_TQ_LIMIT]
     impacted_functions: [Diag_UpdateSensor, Diag_IsSensorFault, Diag_MainFunction, Tq_Task, CalcTorqueLimitPct,
                          ComputeTorqueCommand, Out_ComputeOutput, Out_Task]
   - id: GT03
     description: 토크 제한 속도 임계값 30 -> 40
     match: [{unit: CalcTorqueLimitPct, type: threshold_change}]
-    impacted_features: [F_TQ_LIMIT, F_OUTPUT_CUTOFF]
-    behavior_changes: [F_TQ_LIMIT]
-    impacted_functions: [CalcTorqueLimitPct, ComputeTorqueCommand, Tq_Task, Out_ComputeOutput, Out_Task]
+    impacted_features: [F_TQ_LIMIT, F_OUTPUT_CUTOFF, F_SENSOR_DIAG]
+    behavior_changes: [F_TQ_LIMIT, F_SENSOR_DIAG]   # 제한값 80/100 -> last_limit -> 타당성 판정(Cal_TqPlausMax 80~99일 때)
+    impacted_functions: [CalcTorqueLimitPct, ComputeTorqueCommand, Tq_Task, Out_ComputeOutput, Out_Task,
+                         Diag_CheckPlausibility, Diag_MainFunction]
   - id: GT04
     description: min 계산을 Tq_Min 호출로 리팩터링(동작 동일)
     match: [{unit: ComputeTorqueCommand, type: call_added}, {unit: Tq_Min, type: function_added}]
@@ -32,11 +33,11 @@ cases:
     behavior_changes: []
     impacted_functions: []
   - id: GT05
-    description: last_limit 기록 삭제(값이 항상 100 이하라 타당성 판정에 영향 없음)
+    description: last_limit 기록 삭제(캘리브레이션 Cal_TqPlausMax가 100 미만이면 타당성 DTC가 달라짐)
     match: [{unit: Tq_Task, type: assignment_removed}]
-    impacted_features: []
-    behavior_changes: []
-    impacted_functions: [Tq_Task]
+    impacted_features: [F_SENSOR_DIAG]
+    behavior_changes: [F_SENSOR_DIAG]
+    impacted_functions: [Tq_Task, Diag_CheckPlausibility, Diag_MainFunction]
   - id: GT06
     description: 사용하지 않는 지역변수(디버그 카운터 증가 부작용)
     match: [{unit: Tq_Task, type: local_var_added}]

@@ -1,6 +1,8 @@
 # 변경 전 실행 문맥(OS 설정에서 추출했다고 가정)
 execution:
   tasks:
-    - {name: Task_10ms, entry: Task_10ms, period_ms: 10, priority: 5}
+    - {name: Task_10ms, entry: Task_10ms, period_ms: 10, priority: 5, preemptive: true}
+  inits:
+    - {name: EcuM_Init, entry: Diag_Init, priority: 1}
   isrs:
     - {name: ISR_CanRx, entry: Can_RxIsr, priority: 20}

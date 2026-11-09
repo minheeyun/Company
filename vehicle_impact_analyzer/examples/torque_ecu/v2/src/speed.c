@@ -1,5 +1,6 @@
 #include "speed.h"
 #include "filter.h"
+#include "os.h"
 
 volatile uint16_t g_rx_speed_raw;
 volatile bool g_rx_valid;
@@ -20,7 +21,9 @@ void Spd_Process(void)
     if (!g_rx_valid) {
         return;
     }
+    SuspendAllInterrupts();
     raw = g_rx_speed_raw;
+    ResumeAllInterrupts();
     uint16_t v = Flt_LowPass(&s_spd_flt, raw);
     if (v > SPD_MAX_KPH) {
         v = SPD_MAX_KPH;
