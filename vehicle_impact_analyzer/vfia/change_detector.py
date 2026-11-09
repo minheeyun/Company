@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import os
+import re
 from collections import defaultdict
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -28,6 +29,7 @@ CHANGE_TYPES = {
     "early_exit_added": ("조기 반환·탈출 추가", "flow"),
     "early_exit_removed": ("조기 반환·탈출 삭제", "flow"),
     "control_flow_change": ("return/break/continue/goto 변경", "flow"),
+    "fallthrough_change": ("switch fall-through(break) 변경", "flow"),
     "loop_added": ("반복문 추가", "flow"),
     "loop_removed": ("반복문 삭제", "flow"),
     "branch_added": ("조건문 추가", "control"),
@@ -37,6 +39,7 @@ CHANGE_TYPES = {
     "logic_operator_change": ("논리 연산자 변경(단락 평가)", "control"),
     "short_circuit_order_change": ("단락 평가 순서 변경", "control"),
     "condition_change": ("조건식 변경", "control"),
+    "switch_case_change": ("switch/case/default 변경", "control"),
     "call_added": ("함수 호출 추가", "call"),
     "call_removed": ("함수 호출 삭제", "call"),
     "callee_change": ("호출 대상 변경", "call"),
@@ -44,7 +47,10 @@ CHANGE_TYPES = {
     "assignment_removed": ("대입문 삭제", "data"),
     "local_var_added": ("지역변수 추가", "decl"),
     "local_var_removed": ("지역변수 삭제", "decl"),
+    "integer_type_change": ("정수형 부호·크기 변경", "data"),
     "local_type_change": ("지역변수 자료형 변경", "data"),
+    "array_index_change": ("배열 인덱스·범위 변경", "data"),
+    "array_size_change": ("배열 크기 변경", "type"),
     "value_change": ("대입·계산식 변경", "data"),
     "reference_change": ("참조 변수 변경", "data"),
     "expression_change": ("식 구조 변경", "data"),
@@ -57,6 +63,7 @@ CHANGE_TYPES = {
     "function_removed": ("함수 삭제", "call"),
     "function_renamed": ("함수 이름 변경·이동", "call"),
     "signature_change": ("인자·반환형 변경", "interface"),
+    "linkage_change": ("static↔extern 링크 범위 변경", "interface"),
     "global_added": ("전역변수 추가", "decl"),
     "global_removed": ("전역변수 삭제", "decl"),
     "global_type_change": ("전역변수 자료형 변경", "type"),
@@ -69,6 +76,7 @@ CHANGE_TYPES = {
     "macro_added": ("매크로 추가", "macro"),
     "macro_removed": ("매크로 삭제", "macro"),
     "conditional_compilation_change": ("조건부 컴파일 구간 변경", "config"),
+    "inactive_code_change": ("이 빌드 설정에서 비활성인 #if 구간 안 변경", "config"),
     "task_config_change": ("태스크 주기·이벤트 설정 변경", "timing"),
     "signal_definition_change": ("통신 신호 정의 변경", "interface"),
 }
@@ -227,9 +235,16 @@ class ChangeDetector:
         self._added_removed()
         self._conditional_compilation()
         self._vehicle_config()
+        coverage = self._text_coverage()
         self._finalize()
+        for h in coverage:
+            h["changes"] = sorted({c["id"] for c in h.pop("change_objs", [])})
+        from .resources import resource_report
+        resources = resource_report(self.go, self.gn)
         return {
             "changes": self.changes,
+            "text_coverage": coverage,
+            "resources": resources,
             "unit_map": self.unit_map,
             "node_map_size": len(self.node_map),
             "file_moves": self.file_moves,
@@ -296,6 +311,26 @@ class ChangeDetector:
                     rest_n.discard(k2)
                     rest_o.remove(k)
                     break
+        # static <-> extern 링크 범위 변경: 키가 달라지므로 (종류, 이름)으로 대응
+        for k in list(rest_o):
+            if uo[k] not in (NK.FUNCTION, NK.GLOBAL):
+                continue
+            name = self.go.node(k).get("name")
+            cands = [k2 for k2 in rest_n if un[k2] == uo[k] and self.gn.node(k2).get("name") == name]
+            if len(cands) == 1:
+                k2 = cands[0]
+                self.unit_map[k] = k2
+                rest_n.discard(k2)
+                rest_o.remove(k)
+                ko = "static" if k.count(":") > 1 else "extern"
+                kn = "static" if k2.count(":") > 1 else "extern"
+                g_anchor = (lambda g, key: self._fn_boundary(g, key)) if uo[k] == NK.FUNCTION else \
+                    (lambda g, key: [l for l in g.nodes_of(NK.LOCATION) if g.node(l).get("root") == key])
+                self._add("linkage_change", k, k2, f"{name}: {ko} -> {kn} (다른 번역 단위와 공유 여부·심벌 대응 변화)",
+                          {"anchors": g_anchor(self.go, k), "file": self.go.node(k).get("file"),
+                           "line": self.go.node(k).get("line")},
+                          {"anchors": g_anchor(self.gn, k2), "file": self.gn.node(k2).get("file"),
+                           "line": self.gn.node(k2).get("line")})
         for k in list(rest_o):
             if uo[k] != NK.FUNCTION:
                 continue
@@ -427,13 +462,17 @@ class ChangeDetector:
             if k == "Var":
                 if n1.get("v") != n2.get("v"):
                     return "reference_change", f"변수 이름 {n1.get('v')} -> {n2.get('v')}", info
-                return "local_type_change", f"{n1.get('v')}: {(n1.get('ty') or {}).get('n')} -> {(n2.get('ty') or {}).get('n')}", info
+                info["var_ref"] = (n1.get("ref"), n2.get("ref"))
+                ctype, txt = classify_type_change(n1.get("ty") or {}, n2.get("ty") or {})
+                return (ctype if ctype != "type_change" else "local_type_change"), f"{n1.get('v')}: {txt}", info
             if k in ("ICast", "Cast"):
                 return "cast_change", f"({(n1.get('ty') or {}).get('n')}) -> ({(n2.get('ty') or {}).get('n')})", info
             if k in ("Ref", "Member"):
                 return ("condition_change" if cond else "reference_change"), f"{n1.get('v')} -> {n2.get('v')}", info
             if k == "Case":
-                return "condition_change", f"case {n1.get('v')} -> case {n2.get('v')}", info
+                return "switch_case_change", f"case {n1.get('v')} -> case {n2.get('v')}", info
+            if _in_index(t1, act.a) or _in_index(t2, act.b):
+                return "array_index_change", act.detail, info
             return ("condition_change" if cond else "expression_change"), act.detail, info
         if act.op in ("insert", "delete"):
             t, i = (t2, act.b) if act.op == "insert" else (t1, act.a)
@@ -451,18 +490,27 @@ class ChangeDetector:
                     ctext = src.get(f, cond.get("l")).strip()
                     return ("early_exit_added" if add else "early_exit_removed"), f"조건부 {kinds} ({ctext})", info
                 return ("branch_added" if add else "branch_removed"), "if 문", info
+            if k == "Break" and _enclosing_breakable(t, i) == "Switch":
+                return "fallthrough_change", f"switch 안 break {'추가' if add else '삭제'}(fall-through 경로 변화)", info
             if k in FLOW_KINDS:
                 return "control_flow_change", f"{k} {'추가' if add else '삭제'}", info
             if k in ("While", "Do", "For"):
                 return ("loop_added" if add else "loop_removed"), k, info
-            if k in ("Switch", "Case", "Default"):
+            if k in ("Case", "Default"):
+                return "switch_case_change", f"{'case ' + str(n.get('v')) if k == 'Case' else 'default'} {'추가' if add else '삭제'}", info
+            if k == "Switch":
                 return ("branch_added" if add else "branch_removed"), k, info
             if k in ("DeclStmt", "Var"):
                 se = _has_side_effect(t, i)
                 info["side_effect"] = se
-                names = [t.nodes[x].get("v") for x in [i] + list(t.desc[i]) if t.kind(x) == "Var"]
+                vars_ = [t.nodes[x] for x in [i] + list(t.desc[i]) if t.kind(x) == "Var"]
+                names = [v.get("v") for v in vars_]
+                from .resources import type_size
+                stack = sum(type_size(v.get("ty")) for v in vars_ if not v.get("static"))
+                info["stack_bytes"] = stack
                 return ("local_var_added" if add else "local_var_removed"), \
-                    f"{', '.join(names)}" + (f" (초기화 부작용: {', '.join(se)})" if se else ""), info
+                    f"{', '.join(names)}" + (f" (초기화 부작용: {', '.join(se)})" if se else "") + \
+                    (f" (스택 {'+' if add else '-'}{stack} 바이트 추정)" if stack else ""), info
             if k == "ExprStmt":
                 e = t.nodes[t.children[i][0]] if t.children[i] else {}
                 ek = e.get("k")
@@ -476,6 +524,8 @@ class ChangeDetector:
             if "Call" in sub_kinds:
                 info["calls"] = sorted({t.nodes[x].get("v") or "(간접)" for x in [i] + list(t.desc[i]) if t.kind(x) == "Call"})
             cond = ctx.in_condition(t, i)
+            if _in_index(t, i):
+                return "array_index_change", f"인덱스 식 {'추가' if add else '삭제'}", info
             if cond:
                 return "condition_change", f"조건식 일부 {'추가' if add else '삭제'}", info
             if info.get("calls"):
@@ -513,6 +563,11 @@ class ChangeDetector:
                 anc_o |= ctx.anchors(t1, ctx.uo, act.a, act.op == "delete")
             if act.b is not None:
                 anc_n |= ctx.anchors(t2, ctx.un, act.b, act.op == "insert")
+            if info.get("var_ref"):
+                # 자료형이 바뀐 변수: 정수 승격·변환 의미가 바뀔 수 있는 모든 사용처가 시작점
+                ro, rn = info["var_ref"]
+                anc_o |= {x.get("a") for x in t1.nodes.values() if x.get("ref") == ro and x.get("a")}
+                anc_n |= {x.get("a") for x in t2.nodes.values() if x.get("ref") == rn and x.get("a")}
         for mac, act in macro_sites:
             self._macro_site(mac, ctx, act)
         if not types:
@@ -620,7 +675,13 @@ class ChangeDetector:
                "code": self.src_new.get(dn.get("file"), dn.get("line"), dn.get("end_line"))}
         ta, tb = (a.get("ty") or {}).get("cn"), (b.get("ty") or {}).get("cn")
         if ta != tb:
-            self._add("global_type_change", uo, un, f"{do['name']}: {ta} -> {tb}", dict(old), dict(new))
+            ctype, txt = classify_type_change(a.get("ty") or {}, b.get("ty") or {})
+            ctype = {"type_change": "global_type_change", "local_type_change": "global_type_change"}.get(ctype, ctype)
+            o2, n2 = dict(old), dict(new)
+            o2["anchors"] = sorted(set(o2["anchors"]) | set(self._ref_anchors(self.go, uo)))
+            n2["anchors"] = sorted(set(n2["anchors"]) | set(self._ref_anchors(self.gn, un)))
+            self._add(ctype, uo, un, f"{do['name']}: {txt}", o2, n2,
+                      note=_TYPE_NOTES.get(ctype))
         if (do.get("storage"), do.get("volatile"), do.get("const")) != (dn.get("storage"), dn.get("volatile"), dn.get("const")):
             self._add("qualifier_change", uo, un,
                       f"{do['name']}: storage {do.get('storage')}->{dn.get('storage')}, volatile {do.get('volatile')}->{dn.get('volatile')}, const {do.get('const')}->{dn.get('const')}",
@@ -631,7 +692,19 @@ class ChangeDetector:
         if ia != ib:
             macros_only = self._init_macro_only(a, b)
             if not macros_only:
-                self._add("global_init_change", uo, un, f"{do['name']} 초기값 변경", dict(old), dict(new))
+                self._add("global_init_change", uo, un, f"{do['name']} 초기값 변경", dict(old), dict(new),
+                          note="시동 직후 상태와 첫 주기 동작에 영향(초기화 이후 다시 쓰기 전까지의 읽기)")
+
+    def _ref_anchors(self, g: AnalysisGraph, key: str) -> List[str]:
+        out = set()
+        for f in g.nodes_of(NK.FUNCTION):
+            ast = g.asts.get(f)
+            if not ast:
+                continue
+            for n in walk_ast(ast):
+                if n.get("ref") == key and n.get("a"):
+                    out.add(n["a"])
+        return sorted(out)
 
     def _init_macro_only(self, a: dict, b: dict) -> bool:
         la = [(n.get("k"), n.get("v"), n.get("mac")) for n in walk_ast(a)]
@@ -841,6 +914,133 @@ class ChangeDetector:
                       f"신호 {s[4:]} {'삭제' if a else '추가'}",
                       {"anchors": [s] if a else []}, {"anchors": [s] if b else []})
 
+    # ------------------------------------------------------------------
+    def _change_ranges(self) -> List[Tuple[str, str, int, int, dict]]:
+        """변경마다 (쪽, 파일, 시작 줄, 끝 줄, 변경)을 모은다(전처리 전 텍스트와 대응시키기 위함)."""
+        unit_level = {"function_added", "function_removed", "function_renamed", "global_added", "global_removed",
+                      "type_layout_change", "typedef_change", "enum_value_change", "macro_change", "macro_added",
+                      "macro_removed", "global_init_change", "global_type_change", "integer_type_change",
+                      "qualifier_change", "array_size_change", "linkage_change", "signature_change"}
+        out = []
+        for c in self.changes:
+            for side, g, unit in (("old", self.go, c.get("unit_old")), ("new", self.gn, c.get("unit_new"))):
+                d = c.get(side) or {}
+                f, l1 = d.get("file"), d.get("line")
+                l2 = d.get("end_line") or l1
+                if c["type"] in unit_level and unit and g.has_node(unit):
+                    nd = g.node(unit)
+                    f = f or nd.get("file")
+                    l1 = l1 or nd.get("line")
+                    l2 = max(l2 or 0, nd.get("end_line") or 0, l1 or 0)
+                if f and l1:
+                    out.append((side, f, int(l1), int(l2 or l1), c))
+            for site in c.get("expansion_sites") or []:
+                for side, key in (("old", "old_line"), ("new", "new_line")):
+                    g = self.go if side == "old" else self.gn
+                    for fk in g.functions_by_name(site.get("function")):
+                        f = g.node(fk).get("file")
+                        if f and site.get(key):
+                            out.append((side, f, site[key], site[key], c))
+        return out
+
+    def _text_coverage(self) -> List[dict]:
+        """전처리 전 텍스트 diff 헝크를 AST 변경(전처리 후)과 대응시킨다.
+
+        분류: mapped(AST 변경으로 설명됨) / comment_or_whitespace / inactive_in_this_config(이 빌드
+        설정에서 컴파일되지 않는 #if 구간 → 별도 변경 기록) / preprocessor / not_compiled(어느 번역
+        단위에도 포함되지 않음) / unmapped(설명되지 않는 변경 — 분석 누락 가능성으로 보고).
+        """
+        import difflib
+        import glob
+        ro, rn = self.go.meta.get("root", ""), self.gn.meta.get("root", "")
+        fo = self.go.meta.get("files") or {}
+        fn = self.gn.meta.get("files") or {}
+
+        def files(root):
+            out = set()
+            for pat in ("**/*.c", "**/*.h"):
+                for f in glob.glob(os.path.join(root, pat), recursive=True):
+                    out.add(os.path.relpath(f, root))
+            return out
+        olds, news = files(ro), files(rn)
+        pairs = []
+        moved_new = set(self.file_moves.values())
+        for r in sorted(olds | news):
+            if r in self.file_moves:
+                pairs.append((r, self.file_moves[r]))
+            elif r in moved_new and r not in olds:
+                continue
+            else:
+                pairs.append((r if r in olds else None, r if r in news else None))
+        ranges = self._change_ranges()
+        hunks: List[dict] = []
+        inactive_by_file: Dict[str, List[dict]] = defaultdict(list)
+
+        def norm(lines):
+            t = "\n".join(lines)
+            t = re.sub(r"/\*.*?\*/", "", t, flags=re.S)
+            t = re.sub(r"//[^\n]*", "", t)
+            out = []
+            for ln in t.split("\n"):
+                x = ln.strip()
+                if x.startswith("*") or x.startswith("/*") or x.endswith("*/"):
+                    continue
+                out.append(re.sub(r"\s+", "", x))
+            return "".join(out)
+
+        def within(lines, rngs):
+            return bool(lines) and all(any(lo <= ln <= hi for lo, hi in rngs) for ln in lines)
+
+        for a, b in pairs:
+            la = self.src_old.lines(a) if a else []
+            lb = self.src_new.lines(b) if b else []
+            sm = difflib.SequenceMatcher(None, la, lb, autojunk=False)
+            for tag, i1, i2, j1, j2 in sm.get_opcodes():
+                if tag == "equal":
+                    continue
+                old_lines = list(range(i1 + 1, i2 + 1))
+                new_lines = list(range(j1 + 1, j2 + 1))
+                h = {"file_old": a, "file_new": b, "old": [i1 + 1, i2] if old_lines else None,
+                     "new": [j1 + 1, j2] if new_lines else None,
+                     "text_old": "\n".join(la[i1:i2][:6]), "text_new": "\n".join(lb[j1:j2][:6]), "change_objs": []}
+                hit = []
+                for side, f, l1, l2, c in ranges:
+                    lines, fname = (old_lines, a) if side == "old" else (new_lines, b)
+                    if f == fname and any(l1 <= ln <= l2 for ln in lines):
+                        hit.append(c)
+                ina = [tuple(r) for r in (fo.get(a, {}).get("inactive") or [])] if a else []
+                inb = [tuple(r) for r in (fn.get(b, {}).get("inactive") or [])] if b else []
+                body = [x for x in la[i1:i2] + lb[j1:j2] if x.strip() and not x.strip().startswith("//")]
+                compiled = (a in fo if a else False) or (b in fn if b else False)
+                if norm(la[i1:i2]) == norm(lb[j1:j2]):
+                    h["class"] = "comment_or_whitespace"
+                elif not compiled:
+                    h["class"] = "not_compiled"
+                elif (ina or inb) and (within(old_lines, ina) or not old_lines) and (within(new_lines, inb) or not new_lines):
+                    h["class"] = "inactive_in_this_config"
+                    inactive_by_file[b or a].append(h)
+                elif hit:
+                    h["class"] = "mapped"
+                    h["change_objs"] = hit
+                elif body and all(x.strip().startswith("#") for x in body):
+                    h["class"] = "preprocessor"
+                else:
+                    h["class"] = "unmapped"
+                hunks.append(h)
+        for f, hs in sorted(inactive_by_file.items()):
+            first = hs[0]
+            ch = self._add("inactive_code_change", f"file:{f}", f"file:{f}",
+                           f"{f}: 이 빌드 설정({(self.gn.meta.get('build') or {}).get('name')})에서 컴파일되지 않는 "
+                           f"#if 구간의 변경 {len(hs)}곳 — 이 그래프로는 영향 판단 불가, 해당 차종 설정으로 재분석 필요",
+                           {"anchors": [], "file": first["file_old"], "line": (first["old"] or [None])[0],
+                            "code": first["text_old"]},
+                           {"anchors": [], "file": first["file_new"], "line": (first["new"] or [None])[0],
+                            "code": first["text_new"]},
+                           hunks=[{"old": x["old"], "new": x["new"]} for x in hs])
+            for x in hs:
+                x["change_objs"] = [ch]
+        return hunks
+
     def _finalize(self) -> None:
         def key(c):
             return (_PRIORITY.get(c["type"], 999) if c["category"] not in ("timing", "config") else 900,
@@ -848,6 +1048,57 @@ class ChangeDetector:
         self.changes.sort(key=key)
         for i, c in enumerate(self.changes, 1):
             c["id"] = f"C{i:03d}"
+
+
+_TYPE_NOTES = {
+    "integer_type_change": "정수 승격·통상 산술 변환 때문에 비교·뺄셈·나눗셈 결과가 조용히 바뀔 수 있음(모든 사용처를 시작점으로 추적)",
+    "array_size_change": "배열 경계 접근·인접 메모리·크기 의존 루프 확인 필요",
+    "qualifier_change": "const/volatile 변경: 접근 횟수, 최적화, 캘리브레이션 의미가 바뀔 수 있음",
+}
+
+
+def classify_type_change(a: dict, b: dict) -> Tuple[str, str]:
+    """자료형 변경을 세분화: 정수 부호·크기 / 한정자 / 배열 크기 / 기타."""
+    def strip_q(cn: str) -> str:
+        return " ".join(w for w in (cn or "").split() if w not in ("const", "volatile"))
+    na, nb = a.get("n") or a.get("cn"), b.get("n") or b.get("cn")
+    if strip_q(a.get("cn")) == strip_q(b.get("cn")) and a.get("cn") != b.get("cn"):
+        return "qualifier_change", f"{na} -> {nb}"
+    if a.get("k") in ("i", "b") and b.get("k") in ("i", "b"):
+        parts = []
+        if a.get("b") != b.get("b"):
+            parts.append(f"{a.get('b')}비트 -> {b.get('b')}비트")
+        if bool(a.get("s")) != bool(b.get("s")):
+            parts.append(f"{'signed' if a.get('s') else 'unsigned'} -> {'signed' if b.get('s') else 'unsigned'}")
+        return "integer_type_change", f"{na} -> {nb} ({', '.join(parts) or '정수형 변경'})"
+    if a.get("k") == "a" and b.get("k") == "a" and a.get("cnt") != b.get("cnt"):
+        return "array_size_change", f"{na} -> {nb} (원소 {a.get('cnt')} -> {b.get('cnt')})"
+    return "type_change", f"{na} -> {nb}"
+
+
+def _in_index(t: Tree, i: int) -> bool:
+    """노드가 배열 첨자식(Index의 두 번째 자식) 안에 있는가."""
+    x = i
+    while x is not None:
+        p = t.parent.get(x)
+        if p is None:
+            return False
+        if t.kind(p) == "Index":
+            return t.children[p].index(x) == 1
+        if t.kind(p) in STMT_KINDS:
+            return False
+        x = p
+    return False
+
+
+def _enclosing_breakable(t: Tree, i: int) -> Optional[str]:
+    x = t.parent.get(i)
+    while x is not None:
+        k = t.kind(x)
+        if k in ("Switch", "While", "Do", "For"):
+            return k
+        x = t.parent.get(x)
+    return None
 
 
 def _lit(n: dict) -> str:

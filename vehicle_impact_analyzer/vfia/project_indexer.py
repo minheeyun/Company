@@ -377,7 +377,7 @@ class TUExtractor:
                 self._function(c, key, r)
             else:
                 self.fn_decls.append({"key": key, "name": c.spelling, "file": r, "line": c.location.line,
-                                      "sig": _sig_text(c)})
+                                      "sig": _sig_text(c), "sig_cn": _sig_cn(c)})
         elif k == K.VAR_DECL:
             self._global_var(c, r)
         elif k in (K.STRUCT_DECL, K.UNION_DECL):
@@ -513,7 +513,7 @@ class TUExtractor:
         self._add_unit({
             "kind": "function", "key": key, "name": c.spelling, "file": r, "line": c.location.line,
             "end_line": c.extent.end.line, "static": ast["static"], "comment": c.raw_comment,
-            "sig": _sig_text(c), "params": params, "ret": ast["ret"], "ast": ast,
+            "sig": _sig_text(c), "sig_cn": _sig_cn(c), "params": params, "ret": ast["ret"], "ast": ast,
             "variadic": c.type.is_function_variadic() if c.type.kind == ci.TypeKind.FUNCTIONPROTO else False,
         })
         self._cur_fn = None
@@ -797,6 +797,15 @@ def _sig_text(c: ci.Cursor) -> str:
         return c.spelling
 
 
+def _sig_cn(c: ci.Cursor) -> str:
+    """정규(canonical) 자료형 기준 시그니처: typedef 이름 차이는 무시하고 실제 자료형만 비교."""
+    try:
+        return c.result_type.get_canonical().spelling + "(" + ", ".join(
+            a.type.get_canonical().spelling for a in c.get_arguments()) + ")"
+    except Exception:
+        return ""
+
+
 def _find_init(v: ci.Cursor) -> Optional[ci.Cursor]:
     chs = [x for x in v.get_children() if x.kind.is_expression()]
     if not chs:
@@ -906,6 +915,44 @@ class ProjectIndex:
         for k, v in res["ref_globals"].items():
             self.ref_globals.setdefault(k, v)
 
+    def symbol_integration(self) -> dict:
+        """링커처럼 번역 단위 간 심벌을 통합하고 불일치를 보고한다.
+
+        외부 링크 심벌은 이름으로 합치고(fn:<name>, gv:<name>), 내부 링크(static)는 파일별로 분리한다.
+        USR 대신 '파일 경로+이름' 키를 쓰므로 static 심벌은 파일을 옮기면 키가 바뀐다(변경 분석에서
+        파일 이동 추정으로 다시 대응시킨다).
+        """
+        mism = []
+        for key, decls in self.fn_decls.items():
+            u = self.units.get(key)
+            for d in decls:
+                if u and d.get("sig_cn") and u.get("sig_cn") and d["sig_cn"] != u["sig_cn"]:
+                    mism.append({"symbol": key, "kind": "function", "declared": d["sig_cn"], "defined": u["sig_cn"],
+                                 "decl_at": f"{d['file']}:{d['line']}", "def_at": f"{u['file']}:{u['line']}"})
+        for key, decls in self.global_decls.items():
+            u = self.units.get(key)
+            for d in decls:
+                a = (d.get("ty") or {}).get("cn")
+                b = ((u or {}).get("ty") or {}).get("cn")
+                if u and a and b and a.replace("volatile ", "") != b.replace("volatile ", ""):
+                    mism.append({"symbol": key, "kind": "variable", "declared": a, "defined": b,
+                                 "decl_at": f"{d['file']}:{d['line']}", "def_at": f"{u['file']}:{u['line']}"})
+                elif u and a and b and a != b:
+                    mism.append({"symbol": key, "kind": "qualifier", "declared": a, "defined": b,
+                                 "decl_at": f"{d['file']}:{d['line']}", "def_at": f"{u['file']}:{u['line']}"})
+        statics: Dict[str, List[str]] = {}
+        for key, u in self.units.items():
+            if u["kind"] in ("function", "global") and key.count(":") > 1:
+                statics.setdefault(f"{u['kind']}:{u['name']}", []).append(u["file"])
+        dup_static = [{"name": k.split(":", 1)[1], "kind": k.split(":", 1)[0], "files": sorted(v)}
+                      for k, v in sorted(statics.items()) if len(v) > 1]
+        defined = {k for k, u in self.units.items() if u["kind"] in ("function", "global")}
+        externs = {k for k in defined if k.count(":") == 1}
+        undefined = sorted(k for k in set(self.ref_functions) | set(self.ref_globals) if k not in defined)
+        return {"extern_symbols": len(externs), "static_symbols": len(defined) - len(externs),
+                "type_mismatches": mism, "same_name_statics": dup_static, "undefined_referenced": undefined,
+                "multiple_definitions": [d["message"] for d in self.diags if d.get("code") == "multiple_definition"]}
+
     def source_lines(self, rel: str) -> List[str]:
         if rel not in self._src_cache:
             try:
@@ -951,6 +998,7 @@ class ProjectIndex:
             "headers": sorted(r for r, f in self.files.items() if f.get("is_header")),
             "external_functions": ext_fns,
             "parse_health": self.parse_health,
+            "symbol_integration": self.symbol_integration(),
             "unresolved_globals": unresolved_gv,
             "notes": self.notes,
         }
@@ -987,7 +1035,7 @@ class ProjectIndexer:
     def _cache_path(self, e: CompileEntry, args: List[str]) -> Optional[str]:
         if not self.cache_dir:
             return None
-        h = _sha(json.dumps([os.path.relpath(e.file, self.v.root), args, ca.__name__, 4]).encode())
+        h = _sha(json.dumps([os.path.relpath(e.file, self.v.root), args, ca.__name__, 5]).encode())
         return os.path.join(self.cache_dir, f"tu_{h}.json")
 
     def _cache_valid(self, path: str) -> Optional[dict]:

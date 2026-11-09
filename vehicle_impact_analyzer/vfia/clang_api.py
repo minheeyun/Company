@@ -206,7 +206,11 @@ def type_desc(t: ci.Type, depth: int = 0) -> dict:
         d.update(k="fl", b=max(16, can.get_size() * 8))
     elif k == ci.TypeKind.POINTER:
         pt = can.get_pointee()
-        d.update(k="p", b=64)
+        try:
+            psz = can.get_size() * 8
+        except Exception:
+            psz = 64
+        d.update(k="p", b=psz if psz > 0 else 64)
         if depth < 2:
             d["pt"] = type_desc(pt, depth + 1)
     elif k in (ci.TypeKind.CONSTANTARRAY, ci.TypeKind.INCOMPLETEARRAY, ci.TypeKind.VARIABLEARRAY,

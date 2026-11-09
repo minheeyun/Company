@@ -214,7 +214,22 @@ class VehicleLinker:
         self.g.add_node(sid, NK.SIGNAL, name=name, auto=auto or None, **{k: v for k, v in attrs.items() if v is not None})
         return sid
 
-    def _connect_api(self, sid: str, api: str, arg: int, direction: str) -> int:
+    def _rte_name(self, kind: str, rest: str) -> str:
+        """Rte_IWrite_<Runnable>_<Port>_<Elem> -> <Port>_<Elem> (runnable 이름을 알면 제거)."""
+        if kind.startswith("I"):
+            names = sorted({r["name"] for r in self.vm.runnables} | {t.get("name") for t in self.vm.tasks
+                                                                         if t.get("kind") == "runnable"}, key=len, reverse=True)
+            for r in names:
+                if r and rest.startswith(r + "_"):
+                    return rest[len(r) + 1:]
+        return rest
+
+    def _mark_access(self, sid: str, access: str) -> None:
+        acc = self.g.node(sid).setdefault("access", [])
+        if access not in acc:
+            acc.append(access)
+
+    def _connect_api(self, sid: str, api: str, arg: int, direction: str, access: str = "explicit") -> int:
         g = self.g
         n = 0
         for fk in g.functions_by_name(api):
@@ -222,13 +237,13 @@ class VehicleLinker:
                 if direction == "write":
                     ai = f"{cs}:in{arg}"
                     if g.has_node(ai):
-                        g.add_edge(ai, sid, EK.SIGNAL_WRITE, api)
+                        g.add_edge(ai, sid, EK.SIGNAL_WRITE, api, access=access)
                         n += 1
                 else:
                     stmt = g.node(cs).get("stmt")
-                    g.add_edge(sid, f"{cs}:out", EK.SIGNAL_READ, api)
+                    g.add_edge(sid, f"{cs}:out", EK.SIGNAL_READ, api, access=access)
                     if stmt:
-                        g.add_edge(sid, stmt, EK.SIGNAL_READ, api)
+                        g.add_edge(sid, stmt, EK.SIGNAL_READ, api, access=access)
                     n += 1
         return n
 
@@ -243,20 +258,49 @@ class VehicleLinker:
                 self._link_endpoint(sid, w, "write")
             for r in s.get("readers", []) or []:
                 self._link_endpoint(sid, r, "read")
-        # RTE 명명 규칙 자동 인식
+        # RTE 명명 규칙 자동 인식(함수). Rte_IRead/IWrite는 암묵적 접근(runnable 시작 시 복사본 읽기,
+        # 종료 후 쓰기 반영), Rte_Read/Write는 명시적 접근으로 구분해 기록한다.
         for f in g.nodes_of(NK.FUNCTION):
             name = g.node(f).get("name", "")
-            m = _RTE_W.match(name)
-            if m:
-                sname = m.group(2)
+            for rx, direction in ((_RTE_W, "write"), (_RTE_R, "read")):
+                m = rx.match(name)
+                if not m:
+                    continue
+                sname = self._rte_name(m.group(1), m.group(2))
+                access = "implicit" if m.group(1).startswith("I") else "explicit"
                 sid = self._sig(sname, auto=sname not in declared)
-                self._connect_api(sid, name, 0, "write")
+                self._mark_access(sid, access)
+                self._connect_api(sid, name, 0, direction, access)
+                break
+        # RTE가 함수형 매크로로 생성된 경우: 호출 그래프에서 사라지므로 매크로 전개 지점(문장)을 연결
+        for mk in g.nodes_of(NK.MACRO):
+            md = g.node(mk)
+            name = md.get("name", "")
+            if not md.get("fnlike") or g.functions_by_name(name):
                 continue
-            m = _RTE_R.match(name)
-            if m:
-                sname = m.group(2)
+            for rx, direction in ((_RTE_W, "write"), (_RTE_R, "read")):
+                m = rx.match(name)
+                if not m:
+                    continue
+                sname = self._rte_name(m.group(1), m.group(2))
+                access = "implicit" if m.group(1).startswith("I") else "explicit"
                 sid = self._sig(sname, auto=sname not in declared)
-                self._connect_api(sid, name, 0, "read")
+                self._mark_access(sid, access)
+                n = 0
+                for st in g.pred(mk, [EK.USES_MACRO]):
+                    if g.kind(st) != NK.STMT:
+                        continue
+                    calls = g.node(st).setdefault("macro_calls", [])
+                    if name not in calls:
+                        calls.append(name)
+                    if direction == "write":
+                        g.add_edge(st, sid, EK.SIGNAL_WRITE, name, access=access, via="macro")
+                    else:
+                        g.add_edge(sid, st, EK.SIGNAL_READ, name, access=access, via="macro")
+                    n += 1
+                if n == 0:
+                    self.notes.append(f"RTE 매크로 {name}의 전개 지점을 찾지 못함")
+                break
         # COM API: Com_SendSignal(SignalId, ptr) / Com_ReceiveSignal(SignalId, ptr)
         for cs in g.nodes_of(NK.CALL_SITE):
             d = g.node(cs)
