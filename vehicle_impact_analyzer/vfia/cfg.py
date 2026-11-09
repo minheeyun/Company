@@ -447,3 +447,51 @@ def _first_anchor(n: dict) -> Optional[str]:
         if "a" in x:
             return x["a"]
     return None
+
+
+def ntscd(cfg: CFG) -> Dict[str, Set[Tuple[str, str]]]:
+    """비종료 민감 제어 의존(Non-Termination Sensitive Control Dependence, Ranganath et al. 2007).
+
+    n이 m에 NTSCD 의존 ⇔ m의 후속 s1에서 시작하는 모든 최대 경로(무한 경로 포함)가 n을 지나고,
+    다른 후속 s2에서는 n을 지나지 않는 최대 경로가 있다.
+    후지배자 기반 정의는 종료점이 하나라는 전제가 있어, 'while(!ready){}' 같은 대기 루프나
+    for(;;) 태스크 본체가 있으면 루프 뒤 문장의 제어 의존이 빠진다. 이 정의는 가상 종료 간선 없이
+    실제 CFG에서 계산한다.
+    """
+    nodes = [n for n, x in cfg.nodes.items() if x.kind != "placeholder"]
+    succ: Dict[str, List[Tuple[str, str]]] = {}
+    for n in nodes:
+        seen = {}
+        for b, lab in cfg.succ.get(n, []):
+            if (n, b) in cfg.fake_edges:
+                continue
+            seen.setdefault(b, lab)
+        succ[n] = list(seen.items())
+    preds: Dict[str, Set[str]] = defaultdict(set)
+    for n, ss in succ.items():
+        for b, _ in ss:
+            preds[b].add(n)
+    branches = [m for m in nodes if len(succ[m]) >= 2]
+    cd: Dict[str, Set[Tuple[str, str]]] = defaultdict(set)
+    if not branches:
+        return cd
+    for n in nodes:
+        # MR(n): n을 반드시 지나는(must-reach) 노드 집합 — 최소 고정점
+        remaining = {x: len(succ[x]) for x in nodes}
+        mr = {n}
+        stack = [n]
+        while stack:
+            x = stack.pop()
+            for p in preds.get(x, ()):
+                if p in mr:
+                    continue
+                remaining[p] -= 1
+                if remaining[p] == 0:
+                    mr.add(p)
+                    stack.append(p)
+        for m in branches:
+            ins = [(b, lab) for b, lab in succ[m] if b in mr]
+            if ins and len(ins) < len(succ[m]):
+                for b, lab in ins:
+                    cd[n].add((m, lab))
+    return cd

@@ -73,6 +73,7 @@ class EK:
     SUMMARY = "summary"            # actual_in -> actual_out (피호출 함수 요약)
     GLOBAL_WRITE = "global_write"  # stmt -> location
     GLOBAL_READ = "global_read"    # location -> stmt
+    INTERFERENCE = "interference"  # 다른 실행 문맥(태스크/ISR)의 쓰기 stmt -> 읽기 stmt (간섭 의존)
     # 차량 기능 연결
     SIGNAL_WRITE = "signal_write"  # node -> signal
     SIGNAL_READ = "signal_read"    # signal -> node
@@ -87,7 +88,7 @@ class EK:
 # 슬라이싱에 사용하는 간선 묶음. 목적에 맞는 간선과 방향만 사용한다.
 DEPENDENCE_EDGES = frozenset({
     EK.DATA, EK.CONTROL, EK.CALL, EK.PARAM_IN, EK.PARAM_OUT, EK.SUMMARY,
-    EK.GLOBAL_WRITE, EK.GLOBAL_READ, EK.SIGNAL_WRITE, EK.SIGNAL_READ, EK.CALIBRATES,
+    EK.GLOBAL_WRITE, EK.GLOBAL_READ, EK.SIGNAL_WRITE, EK.SIGNAL_READ, EK.CALIBRATES, EK.INTERFERENCE,
 })
 # 호출 문맥을 '내려가는' 간선(호출자 -> 피호출자)
 DESCEND_EDGES = frozenset({EK.CALL, EK.PARAM_IN})

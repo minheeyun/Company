@@ -62,6 +62,13 @@ class AnalysisOptions:
     shared_feature_count: int = 2            # 이 개수 이상의 기능에 연결되면 공용 역할
     max_paths_per_feature: int = 3
     pointsto_max_iter: int = 60
+    control_dependence: str = "ntscd"         # ntscd(비종료 민감, 기본) | classic(후지배자)
+    louvain_seed: int = 42
+    louvain_resolution: float = 1.0
+    harmonic_max_iter: int = 200
+    chop: str = "context_sensitive"           # context_sensitive | naive
+    min_parse_success_rate: float = 0.95      # 단계 2 완료 기준(번역 단위 파싱 성공률)
+    max_condition_boxes: int = 8              # 차이 조건 상자 개수 상한
 
 
 @dataclass

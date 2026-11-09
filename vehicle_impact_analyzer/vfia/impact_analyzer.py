@@ -16,7 +16,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from .change_detector import ChangeDetector
 from .model import EK, NK, AnalysisGraph, Status, loc_display
-from .slicing import SliceResult, backward_slice, forward_slice
+from .slicing import SliceResult, backward_slice, chop, forward_slice
 
 _FIRST_HOP = {EK.DATA, EK.GLOBAL_WRITE, EK.CONTROL}
 
@@ -192,40 +192,61 @@ class ImpactAnalyzer:
                                             "may_hide": any(h for _, h in self.incomplete[side][n])})
         res["incomplete_in_slice"] = incomplete_hits[:30]
         for feat in self.features():
-            entry = self._feature_impact(ch, feat, fs_o, fs_n, incomplete_hits)
+            entry = self._feature_impact(ch, feat, fs_o, fs_n, incomplete_hits, {"old": so, "new": sn})
             if entry:
                 res["features"].append(entry)
         return res
 
-    def _feature_impact(self, ch: dict, feat: str, fs_o, fs_n, incomplete_hits) -> Optional[dict]:
+    def _feature_impact(self, ch: dict, feat: str, fs_o, fs_n, incomplete_hits, seeds: Dict[str, List[str]]
+                        ) -> Optional[dict]:
         g_any = self.gn if self.gn.has_node(feat) else self.go
         fd = g_any.node(feat)
         per_side = {}
         found = False
-        chop_nodes: Dict[str, Set[str]] = {}
+        rank = None
         for side, g, fs in (("old", self.go, fs_o), ("new", self.gn, fs_n)):
             if fs is None or not g.has_node(feat):
                 continue
             anchors = self.anchors(g, feat)
-            reached = [a for a in anchors if a in fs]
+            if not any(a in fs for a in anchors):
+                continue
+            # 문맥 민감 chop: 실현 가능한(호출·복귀 짝이 맞는) 경로 위의 노드만
+            c = chop(g, seeds[side], anchors)
+            reached = c.reached_targets()
             if not reached:
                 continue
             found = True
             bs = self.backward(side, feat)
-            chop = (fs.nodes & bs.nodes) if bs else set()
-            chop_nodes[side] = chop
+            naive = (fs.nodes & bs.nodes) if bs else set()
+            chop_set = c.nodes
             paths = []
-            for a in sorted(reached, key=lambda x: len(fs.path_to(x)))[: self.max_paths]:
-                p = fs.path_to(a)
+            for a in sorted(reached, key=lambda x: (c.distance(x) or 0))[: self.max_paths]:
+                p = c.path_to(a)
                 obs = [g.node(o).get("name") for o in g.pred(a, [EK.OBSERVES])]
-                paths.append({"observation": obs, "anchor": a, "length": len(p), "steps": self.fmt_path(g, p)})
-            ctx = self.contexts_and_sharing(g, chop)
+                paths.append({"observation": obs, "anchor": a, "length": len(p), "distance": round(c.distance(a) or 0, 2),
+                              "shortest_paths": c.path_count(a), "steps": self.fmt_path(g, p)})
+            ctx = self.contexts_and_sharing(g, chop_set)
+            dist = min((c.distance(a) for a in reached if c.distance(a) is not None), default=None)
+            npaths = sum(c.path_count(a) for a in reached)
+            fdist: Dict[str, float] = {}
+            for n in chop_set:
+                f = g.func_of(n)
+                d = c.distance(n)
+                if f and d is not None:
+                    fdist[f] = min(fdist.get(f, 1e9), d)
             per_side[side] = {
                 "reached_observations": sorted({g.node(o).get("name") for a in reached for o in g.pred(a, [EK.OBSERVES])}),
-                "paths": paths, "chop_size": len(chop),
-                "functions": sorted({(g.func_of(n) or "").split(":")[-1] for n in chop if g.func_of(n)}),
+                "paths": paths, "chop_size": len(chop_set), "naive_intersection_size": len(naive),
+                "overapprox_removed": len(naive - chop_set),
+                "functions": sorted({(g.func_of(n) or "").split(":")[-1] for n in chop_set if g.func_of(n)}),
+                "function_ranking": [{"function": f.split(":")[-1], "distance": round(d, 2)}
+                                     for f, d in sorted(fdist.items(), key=lambda x: x[1])][:15],
                 "contexts": ctx["contexts"], "shared_state": ctx["shared_state"],
+                "interference": self._interference_on(g, c),
+                "dependence_distance": None if dist is None else round(dist, 2), "path_count": npaths,
             }
+            score = _rank_score(dist, npaths)
+            rank = score if rank is None else max(rank, score)
         # 기능 분류 결과에서 변경 단위의 역할(보조 근거)
         roles = []
         for side, unit in (("old", ch.get("unit_old")), ("new", ch.get("unit_new"))):
@@ -255,8 +276,21 @@ class ImpactAnalyzer:
         return {
             "feature": fd.get("fid"), "feature_name": fd.get("name"), "status": status,
             "static_status": status, "sides": per_side, "unit_roles": roles, "timing": timing,
-            "behavior": None,
+            "behavior": None, "rank_score": round(rank, 3) if rank is not None else 0.0,
         }
+
+    @staticmethod
+    def _interference_on(g: AnalysisGraph, c) -> List[dict]:
+        """근거 chop 안의 간섭 의존 간선(다른 실행 문맥 사이 값 전달)."""
+        out = []
+        nodes = c.nodes
+        for n in nodes:
+            for _, d, data in g.out_edges(n, [EK.INTERFERENCE]):
+                if d in nodes:
+                    out.append({"writer": g.describe(n), "reader": g.describe(d), "location": data.get("label"),
+                                **{k: data.get(k) for k in ("writer_ctx", "reader_ctx", "preemptive", "protected",
+                                                             "atomic", "note") if data.get(k) is not None}})
+        return out[:20]
 
     def _timing_impact(self, ch: dict, feat: str) -> Optional[dict]:
         t = ch.get("unit_new") or ch.get("unit_old")
@@ -297,6 +331,14 @@ def _walk(n: dict):
                 stack.append(c)
 
 
+def _rank_score(dist: Optional[float], npaths: int) -> float:
+    """영향 후보 순위: 의존 거리가 짧고(간선 종류별 가중치) 독립 경로가 많을수록 높다."""
+    import math
+    if dist is None:
+        return 0.0
+    return (1.0 + math.log2(1 + max(0, npaths))) / (1.0 + dist / 5.0)
+
+
 def feature_summary(results: List[dict]) -> List[dict]:
     by_f: Dict[str, dict] = {}
     order = [Status.EXEC_DIFF, Status.MODEL_DIFF, Status.STATIC_CANDIDATE, Status.INCONCLUSIVE,
@@ -305,8 +347,10 @@ def feature_summary(results: List[dict]) -> List[dict]:
         for f in ch["impact"]["features"]:
             e = by_f.setdefault(f["feature"], {"feature": f["feature"], "name": f["feature_name"], "changes": []})
             e["changes"].append({"change": ch["id"], "type": ch["type_label"], "unit": ch.get("unit_name"),
+                                 "rank_score": f.get("rank_score", 0.0),
                                  "status": f["status"]})
     for e in by_f.values():
+        e["changes"].sort(key=lambda c: -c.get("rank_score", 0.0))
         sts = [c["status"] for c in e["changes"]]
         e["overall"] = min(sts, key=lambda s: order.index(s) if s in order else 99) if sts else Status.NO_PATH
     return sorted(by_f.values(), key=lambda e: e["feature"])

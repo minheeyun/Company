@@ -17,7 +17,7 @@ from collections import defaultdict, deque
 from typing import Dict, List, Optional, Set, Tuple
 
 from . import clang_api as ca
-from .cfg import CFG, annotate_anchors, build_cfg, control_dependence, postdominators, strip_casts
+from .cfg import CFG, annotate_anchors, build_cfg, control_dependence, ntscd, postdominators, strip_casts
 from .config import AnalysisOptions
 from .dataflow import ReachingDefs, def_use_edges
 from .model import EK, FIELD_SEP, NK, AnalysisGraph, loc_may_alias, loc_root
@@ -689,8 +689,15 @@ class GraphBuilder:
             if d in g.g:
                 g.add_edge(d, user, EK.DATA, _short_loc(loc))
         # 제어 의존성
-        ipdom = postdominators(cfg)
-        cd = control_dependence(cfg, ipdom)
+        if getattr(self.opt, "control_dependence", "ntscd") == "classic":
+            cd = control_dependence(cfg, postdominators(cfg))
+        else:
+            cd = ntscd(cfg)
+            # 어떤 분기에도 의존하지 않는 노드는 함수 진입에 제어 의존(호출 정점 -> 진입 -> 본문)
+            for nid, node in cfg.nodes.items():
+                if node.kind in ("placeholder", "entry", "exit") or cd.get(nid):
+                    continue
+                cd[nid].add((cfg.entry, ""))
         self._cd = getattr(self, "_cd", {})
         self._cd[fkey] = cd
         for n, ctrls in cd.items():

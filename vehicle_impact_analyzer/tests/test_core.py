@@ -49,9 +49,12 @@ def test_control_dependence_and_reaching_defs():
     out = stmt(g, f, "g_out = x + a")
     # 제어 의존: x=2 는 (c>3)의 T 분기에 의존
     assert any(s == cond and d["label"] == "T" for s, _, d in g.in_edges(x2, [EK.CONTROL]))
-    # 조기 return 뒤 문장(g_out=...)은 'if (a)' 조건의 F 분기에 제어 의존(return 하지 않을 때만 실행)
+    # NTSCD: 루프가 끝나지 않을 수 있으므로 g_out은 루프 탈출 조건(a<10 F, a==5 T)에 제어 의존하고,
+    # 루프 조건은 조기 return 조건(if (a) F)에 제어 의존한다(전이적으로 연결).
     ctrls = {(g.node(s).get("text"), d["label"]) for s, _, d in g.in_edges(out, [EK.CONTROL])}
-    assert ("a", "F") in ctrls
+    assert ("a < 10", "F") in ctrls and ("a == 5", "T") in ctrls
+    loop_ctrls = {(g.node(s).get("text"), d["label"]) for s, _, d in g.in_edges(stmt(g, f, "a < 10"), [EK.CONTROL])}
+    assert ("a", "F") in loop_ctrls
     # 데이터 의존: g_out = x + a 에 x=1, x=2 두 정의가 모두 도달
     defs = {s for s, _, d in g.in_edges(out, [EK.DATA]) if d["label"] == "x"}
     assert stmt(g, f, "int x = 1") in defs and x2 in defs
@@ -162,3 +165,36 @@ def test_symexec_loop_and_state():
     sol = z3.Solver()
     sol.add(ex.unwind)
     assert sol.check() == z3.unsat                    # n=4는 전개 한도 안
+
+
+def test_ntscd_busy_wait_and_infinite_task_loop():
+    src = r"""
+    volatile int ready; int x, y;
+    void wait_then_set(void) { while (!ready) { } x = 1; }
+    void task_main(void) { for (;;) { y = y + 1; } }
+    """
+    g, _ = graph_of({"a.c": src})
+    xs = stmt(g, "fn:wait_then_set", "x = 1")
+    ctrls = {g.node(s).get("text") for s, _, _ in g.in_edges(xs, [EK.CONTROL])}
+    assert "!ready" in ctrls or "ready" in ctrls      # 대기 루프가 끝나야 실행(비종료 민감)
+    ys = stmt(g, "fn:task_main", "y = y + 1")
+    # 종료하지 않는 태스크 본체는 분기가 없으므로 진입에만 의존
+    assert {s for s, _, _ in g.in_edges(ys, [EK.CONTROL])} == {"fn:task_main#entry"}
+
+
+def test_context_sensitive_chop_excludes_unrealizable_nodes():
+    src = r"""
+    int id(int v) { return v; }
+    int out_a, out_b;
+    void A(int x) { out_a = id(x + 1); }
+    void B(int y) { out_b = id(y); }
+    """
+    from vfia.slicing import chop, naive_chop
+    g, _ = graph_of({"a.c": src})
+    ai = [n for n in g.nodes_of(NK.ACTUAL_IN) if g.node(n).get("func") == "fn:A"][0]
+    c = chop(g, [ai], ["loc:gv:out_a"])
+    assert "loc:gv:out_a" in c.reached_targets()
+    assert stmt(g, "fn:id", "return v") in c.nodes          # 짝이 맞는 호출 내부(same-level chop)
+    assert not any(g.func_of(n) == "fn:B" for n in c.nodes)
+    assert c.nodes <= naive_chop(g, [ai], ["loc:gv:out_a"])
+    assert chop(g, [ai], ["loc:gv:out_b"]).reached_targets() == []
