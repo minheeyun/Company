@@ -31,9 +31,22 @@ class BuildConfig:
     variant_filter: Optional[str] = None
     clang_resource_dir: Optional[str] = "auto"
     parse_all_comments: bool = True
+    # 차량 ECU 빌드 환경 재현(build_env.py)
+    compiler: str = "auto"                 # auto | tasking | ghs | diab | hightec | gcc | clang
+    target: Optional[str] = None           # 대리 target(예: arm-none-eabi). None=프로필 기본, host=지정 안 함
+    system_includes: List[str] = field(default_factory=list)   # 툴체인 시스템 헤더(-nostdinc와 함께)
+    predefined: Dict[str, str] = field(default_factory=dict)  # 추가 사전 정의 매크로
+    compat: bool = True                    # 확장 키워드 치환 호환 헤더 사용
+    compat_defines: Dict[str, str] = field(default_factory=dict)
+    compat_lines: str = ""
+    freestanding: bool = False
+    build_log: Optional[str] = None        # compile DB가 없을 때 빌드 로그에서 추출
+    compiler_regex: Optional[str] = None
 
     def describe(self) -> dict:
-        return {"name": self.name, "extra_args": self.extra_args, "variant_filter": self.variant_filter}
+        return {"name": self.name, "extra_args": self.extra_args, "variant_filter": self.variant_filter,
+                "compiler": self.compiler, "target": self.target, "system_includes": self.system_includes,
+                "predefined": self.predefined, "compat": self.compat}
 
 
 @dataclass
@@ -132,6 +145,16 @@ def load_config(path: str) -> AnalysisConfig:
         variant_filter=b.get("variant_filter"),
         clang_resource_dir=b.get("clang_resource_dir", "auto"),
         parse_all_comments=b.get("parse_all_comments", True),
+        compiler=b.get("compiler", "auto"),
+        target=b.get("target"),
+        system_includes=[_abs(base, x) for x in (b.get("system_includes") or [])],
+        predefined={str(k): str(v) for k, v in (b.get("predefined") or {}).items()},
+        compat=b.get("compat", True),
+        compat_defines={str(k): str(v) for k, v in (b.get("compat_defines") or {}).items()},
+        compat_lines=b.get("compat_lines", "") or "",
+        freestanding=b.get("freestanding", False),
+        build_log=_abs(base, b.get("build_log")),
+        compiler_regex=b.get("compiler_regex"),
     )
     versions: Dict[str, VersionSpec] = {}
     for name, v in (raw.get("versions") or {}).items():

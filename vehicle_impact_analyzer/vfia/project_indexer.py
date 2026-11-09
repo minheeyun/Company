@@ -21,7 +21,8 @@ import json
 import os
 import re
 import shlex
-from dataclasses import dataclass
+import tempfile
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import clang.cindex as ci
@@ -31,9 +32,6 @@ from .config import BuildConfig, VersionSpec
 
 K = ci.CursorKind
 
-_DROP_WITH_ARG = {"-o", "-MF", "-MT", "-MQ", "-Xclang"}
-_DROP_FLAGS = {"-c", "-MD", "-MMD", "-M", "-MM", "-MP", "-pipe", "-S", "-E"}
-_PATH_FLAGS = ("-I", "-isystem", "-iquote", "-include", "-idirafter")
 _COND_RE = re.compile(r"^\s*#\s*(if|ifdef|ifndef|elif)\b(.*)$")
 _IDENT_RE = re.compile(r"[A-Za-z_]\w*")
 
@@ -42,57 +40,41 @@ _IDENT_RE = re.compile(r"[A-Za-z_]\w*")
 class CompileEntry:
     file: str
     directory: str
-    args: List[str]
-    origin: str = "compile_commands"   # compile_commands | synthetic
+    args: List[str]                    # Clang용으로 변환된 인자
+    origin: str = "compile_commands"   # compile_commands | build_log | synthetic
     output: Optional[str] = None
+    profile: str = "gcc"               # 원래 컴파일러 프로필
+    dropped: List[str] = field(default_factory=list)
+    original: List[str] = field(default_factory=list)
 
 
-def _clean_args(argv: List[str], directory: str, src: str) -> List[str]:
-    out: List[str] = []
-    i = 0
-    if argv and not argv[0].startswith("-"):
-        i = 1   # 컴파일러 실행 파일
-    while i < len(argv):
-        a = argv[i]
-        if a in _DROP_WITH_ARG:
-            i += 2
-            continue
-        if a in _DROP_FLAGS or a.startswith("-o") and len(a) > 2 and a != "-o":
-            i += 1
-            continue
-        if os.path.normpath(os.path.join(directory, a)) == os.path.normpath(src):
-            i += 1
-            continue
-        matched = False
-        for pf in _PATH_FLAGS:
-            if a == pf and i + 1 < len(argv):
-                p = argv[i + 1]
-                out += [pf, p if os.path.isabs(p) else os.path.normpath(os.path.join(directory, p))]
-                i += 2
-                matched = True
-                break
-            if a.startswith(pf) and len(a) > len(pf) and pf in ("-I",):
-                p = a[len(pf):]
-                out.append(pf + (p if os.path.isabs(p) else os.path.normpath(os.path.join(directory, p))))
-                i += 1
-                matched = True
-                break
-        if matched:
-            continue
-        out.append(a)
-        i += 1
-    return out
+def _db_from_build_log(v: VersionSpec, build: BuildConfig) -> Optional[List[dict]]:
+    from .build_env import parse_build_log
+    if not build.build_log or not os.path.isfile(build.build_log):
+        return None
+    with open(build.build_log, "r", encoding="utf-8", errors="replace") as f:
+        return parse_build_log(f.read(), os.path.abspath(v.root), build.compiler, build.compiler_regex)
 
 
 def load_compile_entries(v: VersionSpec, build: BuildConfig) -> Tuple[List[CompileEntry], List[str]]:
+    from .build_env import detect_profile, translate
     notes: List[str] = []
     entries: List[CompileEntry] = []
     root = os.path.abspath(v.root)
+    db = None
+    origin = "compile_commands"
+    db_dir = root
     if v.compile_commands and os.path.isfile(v.compile_commands):
         with open(v.compile_commands, "r", encoding="utf-8") as f:
             db = json.load(f)
-        by_file: Dict[str, List[dict]] = {}
         db_dir = os.path.dirname(os.path.abspath(v.compile_commands))
+    else:
+        db = _db_from_build_log(v, build)
+        if db is not None:
+            origin = "build_log"
+            notes.append(f"빌드 로그 {build.build_log}에서 컴파일 명령 {len(db)}개 추출")
+    if db is not None:
+        by_file: Dict[str, List[dict]] = {}
         for e in db:
             d = e.get("directory", root)
             if not os.path.isabs(d):   # 비표준이지만 이식성을 위해 compile DB 위치 기준 상대 경로 허용
@@ -121,7 +103,9 @@ def load_compile_entries(v: VersionSpec, build: BuildConfig) -> Tuple[List[Compi
             e = chosen[0]
             d = e.get("directory", root)
             argv = e.get("arguments") or shlex.split(e.get("command", ""))
-            entries.append(CompileEntry(src, d, _clean_args(argv, d, src), "compile_commands", e.get("output")))
+            prof = detect_profile(argv, e.get("compiler_profile") or build.compiler)
+            tr = translate(argv, d, src, prof)
+            entries.append(CompileEntry(src, d, tr.args, origin, e.get("output"), prof, tr.dropped, argv))
     else:
         if v.compile_commands:
             notes.append(f"compile_commands '{v.compile_commands}'가 없어 sources/args로 합성 compile DB 사용")
@@ -131,11 +115,14 @@ def load_compile_entries(v: VersionSpec, build: BuildConfig) -> Tuple[List[Compi
         files = set()
         for pat in pats:
             files.update(glob.glob(os.path.join(root, pat), recursive=True))
+        prof = build.compiler if build.compiler != "auto" else "gcc"
         for src in sorted(files):
             rel = os.path.relpath(src, root)
             if any(fnmatch.fnmatch(rel, pat) for pat in v.exclude):
                 continue
-            entries.append(CompileEntry(os.path.abspath(src), root, _clean_args(["cc"] + v.args, root, src), "synthetic"))
+            argv = ["cc"] + v.args
+            tr = translate(argv, root, src, prof)
+            entries.append(CompileEntry(os.path.abspath(src), root, tr.args, "synthetic", None, prof, tr.dropped, argv))
     return entries, notes
 
 
@@ -285,6 +272,7 @@ class TUExtractor:
                 loc = d.location
                 self.diags.append({
                     "severity": "error" if d.severity >= ci.Diagnostic.Error else "warning",
+                    "fatal": d.severity >= ci.Diagnostic.Fatal,
                     "file": self.rel_path(loc.file.name) if loc.file else None,
                     "line": loc.line, "message": d.spelling, "tu": self.main_rel,
                 })
@@ -871,6 +859,7 @@ class ProjectIndex:
         self.ref_functions: Dict[str, dict] = {}
         self.ref_globals: Dict[str, dict] = {}
         self.notes: List[str] = []
+        self.parse_health: dict = {}
         self._src_cache: Dict[str, List[str]] = {}
 
     def merge(self, res: dict) -> None:
@@ -961,6 +950,7 @@ class ProjectIndex:
             "files": len(self.files),
             "headers": sorted(r for r, f in self.files.items() if f.get("is_header")),
             "external_functions": ext_fns,
+            "parse_health": self.parse_health,
             "unresolved_globals": unresolved_gv,
             "notes": self.notes,
         }
@@ -976,7 +966,11 @@ class ProjectIndexer:
         ca.init_libclang()
 
     def _args_for(self, e: CompileEntry) -> List[str]:
-        args = list(e.args) + list(self.build.extra_args)
+        from .build_env import clang_args_for
+        compat_dir = self.cache_dir or os.path.join(tempfile.gettempdir(), "vfia_compat")
+        base, notes = clang_args_for(e.profile, e.args, self.build, compat_dir)
+        self._env_notes = sorted(set(getattr(self, "_env_notes", [])) | set(notes))
+        args = base + list(self.build.extra_args)
         if self.build.parse_all_comments:
             args.append("-fparse-all-comments")
         res = None
@@ -993,7 +987,7 @@ class ProjectIndexer:
     def _cache_path(self, e: CompileEntry, args: List[str]) -> Optional[str]:
         if not self.cache_dir:
             return None
-        h = _sha(json.dumps([os.path.relpath(e.file, self.v.root), args, ca.__name__, 3]).encode())
+        h = _sha(json.dumps([os.path.relpath(e.file, self.v.root), args, ca.__name__, 4]).encode())
         return os.path.join(self.cache_dir, f"tu_{h}.json")
 
     def _cache_valid(self, path: str) -> Optional[dict]:
@@ -1038,8 +1032,61 @@ class ProjectIndexer:
                         json.dump({"deps": deps, "result": res}, f, ensure_ascii=False)
             errs = [d["message"] for d in res["diags"] if d["severity"] == "error"]
             idx.tus.append({"file": res["tu"], "args": args, "origin": e.origin, "errors": errs,
-                            "warnings": sum(1 for d in res["diags"] if d["severity"] == "warning")})
+                            "fatal": any(d.get("fatal") for d in res["diags"]),
+                            "warnings": sum(1 for d in res["diags"] if d["severity"] == "warning"),
+                            "compiler_profile": e.profile, "dropped_options": e.dropped,
+                            "original_command": e.original[:60]})
             idx.merge(res)
         if self.cache_dir:
             idx.notes.append(f"번역 단위 캐시 재사용 {reused}/{len(entries)} (포함 헤더 해시 기준 무효화)")
+        idx.notes.extend(getattr(self, "_env_notes", []))
+        idx.parse_health = self._parse_health(idx)
         return idx
+
+    def _parse_health(self, idx: ProjectIndex) -> dict:
+        """단계 2 완료 기준: 번역 단위별 오류 수, 파싱 성공률, 조용히 빠졌을 수 있는 함수.
+
+        libclang은 오류가 있어도 일부 AST를 돌려주므로, 소스 텍스트에서 찾은 함수 정의와
+        AST에서 찾은 함수 정의를 비교해 누락 의심 함수를 보고한다.
+        """
+        from .build_env import function_definitions_in_text
+        total = len(idx.tus)
+        ok = sum(1 for t in idx.tus if not t.get("errors"))
+        in_ast: Dict[str, set] = {}
+        for key, u in idx.units.items():
+            if u["kind"] == "function":
+                in_ast.setdefault(u["file"], set()).add(u["name"])
+        missing = []
+        for t in idx.tus:
+            rel = t["file"]
+            try:
+                with open(os.path.join(self.v.root, rel), "r", encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+            except OSError:
+                continue
+            inactive = [tuple(r) for r in (idx.files.get(rel, {}).get("inactive") or [])]
+            found = function_definitions_in_text(text, inactive)
+            for name, line in sorted(found.items(), key=lambda x: x[1]):
+                if name not in in_ast.get(rel, set()):
+                    missing.append({"file": rel, "function": name, "line": line})
+        # 오류 위치가 함수 본문 안에 있으면 그 함수의 AST는 부분적일 수 있음(RecoveryExpr 등)
+        partial = []
+        fn_units = [u for u in idx.units.values() if u["kind"] == "function"]
+        for d in idx.diags:
+            if d.get("severity") != "error" or not d.get("file"):
+                continue
+            for u in fn_units:
+                if u["file"] == d["file"] and u["line"] <= (d.get("line") or 0) <= (u.get("end_line") or u["line"]):
+                    partial.append({"function": u["name"], "file": u["file"], "line": d.get("line"),
+                                    "error": d["message"][:160]})
+        rate = (ok / total) if total else 0.0
+        return {
+            "partial_ast_functions": partial,
+            "translation_units": total, "parsed_without_error": ok, "success_rate": round(rate, 3),
+            "errors_by_tu": {t["file"]: len(t.get("errors") or []) for t in idx.tus if t.get("errors")},
+            "fatal_tus": [t["file"] for t in idx.tus if t.get("fatal")],
+            "warnings_total": sum(t.get("warnings", 0) for t in idx.tus),
+            "missing_function_candidates": missing,
+            "dropped_options": sorted({o for t in idx.tus for o in (t.get("dropped_options") or [])})[:50],
+            "compiler_profiles": sorted({t.get("compiler_profile") or "?" for t in idx.tus}),
+        }
