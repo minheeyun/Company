@@ -170,6 +170,14 @@ class AnalysisGraph:
         self._edge_keys.add(sig)
         self.g.add_edge(src, dst, key=key, kind=kind, label=label, **attrs)
 
+    def remove_edge(self, src: str, dst: str, kind: str, label: str = "") -> bool:
+        key = f"{kind}|{label}"
+        if (src, dst, key) not in self._edge_keys:
+            return False
+        self._edge_keys.discard((src, dst, key))
+        self.g.remove_edge(src, dst, key=key)
+        return True
+
     def has_node(self, nid: str) -> bool:
         return nid in self.g
 

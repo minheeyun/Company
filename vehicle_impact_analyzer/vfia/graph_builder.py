@@ -25,6 +25,19 @@ from .pointsto import NONE, UNK, PointsTo, vunion
 from .project_indexer import ProjectIndex
 
 
+# 소스가 없는 라이브러리 함수의 읽기/쓰기 요약(인자 index). 프로젝트별 BSW 스텁은
+# analysis.library_models로 추가한다(예: NvM_ReadBlock: {writes: [1]}).
+BUILTIN_LIBRARY_MODELS = {
+    "memcpy": {"writes": [0], "reads": [1], "copy": [0, 1]},
+    "memmove": {"writes": [0], "reads": [1], "copy": [0, 1]},
+    "memset": {"writes": [0], "reads": []},
+    "memcmp": {"writes": [], "reads": [0, 1]},
+    "strlen": {"writes": [], "reads": [0]},
+    "strcpy": {"writes": [0], "reads": [1], "copy": [0, 1]},
+    "strncpy": {"writes": [0], "reads": [1], "copy": [0, 1]},
+}
+
+
 class CallInfo:
     __slots__ = ("cs", "ast_id", "direct", "callee_val", "callee_reads", "args", "node", "func", "ast")
 
@@ -197,7 +210,15 @@ class ExprVisitor:
                 self.gb.pts.add_assign(lv, v)
             return ("load", lv)
         if k in ("ICast", "Cast"):
-            return self.rval(n["ch"][0]) if n.get("ch") else NONE
+            c = n["ch"][0] if n.get("ch") else None
+            if c is not None and ty.get("k") == "p":
+                lit = strip_casts(c)
+                if lit.get("k") == "Lit" and isinstance(lit.get("v"), int) and lit["v"] != 0:
+                    # 정수 상수 -> 포인터: 메모리 맵 레지스터(MMIO). 주소별 위치로 모델링(입력점·관찰점)
+                    key = self.gb.mmio_key(lit["v"], n.get("mac") or lit.get("mac"))
+                    self.info.volatile = True
+                    return ("addr", ("var", key))
+            return self.rval(c) if c is not None else NONE
         if k == "Bin":
             ch = n.get("ch", [])
             a = self.rval(ch[0]) if ch else NONE
@@ -258,6 +279,10 @@ class ExprVisitor:
             arg_infos.append({"ast": a["id"], "reads": r, "val": v, "ty": a.get("ty") or {}})
         ci = CallInfo(cs, n["id"], direct, callee_val, callee_reads, arg_infos, self.node_id, self.func, n)
         self.info.calls.append(ci)
+        model = self.gb.lib_model(direct)
+        if model and model.get("copy") and len(arg_infos) > max(model["copy"]):
+            d_i, s_i = model["copy"]
+            self.gb.pts.add_copyrec(("deref", arg_infos[d_i]["val"]), ("deref", arg_infos[s_i]["val"]))
         self.gb.pts.add_call(cs, self.func, direct, callee_val, [x["val"] for x in arg_infos])
         self.read(("callres", cs))
         return ("ret", cs)
@@ -290,6 +315,10 @@ class GraphBuilder:
         self.idx = index
         self.opt = options or AnalysisOptions()
         self.log = log
+        self.mmio: Dict[str, dict] = {}
+        self.lib_models = dict(BUILTIN_LIBRARY_MODELS)
+        self.lib_models.update(getattr(self.opt, "library_models", None) or {})
+        self._mmio_names = {int(str(v), 0): k for k, v in (getattr(self.opt, "mmio_map", None) or {}).items()}
         self.g = AnalysisGraph()
         self.pts = PointsTo(self.opt.pointsto_max_iter)
         self.cfgs: Dict[str, CFG] = {}
@@ -310,6 +339,7 @@ class GraphBuilder:
         self._meta()
         self._symbols()
         self._cfgs_and_exprs()
+        self._mmio_nodes()
         self._global_inits()
         self.pts.solve(set(self.functions))
         self._resolve()
@@ -321,6 +351,11 @@ class GraphBuilder:
         self._global_flow()
         self._symbol_relations()
         self.g.meta["pointsto"] = self.pts.summary()
+        ext = sorted({c.split(":")[-1] for ci in self.calls_all for c in self.callees_of(ci) if c not in self.functions})
+        self.g.meta["external_models"] = {
+            "modeled": [e for e in ext if e in self.lib_models],
+            "unmodeled": [e for e in ext if e not in self.lib_models],
+            "note": "모델 없는 외부 함수는 const가 아닌 포인터 인자에 쓰고 모든 인자가 결과에 영향을 준다고 보수적으로 가정"}
         self.g.meta["stats"] = self.g.stats()
         return self.g
 
@@ -575,9 +610,35 @@ class GraphBuilder:
                     self.mod[f] = acc
                     changed = True
 
+    def mmio_key(self, addr: int, name: Optional[str]) -> str:
+        key = f"gv:mmio:0x{addr:08X}"
+        if key not in self.mmio:
+            self.mmio[key] = {"address": f"0x{addr:08X}", "name": self._mmio_names.get(addr) or name or f"0x{addr:08X}"}
+        elif name and self.mmio[key]["name"].startswith("0x"):
+            self.mmio[key]["name"] = name
+        return key
+
+    def lib_model(self, callee: Optional[str]) -> Optional[dict]:
+        if not callee:
+            return None
+        return self.lib_models.get(callee.split(":")[-1])
+
+    def _mmio_nodes(self) -> None:
+        for key, info in self.mmio.items():
+            self.g.add_node(key, NK.GLOBAL, name=info["name"], mmio=True, volatile=True, address=info["address"],
+                            file=None, external=True)
+        self.g.meta["mmio"] = {k: v for k, v in self.mmio.items()}
+
     def _ext_out_locs(self, ci: CallInfo) -> Set[str]:
-        """본문이 없는 외부 함수: const가 아닌 포인터 인자가 가리키는 위치에 쓴다고 가정."""
+        """본문이 없는 외부 함수: 라이브러리 모델이 있으면 그 'writes' 인자만, 없으면 const가 아닌 모든
+        포인터 인자가 가리키는 위치에 쓴다고 보수적으로 가정."""
         out: Set[str] = set()
+        model = self.lib_model(ci.direct)
+        if model is not None:
+            for i in model.get("writes", []):
+                if i < len(ci.args):
+                    out |= {x for x in self.pts.targets_of(ci.args[i]["val"]) if not x.startswith("fn:")}
+            return out
         for a in ci.args:
             ty = a["ty"]
             if ty.get("k") == "p" and not (ty.get("pt") or {}).get("const") and (ty.get("pt") or {}).get("k") != "f":
@@ -665,6 +726,9 @@ class GraphBuilder:
                     # 포인터 인자로 전달된 호출자 지역 변수(피호출 함수가 읽을 수 있음)
                     if arg["ty"].get("k") == "p":
                         s |= {x for x in self.pts.targets_of(arg["val"]) if loc_root(x) in self.owned[fkey]}
+                    model = self.lib_model(ci.direct)
+                    if model and i in model.get("reads", []):
+                        s |= {x for x in self.pts.targets_of(arg["val"]) if not x.startswith("fn:")}
                     # 피호출 함수가 이 포인터 인자를 통해 읽는 위치(문맥별로 해석)
                     for c in self.callees_of(ci):
                         for ii, suf in self.pref.get(c, ()):
@@ -860,8 +924,10 @@ class GraphBuilder:
             gu = self.idx.units.get(root, {})
             for l in locs:
                 nid = f"loc:{l}"
-                g.add_node(nid, NK.LOCATION, name=_short_loc(l), root=root, loc=l, file=gu.get("file"),
-                           line=gu.get("line"), volatile=gu.get("volatile") or None)
+                mm = self.mmio.get(root)
+                g.add_node(nid, NK.LOCATION, name=(mm["name"] if mm else _short_loc(l)), root=root, loc=l,
+                           file=gu.get("file"), line=gu.get("line"),
+                           volatile=(gu.get("volatile") or bool(mm)) or None, mmio=bool(mm) or None)
             if g.has_node(f"loc:{root}") and root not in locs:
                 locs = locs | {root}
             for l in locs:

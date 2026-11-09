@@ -109,8 +109,11 @@ class Program:
     """한 버전(또는 혼합 버전)의 함수·전역·레코드 AST 묶음."""
 
     def __init__(self, asts: Dict[str, dict], name: str, external: Set[str] = None,
-                 volatile_globals: Set[str] = None):
+                 volatile_globals: Set[str] = None, calibrations: Dict[str, tuple] = None,
+                 rte_map: Dict[str, dict] = None):
         self.name = name
+        self.calibrations = calibrations or {}   # 전역 키 -> (min, max): 상수로 접지 않는 자유 입력
+        self.rte_map = rte_map or {}             # RTE API 이름 -> {signal, access, direction}
         self.functions = {k: a for k, a in asts.items() if k.startswith("fn:") and a.get("k") == "Func"}
         self.globals = {k: a for k, a in asts.items() if k.startswith("gv:") and a.get("k") == "GlobalVar"}
         self.records = {a.get("v"): a for k, a in asts.items() if k.startswith("ty:") and a.get("k") == "Record"}
@@ -129,7 +132,8 @@ class Program:
                 asts[k] = v
         for k, v in other.records.items():
             asts.setdefault(f"ty:{k}", v)
-        return Program(asts, name, self.external | other.external, self.volatile_globals | other.volatile_globals)
+        return Program(asts, name, self.external | other.external, self.volatile_globals | other.volatile_globals,
+                       {**other.calibrations, **self.calibrations}, {**other.rte_map, **self.rte_map})
 
 
 class SymExec:
@@ -152,6 +156,10 @@ class SymExec:
         self.ext_calls: Dict[str, List[Tuple[z3.BoolRef, List]]] = {}
         self.step = 0
         self.frames: List[Frame] = []
+        self.mmio_writes: Dict[str, List] = {}
+        self.rte_pending: Dict[str, object] = {}
+        self.rte_snapshot: Dict[str, object] = {}
+        self.rte_env_count: Dict[Tuple[str, int], int] = {}
 
     # ---------------- 메모리 ----------------
     def fresh(self, name: str, ty: dict):
@@ -201,7 +209,13 @@ class SymExec:
     def ensure_global(self, key: str) -> None:
         if any(l == key or l.startswith(key + FIELD_SEP) for l in self.mem):
             return
+        if key.startswith("gv:mmio:"):
+            return
         g = self.p.globals.get(key)
+        if g is not None and key in self.p.calibrations and (g.get("ty") or {}).get("k") in ("i", "b"):
+            # 캘리브레이션: const/const volatile이어도 XCP 등으로 바뀌므로 상수로 접지 않고 공유 자유 입력
+            self.mem[key] = self.fresh(f"cal:{key}", g.get("ty") or {})
+            return
         if g is None:
             raise Unsupported(f"전역 변수 정의 없음 {key}")
         ty = g.get("ty") or {}
@@ -227,7 +241,7 @@ class SymExec:
 
     def read(self, loc: str, idx, ty: dict):
         root = loc.split(FIELD_SEP, 1)[0]
-        if root.startswith("gv:") and root in self.p.volatile_globals:
+        if root.startswith("gv:") and (root in self.p.volatile_globals or root.startswith("gv:mmio:")):
             # volatile(ISR·하드웨어 공유) 읽기는 읽을 때마다 새 환경 입력. 두 버전에서
             # 같은 단계·같은 순번의 읽기는 같은 기호를 사용한다.
             ck = (loc, self.step)
@@ -265,6 +279,9 @@ class SymExec:
         raise Unsupported("포인터 배열의 기호 인덱스 접근")
 
     def write(self, loc: str, idx, val, guard) -> None:
+        if loc.startswith("gv:mmio:"):
+            # 레지스터 쓰기는 관찰 가능한 출력으로 기록(읽기는 매번 새 입력)
+            self.mmio_writes.setdefault(loc, []).append((guard, val))
         if loc not in self.mem:
             root = loc.split(FIELD_SEP, 1)[0]
             if root.startswith("gv:"):
@@ -543,7 +560,10 @@ class SymExec:
                 s = z3.simplify(v)
                 if z3.is_bv_value(s) and s.as_long() == 0:
                     return PtrVal.single(None)
-            raise Unsupported("정수 -> 포인터 변환")
+                if z3.is_bv_value(s):
+                    # 정수 상수 주소 -> 메모리 맵 레지스터(graph_builder와 같은 키)
+                    return PtrVal.single(("loc", f"gv:mmio:0x{s.as_long():08X}", None))
+            raise Unsupported("정수 -> 포인터 변환(상수가 아닌 주소)")
         if tk == "b":
             if isinstance(v, PtrVal):
                 return z3.If(self.truth(v), bv(1, 8), bv(0, 8))
@@ -874,11 +894,111 @@ class SymExec:
             result = r if result is None else (merge(c, r, result) if r is not None else result)
         return result
 
+    # ---------------- AUTOSAR RTE ----------------
+    def _rte_value(self, sig: str, bits: int):
+        """신호 버퍼 현재 값. 이 코드가 쓰지 않는 신호(다른 SWC·ECU 생산)는 단계마다 새 환경 입력."""
+        key = f"rte:{sig}"
+        produced = any(m["signal"] == sig and m["direction"] == "write" for m in self.p.rte_map.values())
+        if key in self.mem:
+            return self.mem[key]
+        name = f"rte:{sig}@init" if produced else f"rte:{sig}@{self.step}"
+        v = z3.BitVec(name, bits)
+        self.mem[key] = v
+        return v
+
+    def begin_step(self) -> None:
+        """runnable 시작: 암묵적 읽기(Rte_IRead)용 복사본을 만든다. 외부 생산 신호는 새 입력."""
+        for api, m in self.p.rte_map.items():
+            key = f"rte:{m['signal']}"
+            produced = any(x["signal"] == m["signal"] and x["direction"] == "write" for x in self.p.rte_map.values())
+            if not produced:
+                self.mem.pop(key, None)
+        self.rte_snapshot = {}
+        self.rte_pending = {}
+
+    def end_step(self) -> None:
+        """runnable 종료: 암묵적 쓰기(Rte_IWrite)를 버퍼에 반영."""
+        for key, v in self.rte_pending.items():
+            self.mem[key] = v
+        self.rte_pending = {}
+
+    def _rte_call(self, name: str, m: dict, args, args_n, guard, rty):
+        sig, implicit = m["signal"], m.get("access") == "implicit"
+        key = f"rte:{sig}"
+        if m["direction"] == "write":
+            val = next((a for a in args if a is not None and not isinstance(a, PtrVal)), None)
+            if val is None and args and isinstance(args[0], PtrVal):
+                pt = (args_n[0].get("ty") or {}).get("pt") or {}
+                val = self.load(self.ptr_targets(args[0]), pt)
+            if val is None:
+                raise Unsupported(f"RTE 쓰기 값 해석 실패 {name}")
+            if implicit:
+                cur = self.rte_pending.get(key, self.mem.get(key))
+                self.rte_pending[key] = val if cur is None else merge(guard, val, cur)
+            else:
+                cur = self.mem.get(key)
+                self.mem[key] = val if cur is None else merge(guard, val, cur)
+            self.ext_calls.setdefault(name, []).append((guard, [val]))
+            return bv(0, bits_of(rty)) if rty.get("k") in ("i", "b") else None
+        # 읽기: 출력 포인터 인자 또는 반환값
+        out_ptr = next(((a, an) for a, an in zip(args, args_n) if isinstance(a, PtrVal)), None)
+        bits = bits_of(((out_ptr[1].get("ty") or {}).get("pt") or {}) if out_ptr else rty) if (out_ptr or rty.get("k") in ("i", "b")) else 32
+        if implicit:
+            if key not in self.rte_snapshot:
+                self.rte_snapshot[key] = self._rte_value(sig, bits)
+            val = self.rte_snapshot[key]
+        else:
+            val = self._rte_value(sig, bits)
+        if z3.is_bv(val) and val.size() != bits:
+            val = resize(val, bits, False)
+        if out_ptr:
+            self.store(self.ptr_targets(out_ptr[0]), val, guard)
+            return bv(0, bits_of(rty)) if rty.get("k") in ("i", "b") else None
+        return val
+
+    def _mem_call(self, name: str, args, guard):
+        """memcpy/memmove/memset: 객체 전체 단위로 모델링(크기 인자는 대상 객체 크기와 같다고 가정)."""
+        dst = self.ptr_targets(args[0])
+        if len(dst) != 1 or dst[0][2] not in (None,) and not z3.is_true(z3.simplify(dst[0][2] == 0)):
+            raise Unsupported(f"{name}: 대상이 하나의 객체가 아님")
+        dl = dst[0][1]
+        self.notes.add(f"{name}()는 객체 전체 복사/초기화로 모델링(크기 인자 무시)")
+        if name in ("memcpy", "memmove"):
+            src = self.ptr_targets(args[1])
+            if len(src) != 1:
+                raise Unsupported(f"{name}: 원본이 하나의 객체가 아님")
+            sl = src[0][1]
+            for root in {sl.split(FIELD_SEP, 1)[0], dl.split(FIELD_SEP, 1)[0]}:
+                if root.startswith("gv:"):
+                    self.ensure_global(root)
+            keys = [k for k in list(self.mem) if k == sl or k.startswith(sl + FIELD_SEP)]
+            for k in keys:
+                self.write(dl + k[len(sl):], None, self.mem[k], guard)
+            return PtrVal.single(("loc", dl, None))
+        val = args[1]
+        sv = z3.simplify(val) if z3.is_bv(val) else None
+        if sv is None or not z3.is_bv_value(sv) or sv.as_long() != 0:
+            raise Unsupported("memset: 0이 아닌 값")
+        root = dl.split(FIELD_SEP, 1)[0]
+        if root.startswith("gv:"):
+            self.ensure_global(root)
+        for k in [k for k in list(self.mem) if k == dl or k.startswith(dl + FIELD_SEP)]:
+            v = self.mem[k]
+            if z3.is_array(v):
+                self.write(k, None, z3.K(v.domain(), bv(0, v.range().size())), guard)
+            elif z3.is_bv(v):
+                self.write(k, None, bv(0, v.size()), guard)
+        return PtrVal.single(("loc", dl, None))
+
     def _call_target(self, fkey: str, args, args_n, guard, rty, n):
         if fkey in self.p.functions:
             return self.call_function(fkey, args, guard)
         # 외부 함수: 공유 미해석 함수
         name = fkey.split(":")[-1]
+        if name in self.p.rte_map:
+            return self._rte_call(name, self.p.rte_map[name], args, args_n, guard, rty)
+        if name in ("memcpy", "memmove", "memset") and args and isinstance(args[0], PtrVal):
+            return self._mem_call(name, args, guard)
         cnt = self.ext_count.get(name, 0)
         self.ext_count[name] = cnt + 1
         self.ext_calls.setdefault(name, []).append((guard, args))

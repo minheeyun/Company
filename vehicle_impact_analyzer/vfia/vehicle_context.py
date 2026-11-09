@@ -20,7 +20,7 @@ import re
 import xml.etree.ElementTree as ET
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 from .config import load_structured
 from .model import EK, NK, AnalysisGraph
@@ -36,6 +36,8 @@ class VehicleModel:
     calibrations: List[dict] = field(default_factory=list)
     runnables: List[dict] = field(default_factory=list)
     sources: List[str] = field(default_factory=list)
+    os: dict = field(default_factory=dict)          # atomic_bits, lock_apis, cores 등 OS 설정
+    measurements: List[dict] = field(default_factory=list)
 
     def feature(self, fid: str) -> Optional[dict]:
         for f in self.features:
@@ -71,6 +73,14 @@ def load_vehicle_model(paths: Union[None, str, List[str]]) -> VehicleModel:
                 vm.tasks.append(t)
         vm.signals.extend(raw.get("signals", []) or [])
         vm.calibrations.extend(raw.get("calibrations", []) or [])
+        vm.os.update(raw.get("os", {}) or {})
+        for a2 in raw.get("a2l", []) or []:
+            a2p = a2 if os.path.isabs(a2) else os.path.join(base, a2)
+            chars, meas = parse_a2l(a2p)
+            known = {c.get("variable", c["name"]) for c in vm.calibrations}
+            vm.calibrations.extend(c for c in chars if c["variable"] not in known)
+            vm.measurements.extend(meas)
+            vm.sources.append(a2p)
         for ax in raw.get("arxml", []) or []:
             axp = ax if os.path.isabs(ax) else os.path.join(base, ax)
             runnables = parse_arxml(axp)
@@ -80,6 +90,54 @@ def load_vehicle_model(paths: Union[None, str, List[str]]) -> VehicleModel:
 
 
 # ---------------------------------------------------------------------------
+def _a2l_tokens(text: str) -> List[str]:
+    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
+    text = re.sub(r"//[^\n]*", " ", text)
+    return re.findall(r'"(?:[^"\\]|\\.)*"|\S+', text)
+
+
+def parse_a2l(path: str) -> Tuple[List[dict], List[dict]]:
+    """ASAM MCD-2 MC(A2L)에서 CHARACTERISTIC(캘리브레이션)·MEASUREMENT(측정값)의 이름과 범위를 읽는다.
+
+    CHARACTERISTIC: Name LongId Type Address Deposit MaxDiff Conversion Lower Upper
+    MEASUREMENT:    Name LongId Datatype Conversion Resolution Accuracy Lower Upper
+    """
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            toks = _a2l_tokens(f.read())
+    except OSError:
+        return [], []
+
+    def num(x):
+        try:
+            return int(x, 0)
+        except ValueError:
+            try:
+                v = float(x)
+                return int(v) if v.is_integer() else v
+            except ValueError:
+                return None
+    chars, meas = [], []
+    i = 0
+    while i < len(toks):
+        if toks[i] == "/begin" and i + 1 < len(toks) and toks[i + 1] in ("CHARACTERISTIC", "MEASUREMENT"):
+            kind = toks[i + 1]
+            f = toks[i + 2:i + 12]
+            try:
+                if kind == "CHARACTERISTIC":
+                    chars.append({"name": f[0], "variable": f[0], "description": f[1].strip('"'), "type": f[2],
+                                  "address": f[3], "min": num(f[7]), "max": num(f[8]), "source": os.path.basename(path)})
+                else:
+                    meas.append({"name": f[0], "variable": f[0], "description": f[1].strip('"'), "datatype": f[2],
+                                 "min": num(f[6]), "max": num(f[7]), "source": os.path.basename(path)})
+            except IndexError:
+                pass
+            i += 2
+            continue
+        i += 1
+    return chars, meas
+
+
 def _strip_ns(tag: str) -> str:
     return tag.split("}", 1)[1] if "}" in tag else tag
 
@@ -131,6 +189,13 @@ def parse_arxml(path: str) -> List[dict]:
 
 
 # ---------------------------------------------------------------------------
+# 인터럽트 잠금·리소스 API (잠금, 해제) 정규식 쌍. 차량 모델 os.lock_apis로 바꿀 수 있다.
+DEFAULT_LOCK_APIS = [
+    ("SuspendAllInterrupts", "ResumeAllInterrupts"), ("DisableAllInterrupts", "EnableAllInterrupts"),
+    ("SuspendOSInterrupts", "ResumeOSInterrupts"), ("GetResource", "ReleaseResource"),
+    ("SchM_Enter_.*", "SchM_Exit_.*"), ("__disable", "__enable"),
+]
+
 _RTE_W = re.compile(r"^Rte_(Write|IWrite|Send|IWriteRef)_(.+)$")
 _RTE_R = re.compile(r"^Rte_(Read|IRead|Receive|DRead)_(.+)$")
 
@@ -159,6 +224,8 @@ class VehicleLinker:
         self._contexts()
         self._signals()
         self._calibrations()
+        self._critical_sections()
+        self._interference()
         self._features()
         self.g.meta["vehicle_model"] = {
             "sources": self.vm.sources, "ecu": self.vm.ecu, "notes": self.notes,
@@ -177,7 +244,7 @@ class VehicleLinker:
             tid = f"task:{t['name']}"
             g.add_node(tid, NK.TASK, name=t["name"], ctx_kind=t.get("kind", "task"), period_ms=t.get("period_ms"),
                        priority=t.get("priority"), swc=t.get("swc"), trigger=t.get("trigger"),
-                       core=t.get("core"), source=t.get("source"))
+                       core=t.get("core"), source=t.get("source"), preemptive=t.get("preemptive"))
             entries = t.get("entry") or t.get("entries") or t["name"]
             if isinstance(entries, str):
                 entries = [entries]
@@ -382,6 +449,162 @@ class VehicleLinker:
                     g.add_node(loc, NK.LOCATION, name=g.node(gk).get("name"), root=gk, loc=gk)
                 g.add_edge(cid, loc, EK.CALIBRATES)
                 g.node(gk)["calibration"] = c["name"]
+                g.node(gk)["cal_min"] = c.get("min")
+                g.node(gk)["cal_max"] = c.get("max")
+                g.node(loc)["calibration"] = c["name"]
+
+    # --- 임계 구역(인터럽트 잠금·리소스) ---
+    def _critical_sections(self) -> None:
+        """잠금 API 사이의 문장을 '임계 구역'으로 표시(함수 내부 must 분석: 모든 경로에서 잠금 보유)."""
+        g = self.g
+        pairs = self.vm.os.get("lock_apis") or DEFAULT_LOCK_APIS
+        lock_rx = [re.compile(p[0]) for p in pairs]
+        unlock_rx = [re.compile(p[1]) for p in pairs]
+        stmt_calls: Dict[str, List[str]] = {}
+        for cs in g.nodes_of(NK.CALL_SITE):
+            d = g.node(cs)
+            if d.get("stmt"):
+                stmt_calls.setdefault(d["stmt"], []).extend(c.split(":")[-1] for c in d.get("callees") or [])
+        count = 0
+        for f in g.nodes_of(NK.FUNCTION):
+            nodes = [n for n in g.succ(f, [EK.CONTAINS]) if g.kind(n) in (NK.STMT, NK.ENTRY, NK.EXIT, NK.FORMAL_IN)]
+            if not nodes:
+                continue
+            lock = {n: any(r.fullmatch(c) for c in stmt_calls.get(n, []) for r in lock_rx) for n in nodes}
+            unlock = {n: any(r.fullmatch(c) for c in stmt_calls.get(n, []) for r in unlock_rx) for n in nodes}
+            if not any(lock.values()):
+                continue
+            preds = {n: [s for s, _, d in g.in_edges(n, [EK.CFG]) if not d.get("fake")] for n in nodes}
+            entry = f"{f}#entry"
+            held_out = {n: n != entry for n in nodes}
+            changed = True
+            while changed:
+                changed = False
+                for n in nodes:
+                    ps = [p for p in preds[n] if p in held_out]
+                    hin = bool(ps) and all(held_out[p] for p in ps) and n != entry
+                    out = lock[n] or (hin and not unlock[n])
+                    if out != held_out[n]:
+                        held_out[n] = out
+                        changed = True
+            for n in nodes:
+                ps = [p for p in preds[n] if p in held_out]
+                hin = bool(ps) and all(held_out[p] for p in ps) and n != entry
+                if hin and g.kind(n) == NK.STMT:
+                    g.node(n)["critical"] = True
+                    count += 1
+        self.g.meta["critical_statements"] = count
+
+    def _ctx_info(self, func: Optional[str]) -> List[dict]:
+        if not func:
+            return []
+        return [dict(g_id=t, **{k: self.g.node(t).get(k) for k in ("name", "ctx_kind", "priority", "core",
+                                                                  "preemptive", "period_ms")})
+                for t in self.g.succ(func, [EK.RUNS_IN])]
+
+    def _critical(self, n: str) -> bool:
+        g = self.g
+        d = g.node(n) if g.has_node(n) else {}
+        if d.get("critical"):
+            return True
+        cs = d.get("call_site")
+        if cs and g.has_node(cs):
+            st = g.node(cs).get("stmt")
+            return bool(st and g.node(st).get("critical"))
+        return False
+
+    def _interference(self) -> None:
+        """서로 다른 실행 문맥(태스크·ISR·runnable) 사이 공유 변수의 쓰기->읽기 간섭 의존 간선.
+
+        OS 설정으로 실제로 가능한 것만 남긴다: init 문맥이 다른 문맥보다 먼저 끝나므로 주기 문맥의
+        쓰기는 init 문맥의 읽기에 도달할 수 없다(해당 전역 읽기 간선도 제거). 선점 가능성(ISR/우선순위/
+        코어), 임계 구역 보호, 원자적 접근 폭을 간선 속성으로 기록한다.
+        """
+        from .resources import type_size
+        g = self.g
+        atomic_bits = int(self.vm.os.get("atomic_bits", 32))
+        edges, filtered, risky = 0, [], 0
+        for l in g.nodes_of(NK.LOCATION):
+            writers = [w for w in g.pred(l, [EK.GLOBAL_WRITE])]
+            readers = [r for r in g.succ(l, [EK.GLOBAL_READ]) if g.kind(r) != NK.LOCATION]
+            if not writers or not readers:
+                continue
+            size_bits = self._loc_bits(l, type_size)
+            for r in readers:
+                cr = self._ctx_info(g.func_of(r))
+                feasible_any = False
+                infeasible_pairs = []
+                for w in writers:
+                    cw = self._ctx_info(g.func_of(w))
+                    if not cw or not cr:
+                        feasible_any = True
+                        continue
+                    same = {x["g_id"] for x in cw} & {x["g_id"] for x in cr}
+                    if same:
+                        feasible_any = True
+                    pairs = [(a, b) for a in cw for b in cr if a["g_id"] != b["g_id"]]
+                    ok = [(a, b) for a, b in pairs if not (b.get("ctx_kind") == "init" and a.get("ctx_kind") != "init")]
+                    infeasible_pairs += [(a["name"], b["name"]) for a, b in pairs if (a, b) not in ok]
+                    if not ok:
+                        continue
+                    feasible_any = True
+                    a, b = ok[0]
+                    pre = any(self._can_interleave(x, y) for x, y in ok)
+                    prot = self._critical(w) and self._critical(r)
+                    atomic = size_bits is not None and size_bits <= atomic_bits
+                    note = (f"{a['name']}({a.get('ctx_kind')}) 쓰기 -> {b['name']}({b.get('ctx_kind')}) 읽기"
+                            + (", 선점·병렬 실행 가능" if pre else ", 같은 우선순위 비선점(중간 개입 없음)")
+                            + (", 임계 구역 보호" if prot else ", 보호 없음")
+                            + ("" if atomic else f", 비원자 접근({size_bits}비트 > {atomic_bits}비트)"))
+                    g.add_edge(w, r, EK.INTERFERENCE, g.node(l).get("name") or l,
+                               writer_ctx=a["name"], reader_ctx=b["name"], preemptive=pre, protected=prot,
+                               atomic=atomic, note=note)
+                    edges += 1
+                    if pre and not prot and not atomic:
+                        risky += 1
+                if not feasible_any and infeasible_pairs:
+                    for kind_label in [d.get("label", "") for _, dd, d in g.out_edges(l, [EK.GLOBAL_READ]) if dd == r]:
+                        g.remove_edge(l, r, EK.GLOBAL_READ, kind_label)
+                    filtered.append({"location": g.node(l).get("name"), "reader": g.describe(r),
+                                     "pairs": sorted(set(infeasible_pairs)),
+                                     "reason": "init 문맥은 주기 문맥보다 먼저 끝나므로 이 쓰기를 읽을 수 없음"})
+        self.g.meta["interference"] = {"edges": edges, "filtered_flows": filtered, "unprotected_non_atomic": risky,
+                                       "atomic_bits": atomic_bits}
+
+    @staticmethod
+    def _can_interleave(a: dict, b: dict) -> bool:
+        if a.get("core") is not None and b.get("core") is not None and a.get("core") != b.get("core"):
+            return True
+        if "isr" in (a.get("ctx_kind"), b.get("ctx_kind")):
+            return True
+        pa, pb = a.get("priority"), b.get("priority")
+        if pa is None or pb is None:
+            return True
+        if pa == pb:
+            return False
+        return a.get("preemptive", True) is not False or b.get("preemptive", True) is not False
+
+    def _loc_bits(self, l: str, type_size) -> Optional[int]:
+        g = self.g
+        d = g.node(l)
+        root = d.get("root")
+        ast = g.asts.get(root) if root else None
+        if not ast:
+            return 32 if d.get("mmio") else None
+        ty = ast.get("ty") or {}
+        path = (d.get("loc") or "").split("|")[1:]
+        recs = {g.node(r).get("name"): g.asts.get(r) for r in g.nodes_of(NK.RECORD)}
+        for fld in path:
+            if ty.get("k") == "a":
+                ty = ty.get("el") or {}
+            rec = recs.get(ty.get("rec"))
+            if not rec:
+                return None
+            ty = next((c.get("ty") or {} for c in rec.get("ch", []) if c.get("v") == fld), {})
+        if ty.get("k") == "a":
+            ty = ty.get("el") or {}
+        sz = type_size(ty)
+        return sz * 8 if sz else None
 
     # --- 기능 ---
     def _features(self) -> None:

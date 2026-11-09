@@ -73,8 +73,10 @@ class BehaviorChecker:
 
     def _program(self, g: AnalysisGraph, name: str) -> Program:
         ext = {f for f in g.nodes_of(NK.FUNCTION) if g.node(f).get("external")}
-        vol = {k for k in g.nodes_of(NK.GLOBAL) if g.node(k).get("volatile")}
-        return Program(g.asts, name, ext, vol)
+        vol = {k for k in g.nodes_of(NK.GLOBAL) if g.node(k).get("volatile") and not g.node(k).get("calibration")}
+        cals = {k: (g.node(k).get("cal_min"), g.node(k).get("cal_max")) for k in g.nodes_of(NK.GLOBAL)
+                if g.node(k).get("calibration")}
+        return Program(g.asts, name, ext, vol, cals, rte_map(g))
 
     # ------------------------------------------------------------------
     def observations(self) -> List[dict]:
@@ -132,7 +134,9 @@ class BehaviorChecker:
         try:
             for k, args in enumerate(inputs):
                 ex.step = k
+                ex.begin_step()
                 ret = ex.run(fkey, args)
+                ex.end_step()
                 if spec["kind"] == "function_return":
                     r.values.append(ret)
                     r.signed = is_signed((prog.functions[fkey].get("ret") or {}))
@@ -153,6 +157,23 @@ class BehaviorChecker:
         except RecursionError:
             r.error = "재귀 깊이 초과"
         return r
+
+    @staticmethod
+    def _calibration_domain(prog: Program) -> List:
+        """캘리브레이션 자유 입력의 A2L 범위 제약."""
+        out = []
+        for key, (lo, hi) in prog.calibrations.items():
+            ty = (prog.globals.get(key) or {}).get("ty") or {}
+            if ty.get("k") not in ("i", "b"):
+                continue
+            w = bits_of(ty)
+            x = z3.BitVec(f"cal:{key}", w) if ty.get("k") == "i" else z3.ZeroExt(w - 1, z3.BitVec(f"cal:{key}", 1))
+            s = is_signed(ty)
+            if lo is not None:
+                out.append(x >= z3.BitVecVal(int(lo), w) if s else z3.UGE(x, z3.BitVecVal(int(lo) % (1 << w), w)))
+            if hi is not None:
+                out.append(x <= z3.BitVecVal(int(hi), w) if s else z3.ULE(x, z3.BitVecVal(int(hi) % (1 << w), w)))
+        return out
 
     @staticmethod
     def _neq(a, b):
@@ -325,6 +346,7 @@ class BehaviorChecker:
                 res["per_change"][ch["id"]] = {"scope": "in", "status": Status.INCONCLUSIVE, "error": res["error"]}
             return res
         res["notes"] = sorted(ro.ex.notes | rn.ex.notes)
+        dom = list(dom) + self._calibration_domain(self.p_new) + self._calibration_domain(self.p_old)
         base = list(dom) + [z3.Not(ro.ex.unwind), z3.Not(rn.ex.unwind)]
         try:
             diff = z3.Or(*[self._neq(a, b) for a, b in zip(ro.values, rn.values)])
@@ -669,6 +691,22 @@ class BehaviorChecker:
                 return None, p.stderr.strip()[:300], None
             stubs |= und
         return None, "링크 실패", None
+
+
+def rte_map(g: AnalysisGraph) -> Dict[str, dict]:
+    """그래프의 신호 연결에서 RTE API 이름 -> {signal, access, direction} 표를 만든다."""
+    out: Dict[str, dict] = {}
+    for sid in g.nodes_of(NK.SIGNAL):
+        name = g.node(sid).get("name")
+        for _, _, d in g.in_edges(sid, [EK.SIGNAL_WRITE]):
+            lab = d.get("label") or ""
+            if lab.startswith("Rte_") and d.get("via") != "macro":
+                out[lab] = {"signal": name, "access": d.get("access", "explicit"), "direction": "write"}
+        for _, _, d in g.out_edges(sid, [EK.SIGNAL_READ]):
+            lab = d.get("label") or ""
+            if lab.startswith("Rte_") and d.get("via") != "macro":
+                out[lab] = {"signal": name, "access": d.get("access", "explicit"), "direction": "read"}
+    return out
 
 
 def _walk(n: dict):

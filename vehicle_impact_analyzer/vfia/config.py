@@ -82,6 +82,8 @@ class AnalysisOptions:
     chop: str = "context_sensitive"           # context_sensitive | naive
     min_parse_success_rate: float = 0.95      # 단계 2 완료 기준(번역 단위 파싱 성공률)
     max_condition_boxes: int = 8              # 차이 조건 상자 개수 상한
+    library_models: dict = field(default_factory=dict)   # 소스 없는 함수 요약 {이름: {reads:[i], writes:[i], copy:[d,s]}}
+    mmio_map: dict = field(default_factory=dict)          # 레지스터 이름 -> 주소(입력·관찰점 이름 지정)
 
 
 @dataclass
