@@ -85,6 +85,10 @@ def main(argv=None) -> int:
     ap.add_argument("--exec", dest="exec_mode", default=None, choices=["auto", "on", "off"],
                     help="호스트 컴파일러로 전후 비교 실행(기본: 설정값)")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--level", default="full", choices=["full", "function"],
+                    help="function: 2.5단계 MVP(호출 그래프+전역 읽기/쓰기+함수 요약)만 빠르게 실행")
+    ap.add_argument("--strict", action="store_true",
+                    help="파싱 성공률이 기준(analysis.min_parse_success_rate) 미만이면 종료 코드 2")
     ap.add_argument("--quiet", action="store_true")
     a = ap.parse_args(argv)
     log = (lambda *x: None) if a.quiet else print
@@ -95,9 +99,29 @@ def main(argv=None) -> int:
     go = get_graph(cfg, a.before, rebuild=a.rebuild, log=log)
     gn = get_graph(cfg, a.after, rebuild=a.rebuild, log=log)
 
+    rate_ok = True
+    for name, g in ((a.before, go), (a.after, gn)):
+        ph = (g.meta.get("summary") or {}).get("parse_health") or {}
+        rate = ph.get("success_rate", 1.0)
+        miss = len(ph.get("missing_function_candidates") or [])
+        part = len(ph.get("partial_ast_functions") or [])
+        ok = rate >= cfg.options.min_parse_success_rate and not miss
+        rate_ok &= ok
+        log(f"[{name}] 파싱 성공률 {rate:.0%}(기준 {cfg.options.min_parse_success_rate:.0%}), 누락 의심 함수 {miss}개, "
+            f"부분 AST 함수 {part}개 -> {'단계 2 완료 기준 충족' if ok else '기준 미달: 빌드 환경 재현 확인 필요'}")
     log("변경점 추출(AST 대응)...")
     cres, cd = detect_changes(go, gn)
     log(f"  변경점 {len(cres['changes'])}개")
+    from vfia.mvp_impact import mvp_analyze
+    mvp = mvp_analyze(go, gn, cres["changes"])
+    if a.level == "function":
+        jp = os.path.join(out, "impact_mvp.json")
+        write_json(jp, {"kind": "change_impact_mvp", "changes": cres["changes"], "mvp": mvp,
+                        "method": "호출 그래프 + 전역 읽기/쓰기 + 함수 요약(2.5단계 MVP)"})
+        log(f"\n함수 단위 간이 영향 분석: {jp}")
+        for m in mvp:
+            log(f"  {m['change']} {m['unit']}: 영향 함수 {len(m['functions'])}개, 기능 {', '.join(m['features']) or '-'}")
+        return 0 if (rate_ok or not a.strict) else 2
     log("기능 분류(양 버전, 같은 그래프 사용)...")
     cochange = load_cochange(cfg.history)
     fmaps = {"old": FeatureMapper(go, cfg.options, cfg.review_file, cfg.traces, log, cochange).run(),
@@ -122,14 +146,33 @@ def main(argv=None) -> int:
         "vehicle_model": {a.before: go.meta.get("vehicle_model"), a.after: gn.meta.get("vehicle_model")},
         "seconds": None,
     }
+    from vfia.assumptions import analysis_assumptions
+    from vfia.intervals import interval_report
     data = {"kind": "change_impact", "meta": meta, "changes": results, "features": feats, "behavior": behavior,
-            "scope": scope, "change_notes": cres.get("notes"), "file_moves": cres.get("file_moves")}
+            "scope": scope, "change_notes": cres.get("notes"), "file_moves": cres.get("file_moves"),
+            "text_coverage": cres.get("text_coverage"), "resources": cres.get("resources"), "mvp": mvp,
+            "assumptions": analysis_assumptions(go, gn, cfg.options),
+            "static_branches": interval_report(gn)["static_branches"],
+            "parse_health": {a.before: (go.meta.get("summary") or {}).get("parse_health"),
+                             a.after: (gn.meta.get("summary") or {}).get("parse_health")},
+            "symbol_integration": {a.before: (go.meta.get("summary") or {}).get("symbol_integration"),
+                                   a.after: (gn.meta.get("summary") or {}).get("symbol_integration")},
+            "interference": {a.before: go.meta.get("interference"), a.after: gn.meta.get("interference")},
+            "external_models": gn.meta.get("external_models"),
+            "cochange": None}
+    if cochange:
+        data["cochange"] = {"summary": cochange.summary(), "per_change": {
+            c["id"]: cochange.rules_from([x for x in {(c.get("old") or {}).get("file"), (c.get("new") or {}).get("file")} if x])
+            for c in results}}
     data["review"] = review_items(results, behavior, meta, scope)
     meta["seconds"] = round(time.time() - t0, 2)
     jp, hp = os.path.join(out, "impact.json"), os.path.join(out, "impact.html")
     write_json(jp, data)
     impact_report_html(data, hp)
     log(f"\n영향 분석 결과: {jp}\n검토 보고서:   {hp}  ({meta['seconds']}s)")
+    if a.strict and not rate_ok:
+        log("파싱 기준 미달(--strict): 종료 코드 2")
+        return 2
     log("\n기능별 판정:")
     for f in feats:
         log(f"  {f['feature']:<16} {f['overall']:<28} 관련 변경 {len(f['changes'])}개")

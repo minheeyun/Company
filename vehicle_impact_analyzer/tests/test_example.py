@@ -57,3 +57,13 @@ def test_classify_and_impact():
     assert "src/diag.c" in ch["type_layout_change"]["affected_tus"]
     # ISR -> 태스크 공유 상태와 콜백 테이블을 거친 경로가 존재
     assert os.path.isfile(os.path.join(OUT, "impact.html"))
+    # 2.5단계 MVP 결과와 평가(정답셋 대비 지표)
+    assert d["mvp"] and all("features" in m for m in d["mvp"])
+    p = subprocess.run([sys.executable, os.path.join(ROOT, "evaluate.py"), "--config", CFG, "--out", OUT,
+                        "--impact", os.path.join(OUT, "impact.json")], capture_output=True, text=True, timeout=600)
+    assert p.returncode == 0, p.stderr
+    ev = json.load(open(os.path.join(OUT, "evaluation.json"), encoding="utf-8"))
+    s = ev["summary"]
+    assert s["precise"]["feature"]["recall"] >= 0.9
+    assert s["precise+behavior"]["feature"]["precision"] >= s["precise"]["feature"]["precision"]
+    assert s["mvp"]["feature"]["precision"] <= s["precise"]["feature"]["precision"]

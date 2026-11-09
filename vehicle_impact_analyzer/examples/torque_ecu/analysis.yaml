@@ -23,3 +23,6 @@ analysis:
   exec_compare: auto        # 호스트 gcc로 전후 비교 실행(auto: 가능하면 수행)
 output_dir: out
 review_file: feature_review.yaml   # 검토자가 기능 연결을 확정/기각한 기록(선택)
+ground_truth: ground_truth.yaml    # 평가용 정답셋(evaluate.py)
+history:                           # 공변경 마이닝: git 저장소({git: 경로, subdir: ...}) 또는 JSON(예제용 샘플)
+  file: change_history.json

@@ -238,6 +238,7 @@ class ImpactAnalyzer:
                 "reached_observations": sorted({g.node(o).get("name") for a in reached for o in g.pred(a, [EK.OBSERVES])}),
                 "paths": paths, "chop_size": len(chop_set), "naive_intersection_size": len(naive),
                 "overapprox_removed": len(naive - chop_set),
+                "naive_functions": sorted({(g.func_of(n) or "").split(":")[-1] for n in naive if g.func_of(n)}),
                 "functions": sorted({(g.func_of(n) or "").split(":")[-1] for n in chop_set if g.func_of(n)}),
                 "function_ranking": [{"function": f.split(":")[-1], "distance": round(d, 2)}
                                      for f, d in sorted(fdist.items(), key=lambda x: x[1])][:15],

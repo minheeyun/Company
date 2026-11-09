@@ -1,0 +1,51 @@
+# 평가용 정답셋(예제). 실제 과제에서는 과거 변경 10~20건을 결함·리뷰·시험 기록으로 라벨링한다.
+# impacted_features: 이 변경으로 관찰 가능한 동작이 바뀔 수 있는 기능(사람 판단)
+# impacted_functions: 계산 값이나 실행이 달라질 수 있는 함수
+# behavior_changes: 기능 관찰값이 실제로 달라지는 기능(동작 검증 판정의 정답)
+note: "설명용 수동 라벨 — 예제 변경에 대한 검토자 판단"
+cases:
+  - id: GT01
+    description: Spd_Process 조기 반환(수신 무효 시 갱신 중단)과 그에 따른 읽기 이동
+    match: [{unit: Spd_Process, type: early_exit_added}, {unit: Spd_Process, type: assignment_added},
+            {unit: Spd_Process, type: code_moved}]
+    impacted_features: [F_SPEED_PROC, F_TQ_LIMIT, F_OUTPUT_CUTOFF]
+    behavior_changes: [F_SPEED_PROC]
+    impacted_functions: [Spd_Process, Flt_LowPass, Spd_GetFiltered, Tq_Task, CalcTorqueLimitPct, ComputeTorqueCommand,
+                         Out_ComputeOutput, Out_Task, Diag_CheckPlausibility]
+  - id: GT02
+    description: 디바운스 비교 연산자 > -> >=
+    match: [{unit: Diag_UpdateSensor, type: comparison_operator_change}]
+    impacted_features: [F_SENSOR_DIAG, F_OUTPUT_CUTOFF, F_TQ_LIMIT]
+    behavior_changes: [F_SENSOR_DIAG]
+    impacted_functions: [Diag_UpdateSensor, Diag_IsSensorFault, Diag_MainFunction, Tq_Task, CalcTorqueLimitPct,
+                         ComputeTorqueCommand, Out_ComputeOutput, Out_Task]
+  - id: GT03
+    description: 토크 제한 속도 임계값 30 -> 40
+    match: [{unit: CalcTorqueLimitPct, type: threshold_change}]
+    impacted_features: [F_TQ_LIMIT, F_OUTPUT_CUTOFF]
+    behavior_changes: [F_TQ_LIMIT]
+    impacted_functions: [CalcTorqueLimitPct, ComputeTorqueCommand, Tq_Task, Out_ComputeOutput, Out_Task]
+  - id: GT04
+    description: min 계산을 Tq_Min 호출로 리팩터링(동작 동일)
+    match: [{unit: ComputeTorqueCommand, type: call_added}, {unit: Tq_Min, type: function_added}]
+    impacted_features: []
+    behavior_changes: []
+    impacted_functions: []
+  - id: GT05
+    description: last_limit 기록 삭제(값이 항상 100 이하라 타당성 판정에 영향 없음)
+    match: [{unit: Tq_Task, type: assignment_removed}]
+    impacted_features: []
+    behavior_changes: []
+    impacted_functions: [Tq_Task]
+  - id: GT06
+    description: 사용하지 않는 지역변수(디버그 카운터 증가 부작용)
+    match: [{unit: Tq_Task, type: local_var_added}]
+    impacted_features: []
+    behavior_changes: []
+    impacted_functions: [Tq_Task, Dbg_ReadCounter]
+  - id: GT07
+    description: 최대 차속 매크로 300 -> 280
+    match: [{unit: SPD_MAX_KPH, type: macro_change}]
+    impacted_features: [F_SPEED_PROC]
+    behavior_changes: [F_SPEED_PROC]
+    impacted_functions: [Spd_Process, Diag_CheckPlausibility, Spd_GetFiltered]

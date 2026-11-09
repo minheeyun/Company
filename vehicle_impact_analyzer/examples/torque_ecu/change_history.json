@@ -1,0 +1,10 @@
+[
+  {"id": "h01", "files": ["src/torque.c", "include/torque.h", "include/ecu_config.h"]},
+  {"id": "h02", "files": ["src/torque.c", "src/output.c"]},
+  {"id": "h03", "files": ["src/diag.c", "include/diag.h"]},
+  {"id": "h04", "files": ["src/speed.c", "include/speed.h", "src/diag.c"]},
+  {"id": "h05", "files": ["src/torque.c", "src/output.c", "include/rte.h"]},
+  {"id": "h06", "files": ["src/speed.c", "src/filter.c"]},
+  {"id": "h07", "files": ["src/diag.c", "src/output.c"]},
+  {"id": "h08", "files": ["src/torque.c", "include/ecu_config.h"]}
+]
