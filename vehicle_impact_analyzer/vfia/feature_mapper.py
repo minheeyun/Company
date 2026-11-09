@@ -4,7 +4,13 @@
   keyword      식별자·주석·파일명에 기능 키워드(약어 확장 포함) 일치     ← 이름만으로 확정하지 않음
   similarity   요구사항/기능 설명과 TF-IDF 코사인 유사도                ← 보조 수단
   community    Louvain 군집에서 시드와 같은 묶음                       ← 묶음 ≠ 차량 기능
-  propagation  기능 시드에서 개인화 PageRank(라벨 전파, 다중 라벨 허용)
+  propagation  기능 시드에서 준지도 라벨 전파: Zhu-Ghahramani-Lafferty harmonic function을 기능마다
+               one-vs-rest로 적용(다른 기능의 시드를 음성 표본으로 고정)해 점수만 사용 → 다중 라벨 허용.
+               (networkx.node_classification.harmonic_function은 노드당 최고 라벨 하나만 돌려주고 방향
+               그래프를 지원하지 않으므로 같은 식을 무방향 가중 그래프에 직접 반복 계산)
+  recon        Software Reconnaissance(Wilde & Scully): 기능을 실행하는 시나리오와 실행하지 않는 시나리오의
+               실행 추적 차이로 '기능 고유' 코드와 '공용' 코드를 구분
+  cochange     과거 변경 이력에서 시드 파일과 함께 바뀐 파일(ROSE식 공변경 규칙)
   trace        기능 시나리오 실행 추적에서 실행됨                        ← 미실행 ≠ 무관
   slice        기능 관찰 대상(출력)의 후방 슬라이스에 포함              ← 가장 강한 구조적 근거
   seed/review  설계 정보의 시드, 검토자 확정
@@ -111,13 +117,42 @@ def personalized_pagerank(G: nx.Graph, seeds: Dict[str, float], alpha: float = 0
     return r
 
 
+def harmonic_scores(G: nx.Graph, positive: Set[str], negative: Set[str], max_iter: int = 200,
+                    tol: float = 1e-6) -> Optional[Dict[str, float]]:
+    """Harmonic function(Zhu et al., ICML 2003): 라벨 노드는 고정(양성 1, 음성 0), 나머지는
+    f(u) = Σ w(u,v) f(v) / Σ w(u,v) 를 만족하도록 반복(Gauss-Seidel). 음성 표본이 없으면 정의되지 않는다."""
+    pos = {n for n in positive if n in G}
+    neg = {n for n in negative if n in G and n not in pos}
+    if not pos or not neg:
+        return None
+    f = {n: (1.0 if n in pos else 0.0) for n in G}
+    for _ in range(max_iter):
+        delta = 0.0
+        for u in G:
+            if u in pos or u in neg:
+                continue
+            num = den = 0.0
+            for v, d in G[u].items():
+                w = d.get("weight", 1.0)
+                num += w * f[v]
+                den += w
+            nv = num / den if den else 0.0
+            delta = max(delta, abs(nv - f[u]))
+            f[u] = nv
+        if delta < tol:
+            break
+    return f
+
+
 class FeatureMapper:
     def __init__(self, g: AnalysisGraph, options: Optional[AnalysisOptions] = None,
-                 review_file: Optional[str] = None, traces: Optional[Dict[str, str]] = None, log=print):
+                 review_file: Optional[str] = None, traces: Optional[Dict[str, str]] = None, log=print,
+                 cochange=None):
         self.g = g
         self.opt = options or AnalysisOptions()
         self.review_file = review_file
         self.traces = traces or {}
+        self.cochange = cochange
         self.log = log
         self.features = [n for n in g.nodes_of(NK.FEATURE)]
 
@@ -183,7 +218,8 @@ class FeatureMapper:
         tfidf = TfIdf(docs)
         G = self.relation_graph()
         try:
-            comms = nx.community.louvain_communities(G, weight="weight", seed=42)
+            comms = nx.community.louvain_communities(G, weight="weight", seed=self.opt.louvain_seed,
+                                                     resolution=self.opt.louvain_resolution)
         except Exception:
             comms = [set(G.nodes)]
         comm_of = {}
@@ -194,6 +230,18 @@ class FeatureMapper:
         reviews = self._load_reviews()
         traces = self._load_traces()
 
+        # 기능별 양성 표본(설계 시드 + 관찰 대상 소유 요소) -> one-vs-rest 음성 표본
+        positives: Dict[str, Set[str]] = {}
+        for fid in self.features:
+            pos = set(g.node(fid).get("seeds") or [])
+            for o in g.succ(fid, [EK.HAS_OBSERVATION]):
+                for a in g.succ(o, [EK.OBSERVES]):
+                    if g.func_of(a):
+                        pos.add(g.func_of(a))
+                    if g.kind(a) == NK.LOCATION and g.node(a).get("root"):
+                        pos.add(g.node(a)["root"])
+            positives[fid] = pos
+        self.propagation_method = {}
         per_feature: Dict[str, Dict[str, dict]] = {}
         slices: Dict[str, Dict[str, Set[str]]] = {}
         for fid in self.features:
@@ -229,8 +277,17 @@ class FeatureMapper:
                     for w in g.pred(a, [EK.SIGNAL_WRITE]):
                         if g.func_of(w):
                             signal_writers.add(g.func_of(w))
-            ppr = personalized_pagerank(G, {s: 1.0 for s in set(seeds) | obs_owner}, alpha=self.opt.ppr_alpha)
-            pmax = max(ppr.values()) if ppr else 1.0
+            negatives = set().union(*[p for f2, p in positives.items() if f2 != fid]) if len(positives) > 1 else set()
+            hs = harmonic_scores(G, set(seeds) | obs_owner, negatives, self.opt.harmonic_max_iter)
+            if hs is not None:
+                ppr, pmax = hs, 1.0
+                self.propagation_method[fd.get("fid")] = "harmonic(one-vs-rest)"
+            else:
+                # 음성 표본이 없으면(기능 1개) harmonic function이 정의되지 않아 개인화 PageRank로 대체
+                ppr = personalized_pagerank(G, {s: 1.0 for s in set(seeds) | obs_owner}, alpha=self.opt.ppr_alpha)
+                pmax = max(ppr.values()) if ppr else 1.0
+                self.propagation_method[fd.get("fid")] = f"personalized PageRank(alpha={self.opt.ppr_alpha}) - 음성 표본 없음"
+            seed_files = {g.node(x).get("file") for x in set(seeds) | obs_owner if g.has_node(x) and g.node(x).get("file")}
             fvec = tfidf.vec(self.feature_doc(fid))
             kws = set()
             for kw in fd.get("keywords") or []:
@@ -254,8 +311,12 @@ class FeatureMapper:
                     ev.append({"type": "similarity", "detail": f"기능 설명·요구사항과 텍스트 유사도 {sim:.2f}"})
                     score += 0.15 * min(1.0, sim * 2)
                 pv = ppr.get(e, 0.0) / pmax if pmax else 0.0
-                if pv >= self.opt.feature_score_threshold and e not in seeds:
-                    ev.append({"type": "propagation", "detail": f"기능 시드에서 그래프 전파 점수 {pv:.2f}"})
+                harmonic = self.propagation_method.get(fd.get("fid"), "").startswith("harmonic")
+                thr = 0.5 if harmonic else self.opt.feature_score_threshold
+                if pv >= thr and e not in seeds:
+                    ev.append({"type": "propagation",
+                               "detail": (f"harmonic function 점수 {pv:.2f}(이 기능 vs 다른 기능 시드)" if harmonic
+                                          else f"기능 시드에서 그래프 전파 점수 {pv:.2f}")})
                     score += 0.25 * pv
                 if comm_of.get(e) in seed_comms and e not in seeds:
                     ev.append({"type": "community", "detail": f"시드와 같은 구조 군집 C{comm_of.get(e)}"})
@@ -266,10 +327,37 @@ class FeatureMapper:
                     ev.append({"type": "slice",
                                "detail": f"관찰 대상({', '.join(o.split(':', 1)[1] for o in obs)})의 후방 슬라이스에 포함(노드 {cnt}개)"})
                     score += 0.45
-                tr = traces.get(fd.get("fid"), {})
-                if g.node(e).get("name") in tr.get("functions", set()):
-                    ev.append({"type": "trace", "detail": f"시나리오 '{tr.get('scenario')}' 실행 추적에서 실행됨"})
-                    score += 0.1
+                recon = None
+                tr = traces.get(fd.get("fid"))
+                nm = g.node(e).get("name")
+                if tr and nm in tr["positive"]:
+                    if tr["negative_scenarios"]:
+                        if nm in tr["negative"]:
+                            recon = "common"
+                            ev.append({"type": "recon", "detail": "기능 시나리오와 다른 시나리오에서 모두 실행(공용 코드, "
+                                                                  "Software Reconnaissance)"})
+                            score += 0.05
+                        else:
+                            recon = "specific"
+                            ev.append({"type": "recon", "detail": f"기능 시나리오({', '.join(tr['positive_scenarios'])})에서만 "
+                                                                  "실행(기능 고유 코드, Software Reconnaissance)"})
+                            score += 0.3
+                    else:
+                        ev.append({"type": "trace", "detail": f"시나리오 '{', '.join(tr['positive_scenarios'])}' 실행 추적에서 실행됨"
+                                                              "(음성 시나리오 없음: 고유/공용 구분 불가)"})
+                        score += 0.1
+                if self.cochange and g.kind(e) in (NK.FUNCTION, NK.GLOBAL):
+                    ef = g.node(e).get("file")
+                    best = (0.0, 0, None)
+                    for sf in seed_files:
+                        if sf and ef and sf != ef:
+                            c, sup = self.cochange.confidence(sf, ef)
+                            if c > best[0]:
+                                best = (c, sup, sf)
+                    if best[0] >= 0.3 and best[1] >= 2:
+                        ev.append({"type": "cochange", "detail": f"변경 이력에서 {best[2]}와 함께 변경(신뢰도 {best[0]:.2f}, "
+                                                                 f"{best[1]}회)"})
+                        score += 0.05 * best[0]
                 if e in signal_writers:
                     ev.append({"type": "slice", "detail": "관찰 신호의 송신 지점을 포함"})
                 is_seed = e in seeds
@@ -282,7 +370,7 @@ class FeatureMapper:
                     continue
                 res[e] = {"score": round(min(score, 1.5), 3), "evidence": ev, "in_slice": in_slice,
                           "is_seed": is_seed, "obs_owner": e in obs_owner, "ppr": round(pv, 3), "sim": round(sim, 3),
-                          "community": comm_of.get(e)}
+                          "community": comm_of.get(e), "recon": recon}
             per_feature[fid] = res
 
         # 역할 판정(다중 라벨). 요소마다 '주 기능'(점수 최대 기능)을 정해 직접/지원을 구분한다.
@@ -309,6 +397,10 @@ class FeatureMapper:
                 text_ev = any(x["type"] in ("keyword", "similarity") for x in r["evidence"])
                 multi_use = fanin.get(e, 0) >= 2 or readers.get(e, 0) >= 2
                 if r["is_seed"] or r["obs_owner"]:
+                    role = "direct"
+                elif r.get("recon") == "common" and r["in_slice"]:
+                    role = "shared"
+                elif r["in_slice"] and r.get("recon") == "specific":
                     role = "direct"
                 elif r["in_slice"] and slice_count[e] >= self.opt.shared_feature_count and multi_use:
                     role = "shared"
@@ -375,8 +467,11 @@ class FeatureMapper:
             "graph_fingerprint": g.meta.get("input_fingerprint"),
             "features": result_features, "files": files, "unmapped": unmapped, "communities": communities,
             "method": {
-                "community": "Louvain(networkx, weight, seed=42)",
-                "propagation": f"개인화 PageRank(alpha={self.opt.ppr_alpha})",
+                "community": "Louvain(networkx, 가중치)",
+                "propagation": "; ".join(f"{k}: {v}" for k, v in sorted(self.propagation_method.items())),
+                "louvain": f"seed={self.opt.louvain_seed}, resolution={self.opt.louvain_resolution} (재현용 고정)",
+                "reconnaissance": "기능 실행 시나리오 vs 비실행 시나리오의 실행 함수 차이(Wilde & Scully)",
+                "cochange": (self.cochange.summary() if self.cochange else "변경 이력 미지정"),
                 "slice": "관찰 대상 기준 2단계 SDG 후방 슬라이스",
                 "text": "식별자 분해+약어 확장, TF-IDF 코사인",
             },
@@ -416,25 +511,57 @@ class FeatureMapper:
         return out
 
     def _load_traces(self) -> Dict[str, dict]:
-        """실행 추적: JSON {"feature","scenario","functions":[...]} 또는 텍스트(# feature: ID, 함수명 줄 단위)."""
-        out: Dict[str, dict] = {}
+        """실행 추적 -> 기능별 양성/음성 시나리오 집합(Software Reconnaissance).
+
+        형식(JSON, 단일 객체 또는 목록)
+          {"scenario": "...", "features": ["F_A", ...], "functions": [...]}   # 나열된 기능에 양성, 나머지 음성
+          {"scenario": "...", "feature": "F_A", "exercises": true|false, "functions": [...]}
+        텍스트: '# feature: F_A', '# exercises: false', '# scenario: name' 머리말 + 함수명 줄.
+        """
+        runs = []
         for scen, path in self.traces.items():
             if not path or not os.path.isfile(path):
                 continue
             if path.endswith(".json"):
                 d = json.load(open(path, encoding="utf-8"))
-                out[d["feature"]] = {"scenario": d.get("scenario", scen), "functions": set(d.get("functions", []))}
+                for x in (d if isinstance(d, list) else [d]):
+                    runs.append({"scenario": x.get("scenario", scen), "features": x.get("features"),
+                                 "feature": x.get("feature"), "exercises": x.get("exercises", True),
+                                 "functions": set(x.get("functions", []))})
             else:
-                fid = None
-                funcs = set()
+                fid, ex, name, funcs = None, True, scen, set()
                 for line in open(path, encoding="utf-8"):
                     line = line.strip()
                     if line.startswith("# feature:"):
                         fid = line.split(":", 1)[1].strip()
+                    elif line.startswith("# exercises:"):
+                        ex = line.split(":", 1)[1].strip().lower() not in ("false", "no", "0")
+                    elif line.startswith("# scenario:"):
+                        name = line.split(":", 1)[1].strip()
                     elif line and not line.startswith("#"):
                         funcs.add(line.split()[0])
-                if fid:
-                    out[fid] = {"scenario": scen, "functions": funcs}
+                runs.append({"scenario": name, "features": None, "feature": fid, "exercises": ex, "functions": funcs})
+        all_f = [self.g.node(f).get("fid") for f in self.features]
+        out: Dict[str, dict] = {}
+        for fid in all_f:
+            pos, neg, ps, ns = set(), set(), [], []
+            for r in runs:
+                if r["features"] is not None:
+                    hit = fid in r["features"]
+                elif r["feature"] == fid:
+                    hit = bool(r["exercises"])
+                elif r["feature"] is None:
+                    continue
+                else:
+                    continue
+                if hit:
+                    pos |= r["functions"]
+                    ps.append(r["scenario"])
+                else:
+                    neg |= r["functions"]
+                    ns.append(r["scenario"])
+            if ps:
+                out[fid] = {"positive": pos, "negative": neg, "positive_scenarios": ps, "negative_scenarios": ns}
         return out
 
 

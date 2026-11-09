@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from vfia.behavior_checker import BehaviorChecker          # noqa: E402
 from vfia.change_detector import detect_changes             # noqa: E402
+from vfia.cochange import load_cochange  # noqa: E402
 from vfia.config import load_config                         # noqa: E402
 from vfia.feature_mapper import FeatureMapper               # noqa: E402
 from vfia.impact_analyzer import ImpactAnalyzer, feature_summary  # noqa: E402
@@ -98,8 +99,9 @@ def main(argv=None) -> int:
     cres, cd = detect_changes(go, gn)
     log(f"  변경점 {len(cres['changes'])}개")
     log("기능 분류(양 버전, 같은 그래프 사용)...")
-    fmaps = {"old": FeatureMapper(go, cfg.options, cfg.review_file, cfg.traces, log).run(),
-             "new": FeatureMapper(gn, cfg.options, cfg.review_file, cfg.traces, log).run()}
+    cochange = load_cochange(cfg.history)
+    fmaps = {"old": FeatureMapper(go, cfg.options, cfg.review_file, cfg.traces, log, cochange).run(),
+             "new": FeatureMapper(gn, cfg.options, cfg.review_file, cfg.traces, log, cochange).run()}
     log("영향 추적(전방 ∩ 후방 슬라이스)...")
     results = ImpactAnalyzer(go, gn, cd, cres["changes"], fmaps, cfg.options.max_paths_per_feature).run()
     behavior = []

@@ -198,3 +198,32 @@ def test_context_sensitive_chop_excludes_unrealizable_nodes():
     assert not any(g.func_of(n) == "fn:B" for n in c.nodes)
     assert c.nodes <= naive_chop(g, [ai], ["loc:gv:out_a"])
     assert chop(g, [ai], ["loc:gv:out_b"]).reached_targets() == []
+
+
+def test_harmonic_one_vs_rest_matches_networkx_argmax_and_is_multilabel():
+    import networkx as nx
+    from vfia.feature_mapper import harmonic_scores
+    G = nx.Graph()
+    G.add_weighted_edges_from([("a", "x", 1), ("x", "y", 1), ("y", "b", 1), ("x", "s", 1), ("s", "y", 1)])
+    fa = harmonic_scores(G, {"a"}, {"b"})
+    fb = harmonic_scores(G, {"b"}, {"a"})
+    assert fa["x"] > 0.5 > fa["y"] and abs(fa["s"] - 0.5) < 1e-4      # s는 두 기능에 같은 정도로 걸침
+    assert abs(fa["s"] + fb["s"] - 1.0) < 1e-4
+    try:
+        import scipy  # noqa: F401
+    except ImportError:
+        return
+    for n in G:
+        G.nodes[n].pop("label", None)
+    G.nodes["a"]["label"], G.nodes["b"]["label"] = "A", "B"
+    pred = dict(zip(G.nodes, nx.node_classification.harmonic_function(G)))
+    for n in ("x", "y"):
+        assert pred[n] == ("A" if fa[n] > 0.5 else "B")
+
+
+def test_cochange_rules():
+    from vfia.cochange import CoChange
+    cc = CoChange([{"a.c", "b.c"}, {"a.c", "b.c", "x.arxml"}, {"a.c", "c.c"}, {"b.c"}], "t")
+    c, s = cc.confidence("a.c", "b.c")
+    assert s == 2 and abs(c - 2 / 3) < 1e-9
+    assert cc.rules_from(["a.c"], min_support=2)[0]["entity"] == "b.c"

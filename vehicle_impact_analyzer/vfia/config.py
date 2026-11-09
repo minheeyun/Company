@@ -97,6 +97,8 @@ class AnalysisConfig:
     options: AnalysisOptions
     review_file: Optional[str] = None
     traces: Dict[str, str] = field(default_factory=dict)
+    history: Dict[str, Any] = field(default_factory=dict)      # 공변경 마이닝 입력(git 저장소 또는 JSON)
+    ground_truth: Optional[str] = None                          # 평가용 정답셋
 
     @property
     def base_dir(self) -> str:
@@ -182,4 +184,6 @@ def load_config(path: str) -> AnalysisConfig:
         options=opts,
         review_file=_abs(base, raw.get("review_file")),
         traces=traces,
+        history={k: (_abs(base, v) if k in ("git", "file") else v) for k, v in (raw.get("history") or {}).items()},
+        ground_truth=_abs(base, raw.get("ground_truth")),
     )
