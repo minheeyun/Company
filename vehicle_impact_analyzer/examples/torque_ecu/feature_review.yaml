@@ -1,0 +1,14 @@
+# 검토자가 기능 연결을 확정(confirmed)하거나 기각(rejected)한 기록.
+# 기능 분류기를 다시 실행해도 이 결정은 유지된다.
+reviews:
+  - feature: F_TQ_LIMIT
+    element: fn:ComputeTorqueCommand
+    status: confirmed
+    reviewer: 검토자A
+    note: 관찰 대상 함수이므로 직접 구현으로 확정
+  - feature: F_SPEED_PROC
+    element: fn:Flt_LowPass
+    status: confirmed
+    role: shared
+    reviewer: 검토자A
+    note: 공용 필터(차속·토크 요청 공용)

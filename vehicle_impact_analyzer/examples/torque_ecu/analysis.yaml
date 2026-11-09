@@ -1,0 +1,25 @@
+# 변경 영향 분석 설정 (경로는 이 파일 기준 상대 경로)
+project: torque_ecu
+build:
+  # 분석한 차종·빌드 설정을 결과에 항상 표시한다.
+  name: "BASE 변형 (VARIANT_SPORT 미정의)"
+  extra_args: []            # 예: ["-DVARIANT_SPORT"]
+  variant_filter: null      # compile DB에 같은 파일의 빌드 설정이 여러 개일 때 선택 문자열
+versions:
+  before:
+    root: v1
+    compile_commands: v1/compile_commands.json
+    vehicle_model: [vehicle_model.yaml, execution_v1.yaml]
+  after:
+    root: v2
+    compile_commands: v2/compile_commands.json
+    vehicle_model: [vehicle_model.yaml, execution_v2.yaml]
+analysis:
+  loop_bound: 8             # 기호 실행 반복문 전개 한도(보고서에 표시)
+  inline_depth: 8           # 함수 인라인 깊이 한도
+  sequence_length: 5        # 상태 누적 기능의 기본 입력 시퀀스 길이
+  solver_timeout_ms: 20000
+  initial_state: initializers   # initializers | symbolic
+  exec_compare: auto        # 호스트 gcc로 전후 비교 실행(auto: 가능하면 수행)
+output_dir: out
+review_file: feature_review.yaml   # 검토자가 기능 연결을 확정/기각한 기록(선택)

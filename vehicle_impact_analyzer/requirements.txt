@@ -1,0 +1,5 @@
+libclang>=16.0
+networkx>=3.0
+z3-solver>=4.12
+PyYAML>=6.0
+pytest>=7.0

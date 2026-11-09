@@ -1,0 +1,164 @@
+"""핵심 알고리즘 단위 시험: CFG/CDG, Reaching Definitions, AST 차이, HRB 슬라이싱, 기호 실행."""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import z3  # noqa: E402
+
+from helpers import graph_of  # noqa: E402
+from vfia.ast_diff import diff  # noqa: E402
+from vfia.change_detector import detect_changes  # noqa: E402
+from vfia.model import EK, NK  # noqa: E402
+from vfia.slicing import backward_slice, forward_slice  # noqa: E402
+from vfia.symexec import Program, SymExec  # noqa: E402
+
+
+def stmt(g, func, text):
+    for n in g.nodes_of(NK.STMT):
+        d = g.node(n)
+        if d.get("func") == func and text in (d.get("text") or ""):
+            return n
+    raise AssertionError(f"{func}: '{text}' 문장 없음")
+
+
+SRC = r"""
+int g_out;
+int f(int a, int c) {
+    int x = 1;
+    if (c > 3) {
+        x = 2;
+        if (a) return 0;
+    }
+    while (a < 10) {
+        if (a == 5) break;
+        a++;
+    }
+    g_out = x + a;
+    return x;
+}
+"""
+
+
+def test_control_dependence_and_reaching_defs():
+    g, _ = graph_of({"a.c": SRC})
+    f = "fn:f"
+    cond = stmt(g, f, "c > 3")
+    x2 = stmt(g, f, "x = 2")
+    ret0 = stmt(g, f, "return 0")
+    out = stmt(g, f, "g_out = x + a")
+    # 제어 의존: x=2 는 (c>3)의 T 분기에 의존
+    assert any(s == cond and d["label"] == "T" for s, _, d in g.in_edges(x2, [EK.CONTROL]))
+    # 조기 return 뒤 문장(g_out=...)은 'if (a)' 조건의 F 분기에 제어 의존(return 하지 않을 때만 실행)
+    ctrls = {(g.node(s).get("text"), d["label"]) for s, _, d in g.in_edges(out, [EK.CONTROL])}
+    assert ("a", "F") in ctrls
+    # 데이터 의존: g_out = x + a 에 x=1, x=2 두 정의가 모두 도달
+    defs = {s for s, _, d in g.in_edges(out, [EK.DATA]) if d["label"] == "x"}
+    assert stmt(g, f, "int x = 1") in defs and x2 in defs
+    # 반복문: a++ 정의가 루프 조건에 도달(고정점)
+    inc = stmt(g, f, "a++")
+    loopc = stmt(g, f, "a < 10")
+    assert any(s == inc for s, _, _ in g.in_edges(loopc, [EK.DATA]))
+    assert ret0 in g.g
+
+
+def test_short_circuit_decomposition():
+    g, _ = graph_of({"a.c": "int h(void); int k(int a){ if (a && h()) return 1; return 0; }"})
+    a_cond = stmt(g, "fn:k", "a")
+    cs = [n for n in g.nodes_of(NK.CALL_SITE) if g.node(n).get("func") == "fn:k"][0]
+    # h() 호출은 a가 참일 때만 실행: 호출 정점이 a 조건에 제어 의존
+    assert any(s == a_cond for s, _, _ in g.in_edges(cs, [EK.CONTROL]))
+
+
+def test_ast_diff_threshold_and_operator():
+    a, _ = graph_of({"a.c": "int f(int s, int ok){ if (ok && s >= 30) return 80; return 100; }"})
+    b, _ = graph_of({"a.c": "int f(int s, int ok){ if (ok && s > 40) return 80; return 100; }"})
+    _, _, m, acts = diff(a.asts["fn:f"], b.asts["fn:f"])
+    ups = sorted(x.detail for x in acts if x.op == "update")
+    assert ups == ["30 -> 40", ">= -> >"]
+    res, _ = detect_changes(a, b)
+    types = {c["type"] for c in res["changes"]}
+    assert "comparison_operator_change" in types
+
+
+def test_hrb_context_sensitive_slice():
+    src = r"""
+    int id(int v) { return v; }
+    int out_a, out_b;
+    void A(int x) { out_a = id(x + 1); }
+    void B(int y) { out_b = id(y); }
+    """
+    g, _ = graph_of({"a.c": src})
+    seed = stmt(g, "fn:A", "out_a = id(x + 1)")
+    # x+1 인자(actual-in)에서 시작한 전방 슬라이스는 B의 out_b로 새어 나가면 안 된다
+    ai = [n for n in g.nodes_of(NK.ACTUAL_IN) if g.node(n).get("func") == "fn:A"][0]
+    fs = forward_slice(g, [ai])
+    assert "loc:gv:out_a" in fs
+    assert "loc:gv:out_b" not in fs
+    bs = backward_slice(g, ["loc:gv:out_b"])
+    assert stmt(g, "fn:B", "out_b = id(y)") in bs
+    assert seed not in bs
+
+
+def test_function_pointer_table_resolution():
+    src = r"""
+    int g1, g2;
+    static void cb1(void) { g1 = 1; }
+    static void cb2(void) { g2 = 1; }
+    typedef struct { int id; void (*cb)(void); } E;
+    static const E tbl[2] = { {0, cb1}, {1, cb2} };
+    void run(int i) { tbl[i].cb(); }
+    """
+    g, _ = graph_of({"a.c": src})
+    callees = {d for _, d, e in g.out_edges("fn:run", [EK.CALLS])}
+    assert {"fn:a.c:cb1", "fn:a.c:cb2"} <= callees
+
+
+def _prog(src):
+    g, _ = graph_of({"a.c": src})
+    return Program(g.asts, "p")
+
+
+def test_symexec_c_integer_semantics():
+    p = _prog(r"""
+    unsigned char add(unsigned char a, unsigned char b) { return a + b; }
+    int cmp(int a, unsigned int b) { return a < b; }
+    """)
+    ex = SymExec(p)
+    r = ex.run("fn:add", [z3.BitVecVal(200, 8), z3.BitVecVal(100, 8)])
+    assert z3.simplify(r).as_long() == 44            # 300 mod 256
+    ex = SymExec(p)
+    r = ex.run("fn:cmp", [z3.BitVecVal(-1 % 2**32, 32), z3.BitVecVal(1, 32)])
+    assert z3.simplify(r).as_long() == 0             # -1 은 unsigned로 변환되어 1보다 큼
+
+
+def test_symexec_xor_region_example():
+    old = _prog("int L(unsigned short s, _Bool ok){ if (ok && s >= 30U) return 80; return 100; }")
+    new = _prog("int L(unsigned short s, _Bool ok){ if (ok && s >= 40U) return 80; return 100; }")
+    s_ = z3.BitVec("s", 16)
+    ok = z3.BitVec("ok", 8)
+    ro = SymExec(old).run("fn:L", [s_, ok])
+    rn = SymExec(new).run("fn:L", [s_, ok])
+    sol = z3.Solver()
+    sol.add(z3.ULE(ok, 1), ro != rn)
+    assert sol.check() == z3.sat
+    sol.add(z3.Or(z3.ULT(s_, 30), z3.UGE(s_, 40), ok == 0))
+    assert sol.check() == z3.unsat                    # 차이는 30 <= s < 40, ok=1 에서만
+
+
+def test_symexec_loop_and_state():
+    p = _prog(r"""
+    static unsigned char cnt;
+    unsigned char tick(int on) { if (on) { if (cnt < 255U) cnt++; } else { cnt = 0; } return cnt; }
+    int sum(int n) { int s = 0; for (int i = 0; i < n; i++) { s += i; } return s; }
+    """)
+    ex = SymExec(p)
+    for _ in range(3):
+        r = ex.run("fn:tick", [z3.BitVecVal(1, 32)])
+    assert z3.simplify(r).as_long() == 3
+    ex = SymExec(p, loop_bound=8)
+    r = ex.run("fn:sum", [z3.BitVecVal(4, 32)])
+    assert z3.simplify(r).as_long() == 6
+    sol = z3.Solver()
+    sol.add(ex.unwind)
+    assert sol.check() == z3.unsat                    # n=4는 전개 한도 안

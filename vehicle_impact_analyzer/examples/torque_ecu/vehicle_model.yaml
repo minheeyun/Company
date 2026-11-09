@@ -1,0 +1,93 @@
+# 차량 기능 연결 정보: 요구사항·기능·관찰 대상·신호
+ecu: ECU_PT
+requirements:
+  - id: REQ_TQ_001
+    text: 차속이 기준 속도 이상이고 차속 센서가 정상이면 토크 명령을 제한값 이하로 제한한다 (torque limit by vehicle speed)
+  - id: REQ_DIAG_001
+    text: 차속 센서 고장이 연속으로 기준 횟수를 초과하면 센서 고장을 확정하고 DTC를 기록한다 (sensor fault debounce, dtc)
+  - id: REQ_OUT_001
+    text: 센서 고장이 확정되면 토크 출력 신호를 0으로 차단한다 (output cutoff on fault)
+  - id: REQ_SPD_001
+    text: CAN으로 수신한 차속을 필터링하고 최대 차속으로 제한한다 (speed filter, max speed clamp)
+features:
+  - id: F_TQ_LIMIT
+    name: 속도 조건 기반 토크 제한
+    description: 차속 기준 이상에서 토크 명령 제한 torque limit speed
+    requirements: [REQ_TQ_001]
+    keywords: [torque, limit, tq]
+    seeds:
+      functions: [CalcTorqueLimitPct]
+    observations:
+      - id: OBS_TQ_CMD
+        kind: function_return          # 함수 반환값을 관찰
+        function: ComputeTorqueCommand
+        params:                        # 입력 정의역(동작 차이 검증에 사용)
+          request_pct: [0, 100]
+          speed_kph: [0, 300]
+          sensor_ok: [0, 1]
+      - id: OBS_TQ_SIGNAL
+        kind: signal
+        signal: TqCmd_Value
+  - id: F_SENSOR_DIAG
+    name: 차속 센서 고장 진단(디바운스)
+    description: sensor fault debounce diagnosis dtc
+    requirements: [REQ_DIAG_001]
+    keywords: [diag, fault, debounce, dtc]
+    seeds:
+      functions: [Diag_UpdateSensor]
+    observations:
+      - id: OBS_SENSOR_FAULT
+        kind: global                   # 전역 상태를 관찰
+        variable: g_sensor_fault
+        function: Diag_UpdateSensor    # 동작 검증 시 반복 호출할 함수
+        sequence: 5                    # 상태 누적: 입력 시퀀스 길이
+        params:
+          raw_fault: [0, 1]
+      - id: OBS_DTC_SENSOR
+        kind: global
+        variable: g_dtc_sensor
+  - id: F_OUTPUT_CUTOFF
+    name: 고장 시 토크 출력 차단
+    description: output cutoff when sensor fault
+    requirements: [REQ_OUT_001]
+    keywords: [output, cutoff, out]
+    seeds:
+      functions: [Out_ComputeOutput]
+    observations:
+      - id: OBS_OUT
+        kind: function_return
+        function: Out_ComputeOutput
+        params:
+          cmd: [-100, 100]
+          fault: [0, 1]
+      - id: OBS_TQ_SIGNAL_OUT
+        kind: signal
+        signal: TqCmd_Value
+  - id: F_SPEED_PROC
+    name: 차속 신호 처리
+    description: vehicle speed filter clamp
+    requirements: [REQ_SPD_001]
+    keywords: [speed, spd, kph]
+    seeds:
+      functions: [Spd_Process]
+    observations:
+      - id: OBS_SPEED_FILTERED
+        kind: global
+        variable: s_filtered
+        function: Spd_Process
+        sequence: 3
+signals:
+  - name: TqCmd_Value
+    direction: tx
+    swc: SWC_Torque
+    consumers: [{ecu: ECU_BRAKE, swc: SWC_TractionCtrl}]
+  - name: TqReq_Value
+    direction: rx
+    producers: [{ecu: ECU_VCU, swc: SWC_DriverDemand}]
+  - name: VehicleSpeed
+    direction: rx
+    can_id: 0x1A0
+    readers:
+      - param: Can_RxIsr.raw          # ISR 매개변수로 수신
+calibrations: []
+arxml: [swc_torque.arxml]

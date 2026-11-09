@@ -1,0 +1,100 @@
+[
+  {
+    "directory": ".",
+    "file": "src/debug.c",
+    "arguments": [
+      "gcc",
+      "-Iinclude",
+      "-std=c99",
+      "-O2",
+      "-c",
+      "src/debug.c",
+      "-o",
+      "build/debug.o"
+    ]
+  },
+  {
+    "directory": ".",
+    "file": "src/diag.c",
+    "arguments": [
+      "gcc",
+      "-Iinclude",
+      "-std=c99",
+      "-O2",
+      "-c",
+      "src/diag.c",
+      "-o",
+      "build/diag.o"
+    ]
+  },
+  {
+    "directory": ".",
+    "file": "src/filter.c",
+    "arguments": [
+      "gcc",
+      "-Iinclude",
+      "-std=c99",
+      "-O2",
+      "-c",
+      "src/filter.c",
+      "-o",
+      "build/filter.o"
+    ]
+  },
+  {
+    "directory": ".",
+    "file": "src/os_tasks.c",
+    "arguments": [
+      "gcc",
+      "-Iinclude",
+      "-std=c99",
+      "-O2",
+      "-c",
+      "src/os_tasks.c",
+      "-o",
+      "build/os_tasks.o"
+    ]
+  },
+  {
+    "directory": ".",
+    "file": "src/output.c",
+    "arguments": [
+      "gcc",
+      "-Iinclude",
+      "-std=c99",
+      "-O2",
+      "-c",
+      "src/output.c",
+      "-o",
+      "build/output.o"
+    ]
+  },
+  {
+    "directory": ".",
+    "file": "src/speed.c",
+    "arguments": [
+      "gcc",
+      "-Iinclude",
+      "-std=c99",
+      "-O2",
+      "-c",
+      "src/speed.c",
+      "-o",
+      "build/speed.o"
+    ]
+  },
+  {
+    "directory": ".",
+    "file": "src/torque.c",
+    "arguments": [
+      "gcc",
+      "-Iinclude",
+      "-std=c99",
+      "-O2",
+      "-c",
+      "src/torque.c",
+      "-o",
+      "build/torque.o"
+    ]
+  }
+]
