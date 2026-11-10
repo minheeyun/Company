@@ -22,6 +22,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Union
 
+from . import portable as pt
 from .config import load_structured
 from .model import EK, NK, AnalysisGraph
 
@@ -104,8 +105,7 @@ def parse_a2l(path: str) -> Tuple[List[dict], List[dict]]:
     MEASUREMENT:    Name LongId Datatype Conversion Resolution Accuracy Lower Upper
     """
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            toks = _a2l_tokens(f.read())
+        toks = _a2l_tokens(pt.read_text_any(path))
     except OSError:
         return [], []
 

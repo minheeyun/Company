@@ -6,13 +6,16 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+sys.path.insert(0, ROOT)
+from vfia import portable as pt  # noqa: E402
 CFG = os.path.join(ROOT, "examples", "torque_ecu", "analysis.yaml")
 OUT = os.path.join(ROOT, "examples", "torque_ecu", "out_test")
 
 
 def _run(script, *args):
     p = subprocess.run([sys.executable, os.path.join(ROOT, script), "--config", CFG, "--out", OUT, "--quiet", *args],
-                       capture_output=True, text=True, timeout=600)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600,
+                       env=pt.subprocess_env_utf8())
     assert p.returncode == 0, p.stderr
 
 
@@ -60,7 +63,8 @@ def test_classify_and_impact():
     # 2.5단계 MVP 결과와 평가(정답셋 대비 지표)
     assert d["mvp"] and all("features" in m for m in d["mvp"])
     p = subprocess.run([sys.executable, os.path.join(ROOT, "evaluate.py"), "--config", CFG, "--out", OUT,
-                        "--impact", os.path.join(OUT, "impact.json")], capture_output=True, text=True, timeout=600)
+                        "--impact", os.path.join(OUT, "impact.json")], capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", timeout=600, env=pt.subprocess_env_utf8())
     assert p.returncode == 0, p.stderr
     ev = json.load(open(os.path.join(OUT, "evaluation.json"), encoding="utf-8"))
     s = ev["summary"]

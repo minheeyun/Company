@@ -16,6 +16,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from vfia import portable as pt  # noqa: E402
 from vfia.cochange import load_cochange  # noqa: E402
 from vfia.config import load_config                      # noqa: E402
 from vfia.feature_mapper import FeatureMapper, export_llm_prompts  # noqa: E402
@@ -34,6 +35,7 @@ def main(argv=None) -> int:
                     help="기능 미연결 군집에 대한 기능명 후보 생성용 LLM 프롬프트(JSONL) 내보내기")
     ap.add_argument("--quiet", action="store_true")
     a = ap.parse_args(argv)
+    pt.setup_console()
     log = (lambda *x: None) if a.quiet else print
     cfg = load_config(a.config)
     version = a.version or list(cfg.versions)[-1]
@@ -65,4 +67,5 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
+    pt.reexec_with_fixed_hash_seed()
     sys.exit(main())

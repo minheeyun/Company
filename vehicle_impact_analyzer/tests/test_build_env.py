@@ -39,20 +39,20 @@ def _project():
     root = make_project({"inc/adc.h": "typedef unsigned short uint16; extern uint16 g_adc_mv;\nvoid Adc_Main(void);\n",
                          "inc/cfg.h": "#define CFG_VALUE 3\n", "src/adc.c": SRC_ADC, "src/main.c": SRC_MAIN})
     log = os.path.join(root, "build.log")
-    with open(log, "w") as f:
+    with open(log, "w", encoding="utf-8") as f:
         f.write(LOG.replace("{root}", root))
     return root, log
 
 
 def test_build_log_and_translation():
     root, log = _project()
-    db = parse_build_log(open(log).read(), root)
+    db = parse_build_log(open(log, encoding="utf-8").read(), root)
     assert [os.path.basename(e["file"]) for e in db] == ["adc.c", "main.c"]
     assert db[0]["directory"] == root and detect_profile(db[0]["arguments"]) == "tasking"
     tr = translate(db[0]["arguments"], root, db[0]["file"], "tasking")
     assert "-std=c99" in tr.args and "-DECU_A=1" in tr.args and "-Dtrace" in tr.args
     assert f"-I{os.path.join(root, 'inc')}" in tr.args
-    assert ["-include", os.path.join(root, "inc/cfg.h")] == tr.args[tr.args.index("-include"):tr.args.index("-include") + 2]
+    assert ["-include", os.path.normpath(os.path.join(root, "inc/cfg.h"))] == tr.args[tr.args.index("-include"):tr.args.index("-include") + 2]
     assert "-Ctc39xb" in tr.dropped and "--core=tc1.6.2" in tr.dropped
 
 

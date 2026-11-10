@@ -29,6 +29,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import networkx as nx
 
+from . import portable as pt
 from .config import AnalysisOptions, load_structured
 from .model import EK, NK, AnalysisGraph
 from .slicing import backward_slice
@@ -523,14 +524,14 @@ class FeatureMapper:
             if not path or not os.path.isfile(path):
                 continue
             if path.endswith(".json"):
-                d = json.load(open(path, encoding="utf-8"))
+                d = json.loads(pt.read_text_any(path))
                 for x in (d if isinstance(d, list) else [d]):
                     runs.append({"scenario": x.get("scenario", scen), "features": x.get("features"),
                                  "feature": x.get("feature"), "exercises": x.get("exercises", True),
                                  "functions": set(x.get("functions", []))})
             else:
                 fid, ex, name, funcs = None, True, scen, set()
-                for line in open(path, encoding="utf-8"):
+                for line in pt.read_text_any(path).splitlines():
                     line = line.strip()
                     if line.startswith("# feature:"):
                         fid = line.split(":", 1)[1].strip()

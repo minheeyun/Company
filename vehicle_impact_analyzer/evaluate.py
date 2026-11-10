@@ -26,6 +26,7 @@ from typing import Dict, List, Optional, Set
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from vfia import portable as pt  # noqa: E402
 from vfia.config import load_config, load_structured  # noqa: E402
 from vfia.model import NK, Status  # noqa: E402
 
@@ -123,22 +124,29 @@ def run_goto_diff(cfg, before: str, after: str, workdir: str) -> Optional[Dict[s
     for name in (before, after):
         v = cfg.version(name)
         srcs = []
-        for root, _, files in os.walk(v.root):
-            srcs += [os.path.join(root, f) for f in files if f.endswith(".c")]
+        for root, dirs, files in os.walk(v.root):
+            dirs.sort()
+            srcs += [os.path.join(root, f) for f in sorted(files) if f.endswith(".c")]
         out = os.path.join(workdir, f"{name}.gb")
         incs = [x for a in v.args for x in [a]] or [f"-I{os.path.join(v.root, 'include')}"]
-        p = subprocess.run(["goto-cc", *incs, *srcs, "-o", out], capture_output=True, text=True)
+        try:
+            p = pt.run_text(["goto-cc", *incs, *srcs, "-o", out], timeout=600)
+        except (OSError, subprocess.SubprocessError):
+            return None
         if p.returncode != 0:
             return None
         gbs.append(out)
-    p = subprocess.run(["goto-diff", "--forward-impact", *gbs], capture_output=True, text=True, timeout=600)
+    try:
+        p = pt.run_text(["goto-diff", "--forward-impact", *gbs], timeout=600)
+    except (OSError, subprocess.SubprocessError):
+        return None
     lines: Dict[str, Set[int]] = {}
     for ln in p.stdout.splitlines():
         if " line " in ln and " file " in ln:
             try:
                 f = ln.split(" file ", 1)[1].split()[0]
                 n = int(ln.split(" line ", 1)[1].split()[0])
-                lines.setdefault(os.path.basename(f), set()).add(n)
+                lines.setdefault(pt.basename_any(f), set()).add(n)
             except (IndexError, ValueError):
                 continue
     return lines
@@ -153,6 +161,7 @@ def main(argv=None) -> int:
     ap.add_argument("--after", default="after")
     ap.add_argument("--out", default=None)
     a = ap.parse_args(argv)
+    pt.setup_console()
     cfg = load_config(a.config)
     out = a.out or cfg.output_dir
     os.makedirs(out, exist_ok=True)
@@ -167,7 +176,7 @@ def main(argv=None) -> int:
         import analyze_impact
         analyze_impact.main(["--config", a.config, "--before", a.before, "--after", a.after, "--out", out, "--quiet"])
     full_time = round(time.time() - t0, 2)
-    data = json.load(open(impact_path, encoding="utf-8"))
+    data = json.loads(pt.read_text_any(impact_path))
     g = None
     try:
         from vfia.pipeline import get_graph
@@ -283,4 +292,5 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
+    pt.reexec_with_fixed_hash_seed()
     sys.exit(main())

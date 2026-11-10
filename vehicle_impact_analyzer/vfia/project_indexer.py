@@ -20,7 +20,6 @@ import hashlib
 import json
 import os
 import re
-import shlex
 import tempfile
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
@@ -28,6 +27,7 @@ from typing import Dict, List, Optional, Tuple
 import clang.cindex as ci
 
 from . import clang_api as ca
+from . import portable as pt
 from .config import BuildConfig, VersionSpec
 
 K = ci.CursorKind
@@ -52,8 +52,8 @@ def _db_from_build_log(v: VersionSpec, build: BuildConfig) -> Optional[List[dict
     from .build_env import parse_build_log
     if not build.build_log or not os.path.isfile(build.build_log):
         return None
-    with open(build.build_log, "r", encoding="utf-8", errors="replace") as f:
-        return parse_build_log(f.read(), os.path.abspath(v.root), build.compiler, build.compiler_regex)
+    return parse_build_log(pt.read_text_any(build.build_log), os.path.abspath(v.root), build.compiler,
+                           build.compiler_regex)
 
 
 def load_compile_entries(v: VersionSpec, build: BuildConfig) -> Tuple[List[CompileEntry], List[str]]:
@@ -80,12 +80,15 @@ def load_compile_entries(v: VersionSpec, build: BuildConfig) -> Tuple[List[Compi
             if not os.path.isabs(d):   # 비표준이지만 이식성을 위해 compile DB 위치 기준 상대 경로 허용
                 d = os.path.normpath(os.path.join(db_dir, d))
                 e["directory"] = d
-            src = e["file"] if os.path.isabs(e["file"]) else os.path.normpath(os.path.join(d, e["file"]))
-            by_file.setdefault(src, []).append(e)
-        for src, es in sorted(by_file.items()):
-            if not src.startswith(root):
+            f = e["file"]
+            src = os.path.normpath(f if os.path.isabs(f) else os.path.join(d, f))
+            # Windows: 대소문자·구분자만 다른 같은 파일을 하나로 묶는다
+            by_file.setdefault(os.path.normcase(src), []).append(dict(e, _src=src))
+        for _key, es in sorted(by_file.items()):
+            src = es[0]["_src"]
+            rel = pt.rel_posix(src, root)
+            if rel is None:
                 continue
-            rel = os.path.relpath(src, root)
             if any(fnmatch.fnmatch(rel, pat) for pat in v.exclude):
                 continue
             chosen = es
@@ -102,7 +105,7 @@ def load_compile_entries(v: VersionSpec, build: BuildConfig) -> Tuple[List[Compi
                 chosen = chosen[:1]
             e = chosen[0]
             d = e.get("directory", root)
-            argv = e.get("arguments") or shlex.split(e.get("command", ""))
+            argv = e.get("arguments") or pt.split_command(e.get("command", ""))
             prof = detect_profile(argv, e.get("compiler_profile") or build.compiler)
             tr = translate(argv, d, src, prof)
             entries.append(CompileEntry(src, d, tr.args, origin, e.get("output"), prof, tr.dropped, argv))
@@ -117,7 +120,7 @@ def load_compile_entries(v: VersionSpec, build: BuildConfig) -> Tuple[List[Compi
             files.update(glob.glob(os.path.join(root, pat), recursive=True))
         prof = build.compiler if build.compiler != "auto" else "gcc"
         for src in sorted(files):
-            rel = os.path.relpath(src, root)
+            rel = pt.rel_posix(src, root) or os.path.basename(src)
             if any(fnmatch.fnmatch(rel, pat) for pat in v.exclude):
                 continue
             argv = ["cc"] + v.args
@@ -191,7 +194,7 @@ class TUExtractor:
         self.tu = tu
         self.root = os.path.abspath(root)
         self.entry = entry
-        self.main_rel = os.path.relpath(entry.file, self.root)
+        self.main_rel = pt.rel_posix(entry.file, self.root) or pt.to_posix(os.path.basename(entry.file))
         self.units: Dict[str, dict] = {}
         self.fn_decls: List[dict] = []
         self.global_decls: List[dict] = []
@@ -211,8 +214,9 @@ class TUExtractor:
         if name in self._rel_cache:
             return self._rel_cache[name]
         p = name if os.path.isabs(name) else os.path.join(self.entry.directory, name)
-        p = os.path.normpath(p)
-        r = os.path.relpath(p, self.root) if p.startswith(self.root + os.sep) else None
+        r = pt.rel_posix(p, self.root)
+        if r == ".":
+            r = None
         self._rel_cache[name] = r
         return r
 
@@ -325,7 +329,7 @@ class TUExtractor:
                 if dst not in self.files[src]["includes"]:
                     self.files[src]["includes"].append(dst)
         for rel, info in self.files.items():
-            absf = os.path.join(self.root, rel)
+            absf = pt.native(self.root, rel)
             info["hash"] = file_hash(absf)
             info["inactive"] = ca.skipped_ranges(self.tu, absf)
             conds = set()
@@ -956,7 +960,7 @@ class ProjectIndex:
     def source_lines(self, rel: str) -> List[str]:
         if rel not in self._src_cache:
             try:
-                with open(os.path.join(self.root, rel), "r", encoding="utf-8", errors="replace") as f:
+                with open(pt.native(self.root, rel), "r", encoding="utf-8", errors="replace") as f:
                     self._src_cache[rel] = f.read().split("\n")
             except OSError:
                 self._src_cache[rel] = []
@@ -1023,7 +1027,16 @@ class ProjectIndexer:
             args.append("-fparse-all-comments")
         res = None
         if self.build.clang_resource_dir == "auto":
-            res = ca.detect_resource_include()
+            info = ca.resource_include_info()
+            res = info["path"]
+            note = f"컴파일러 내장 헤더: {pt.to_posix(res)} ({info['source']})"
+            if info["fallback"]:
+                note += (" — stdint.h·stdbool.h 등 freestanding 헤더만 제공. stdio.h 같은 C 라이브러리 헤더가 필요하면"
+                         " LLVM을 설치하거나 build.system_includes에 툴체인 헤더 경로를 지정")
+            self._env_notes = sorted(set(self._env_notes) | {note})
+        elif self.build.clang_resource_dir == "builtin":
+            res = ca.BUILTIN_FALLBACK
+            self._env_notes = sorted(set(self._env_notes) | {"컴파일러 내장 헤더: vfia 대체 헤더(build.clang_resource_dir: builtin)"})
         elif self.build.clang_resource_dir:
             res = os.path.join(self.build.clang_resource_dir, "include")
         if res:
@@ -1035,7 +1048,9 @@ class ProjectIndexer:
     def _cache_path(self, e: CompileEntry, args: List[str]) -> Optional[str]:
         if not self.cache_dir:
             return None
-        h = _sha(json.dumps([os.path.relpath(e.file, self.v.root), args, ca.__name__, 5]).encode())
+        # 캐시 키에는 OS에 따라 달라지는 절대 경로 대신 상대 경로를 쓴다
+        rel_args = [pt.rel_or_abs(a, self.v.root) if os.path.isabs(a) else a for a in args]
+        h = _sha(json.dumps([pt.rel_or_abs(e.file, self.v.root), rel_args, ca.__name__, 6]).encode())
         return os.path.join(self.cache_dir, f"tu_{h}.json")
 
     def _cache_valid(self, path: str) -> Optional[dict]:
@@ -1045,7 +1060,7 @@ class ProjectIndexer:
         except (OSError, ValueError):
             return None
         for rel, h in data.get("deps", {}).items():
-            if file_hash(os.path.join(self.v.root, rel)) != h:
+            if file_hash(pt.native(self.v.root, rel)) != h:
                 return None
         return data
 
@@ -1070,7 +1085,7 @@ class ProjectIndexer:
                 try:
                     tu = index.parse(e.file, args=args, options=opts)
                 except ci.TranslationUnitLoadError as ex:
-                    idx.tus.append({"file": os.path.relpath(e.file, self.v.root), "args": args, "origin": e.origin,
+                    idx.tus.append({"file": pt.rel_or_abs(e.file, self.v.root), "args": args, "origin": e.origin,
                                     "errors": [f"파싱 불가: {ex}"]})
                     continue
                 res = TUExtractor(tu, self.v.root, e).run()
@@ -1108,7 +1123,7 @@ class ProjectIndexer:
         for t in idx.tus:
             rel = t["file"]
             try:
-                with open(os.path.join(self.v.root, rel), "r", encoding="utf-8", errors="replace") as f:
+                with open(pt.native(self.v.root, rel), "r", encoding="utf-8", errors="replace") as f:
                     text = f.read()
             except OSError:
                 continue

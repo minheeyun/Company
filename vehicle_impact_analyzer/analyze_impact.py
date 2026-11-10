@@ -18,6 +18,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from vfia import portable as pt  # noqa: E402
 from vfia.behavior_checker import BehaviorChecker          # noqa: E402
 from vfia.change_detector import detect_changes             # noqa: E402
 from vfia.cochange import load_cochange  # noqa: E402
@@ -91,6 +92,7 @@ def main(argv=None) -> int:
                     help="파싱 성공률이 기준(analysis.min_parse_success_rate) 미만이면 종료 코드 2")
     ap.add_argument("--quiet", action="store_true")
     a = ap.parse_args(argv)
+    pt.setup_console()
     log = (lambda *x: None) if a.quiet else print
     cfg = load_config(a.config)
     out = a.out or cfg.output_dir
@@ -183,4 +185,5 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
+    pt.reexec_with_fixed_hash_seed()
     sys.exit(main())

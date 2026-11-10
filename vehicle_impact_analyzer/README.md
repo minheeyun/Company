@@ -16,17 +16,34 @@
 | `analyze_impact.py` | 변경 전후 비교 → 영향 경로 → 기능별 상태 → 차이 조건·출력 변화 (`--level function`: 2.5단계 MVP만) |
 | `evaluate.py` | 정답셋 대비 정밀도·재현율·후보 수·시간·분석 범위, 기준선(baseline) 비교 |
 | `tools/make_compile_db.py` | 빌드 로그(TASKING/GHS/Diab/HighTec/gcc) → compile_commands.json |
+| `run_all.py` | 기능 분류 → 영향 분석 → 평가를 한 번에 실행 |
+| `tools/check_env.py` | 실행 환경 점검(패키지·libclang·내장 헤더·C 컴파일러·CBMC·git)과 설치 안내 |
 
 ## 설치
+
+Python 3.8 이상(Linux·Windows·macOS). 개발 환경은 Python 3.13이다.
 
 ```bash
 pip install -r requirements.txt
 ```
 
-libclang(휠 또는 `VFIA_LIBCLANG`), z3, networkx, PyYAML. 전후 비교 실행은 호스트 `gcc`, CBMC 기준선은
-`goto-cc`/`goto-diff`(선택)가 있으면 사용한다.
+```bash
+python tools/check_env.py
+```
+
+libclang(휠 또는 `VFIA_LIBCLANG`), z3, networkx, PyYAML. 전후 비교 실행은 호스트 C 컴파일러(gcc/cc/clang,
+`analysis.exec_compiler`로 지정 가능), CBMC 기준선은 `goto-cc`/`goto-diff`(선택)가 있으면 사용한다.
+Windows는 아래 [Windows에서 실행](#windows에서-실행) 참고.
 
 ## 빠른 시작(예제 ECU)
+
+세 단계를 한 번에:
+
+```bash
+python run_all.py --config examples/torque_ecu/analysis.yaml
+```
+
+단계별로:
 
 ```bash
 python classify_features.py --config examples/torque_ecu/analysis.yaml --version after
@@ -43,6 +60,61 @@ python evaluate.py --config examples/torque_ecu/analysis.yaml --impact examples/
 ```bash
 python -m pytest -q tests
 ```
+
+## Windows에서 실행
+
+PowerShell 기준이다. 경로 구분자는 `\`와 `/` 모두 된다.
+
+1. 저장소 받기(브랜치 지정 필수):
+
+```bash
+git clone -b claude/vehicle-impact-analyzer https://github.com/minheeyun/company.git
+```
+
+```bash
+cd company\vehicle_impact_analyzer
+```
+
+2. 패키지 설치와 환경 점검:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+```bash
+python tools\check_env.py
+```
+
+3. 실행:
+
+```bash
+python run_all.py --config examples\torque_ecu\analysis.yaml
+```
+
+결과는 `examples\torque_ecu\out\` 아래 `impact.html`, `features_after.html`, `evaluation.md`다.
+
+```bash
+start examples\torque_ecu\out\impact.html
+```
+
+선택 설치(`check_env.py`가 없다고 알려 주는 것만):
+
+| 항목 | 없으면 | 설치 |
+|---|---|---|
+| LLVM(Clang 내장 헤더) | vfia 대체 헤더(`vfia/builtin_include`: stdint·stdbool·stddef·limits·stdarg·float 등)로 분석. 예제는 결과 동일. `stdio.h` 같은 C 라이브러리 헤더를 쓰는 코드는 LLVM 또는 툴체인 헤더(`build.system_includes`) 필요 | `winget install --id LLVM.LLVM -e` |
+| MinGW-w64 gcc | 전후 비교 실행을 건너뛰고 기호 실행(z3) 결과만 사용 | `winget install --id BrechtSanders.WinLibs.POSIX.UCRT -e` |
+| CBMC | evaluate의 goto-diff 기준선만 빠짐 | CBMC Windows 설치본 |
+
+Windows에서 달라지는 점과 처리 방식:
+
+| 항목 | 처리 |
+|---|---|
+| 경로 | 프로젝트 안 경로는 항상 `src/a.c`처럼 `/`로 저장(노드 키·보고서·캐시가 OS와 무관). 대소문자·드라이브 차이 처리 |
+| 컴파일 명령 | compile DB의 `command`, 빌드 로그, 응답 파일(@file)을 Windows 따옴표 규칙으로 분리(`C:\경로` 보존, `cd /d`, `.exe`) |
+| 인코딩 | 출력 파일은 UTF-8. 입력(YAML·JSON·A2L·빌드 로그)은 UTF-8/BOM/UTF-16/cp949 자동 판별. 콘솔·파이프 출력에서 cp949로 표현할 수 없는 문자는 `?`로 바꿔 중단하지 않음 |
+| 줄바꿈 | CRLF 소스도 LF와 같은 그래프·결과(시험으로 확인). 저장소는 `.gitattributes`로 LF 고정 |
+| 전후 비교 실행 | fork가 없으므로 입력 벡터마다 하네스 프로세스를 새로 띄워 전역 상태를 초기화(병렬 실행). MinGW `%lld` 처리 |
+| 재현성 | 스크립트가 `PYTHONHASHSEED=0`으로 자신을 다시 실행하고 그래프 노드·간선 순서를 정규화해, 실행·OS가 달라도 같은 입력이면 같은 결과(시간 예산에 걸린 '부분' 조건은 기계 속도에 따라 달라질 수 있음) |
 
 ## 검토 의견 반영 내역
 
@@ -129,6 +201,7 @@ python -m pytest -q tests
 | `slicing` / `impact_analyzer` | HRB 슬라이싱, 문맥 민감 chop, 순위, 실행 문맥·공유 상태 |
 | `symexec` / `conditions` / `behavior_checker` | 유계 기호 실행(C 정수 의미, RTE, 캘리브레이션, MMIO), 차이 조건·설명, 분기 차이별 시험 입력, 전후 비교 실행 |
 | `mvp_impact` / `resources` / `assumptions` / `report_generator` | 2.5단계 MVP, 비기능 추정, 분석 가정, JSON/HTML |
+| `portable` / `builtin_include/` | OS 차이 흡수(경로·명령줄·인코딩·하위 프로세스·해시 시드), Clang 내장 헤더 대체본 |
 
 ## 기존 도구와의 관계(차별점)
 
@@ -167,5 +240,10 @@ python -m pytest -q tests
   판정 유보. 반복 전개·인라인 깊이·주기 수 범위 밖은 검증하지 않음. 차이 조건 도출은 시간 예산이 있어 입력이
   많고 넓으면 '부분'으로 표시.
 - **동시성**: 값 전달(간섭 의존)과 보호·원자성은 다루지만 선점 시점·실행시간(WCET)은 모델링하지 않음.
+- **시간 예산**: 차이 조건 도출의 시간 예산(`condition_budget_total_s`)은 실제 경과 시간 기준이라, 예산에 걸린
+  관찰 대상의 '부분' 조건·증거 입력은 기계 속도에 따라 달라질 수 있다(예산 안에 끝난 결론은 실행·OS와 무관하게 같음).
+- **Windows**: Windows 경로·명령줄·인코딩·CRLF·fork 없는 실행은 Linux에서 재현해 시험했고(`tests/test_portable.py`),
+  MinGW로 빌드한 실행 하네스는 Wine에서 Linux 빌드와 같은 출력을 확인했다. Windows 실제 기기에서의 전체 실행은
+  아직 확인하지 않았다.
 - **도구 신뢰**: 결과는 검토 보조용이다. 안전 관련 변경관리의 근거로 직접 쓰면 ISO 26262-8 소프트웨어 도구 신뢰도
   평가 대상이 될 수 있다.

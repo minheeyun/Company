@@ -25,6 +25,8 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import z3
 
+from . import clang_api as ca
+from . import portable as pt
 from .config import AnalysisOptions
 from .model import EK, NK, AnalysisGraph, Status
 from .conditions import InputVar, box_text, condition_text, derive_boxes, explain_box, feature_sentence
@@ -780,9 +782,9 @@ class BehaviorChecker:
         spec = ob["spec"]
         if spec["kind"] not in ("function_return", "global"):
             return {"status": "skipped", "reason": "신호·레지스터 관찰은 실행 하네스 미지원(모델 검증 결과 사용)"}
-        gcc = shutil.which("gcc") or shutil.which("cc")
+        gcc = host_compiler(self.opt)
         if not gcc:
-            return {"status": "skipped", "reason": "호스트 C 컴파일러 없음"}
+            return {"status": "skipped", "reason": "호스트 C 컴파일러 없음(gcc/cc/clang; Windows는 MinGW-w64 gcc 권장)"}
         fo, fn = self._fn_key(self.go, spec["function"]), self._fn_key(self.gn, spec["function"])
         if not fo or self.go.node(fo).get("static") or self.gn.node(fn).get("static"):
             return {"status": "skipped", "reason": "관찰 함수가 static이라 외부 시험 하네스에서 호출 불가"}
@@ -809,12 +811,16 @@ class BehaviorChecker:
                 return {"status": "skipped", "reason": f"{side} 빌드 실패: {err}"}
             if stubs:
                 notes.append(f"{side}: 외부 심벌 스텁 사용 {', '.join(sorted(stubs))} (양쪽 동일 동작으로 가정)")
+            lines_in = [" ".join(str(v) for step in vec for v in step) for vec in vectors]
             try:
-                inp = "\n".join(" ".join(str(v) for step in vec for v in step) for vec in vectors) + "\n"
-                p = subprocess.run([exe], input=inp, capture_output=True, text=True, timeout=60)
-                outs[side] = p.stdout.strip().split("\n")
+                outs[side] = run_harness(exe, lines_in, per_process=exec_per_process())
             except subprocess.TimeoutExpired:
                 return {"status": "skipped", "reason": f"{side} 실행 시간 초과"}
+            except OSError as ex:
+                return {"status": "skipped", "reason": f"{side} 실행 실패: {ex}"}
+            if len(outs[side]) != len(vectors):
+                return {"status": "skipped", "reason": f"{side} 실행 결과 수 불일치({len(outs[side])}/{len(vectors)}):"
+                                                      " 관찰 함수가 비정상 종료했을 수 있음"}
         diffs = []
         for vec, a, b in zip(vectors, outs["old"], outs["new"]):
             if a != b:
@@ -828,7 +834,8 @@ class BehaviorChecker:
         self.__dict__.setdefault("_meta_by_name", {})[ob["obs"]] = meta
         return {"status": Status.EXEC_DIFF if diffs else Status.EXEC_NO_DIFF, "vectors": len(vectors),
                 "diff_count": len(diffs), "diffs": diffs[:20], "notes": notes, "workdir": work,
-                "compiler": os.path.basename(gcc)}
+                "compiler": os.path.basename(gcc),
+                "isolation": "벡터별 프로세스" if exec_per_process() else "fork(벡터별 자식 프로세스)"}
 
     def _vectors(self, spec: dict, params: List[dict], steps: int, model_res: dict) -> List[List[List[int]]]:
         doms = spec.get("params") or {}
@@ -875,14 +882,17 @@ class BehaviorChecker:
         objdir = os.path.join(work, side)
         os.makedirs(objdir, exist_ok=True)
         objs = []
+        skip_inc = {os.path.normcase(os.path.normpath(x)) for x in (ca.detect_resource_include(), ca.BUILTIN_FALLBACK)
+                    if x}
         for t in g.meta.get("tus", []):
-            src = os.path.join(root, t["file"])
+            src = pt.native(root, t["file"])
             args = []
             it = iter(t.get("args", []))
             for a in it:
                 if a == "-isystem":
                     nxt = next(it, "")
-                    if "/clang/" in nxt:
+                    # 분석용 Clang 내장 헤더는 호스트 컴파일러 빌드에 넣지 않는다
+                    if "/clang/" in nxt.replace("\\", "/") or os.path.normcase(os.path.normpath(nxt)) in skip_inc:
                         continue
                     args += [a, nxt]
                     continue
@@ -897,7 +907,7 @@ class BehaviorChecker:
                         args.append(a)
             obj = os.path.join(objdir, re.sub(r"[^\w]", "_", t["file"]) + ".o")
             cmd = [gcc] + args + ["-w", "-O0", "-fno-common", "-Dmain=vfia_unused_main", "-c", src, "-o", obj]
-            p = subprocess.run(cmd, capture_output=True, text=True, cwd=root)
+            p = pt.run_text(cmd, cwd=root)
             if p.returncode != 0:
                 return None, f"{t['file']}: {p.stderr.strip()[:300]}", None
             objs.append(obj)
@@ -907,40 +917,94 @@ class BehaviorChecker:
         proto = f"extern {ret_cn} {spec['function']}({', '.join((p.get('ty') or {}).get('cn', 'int') for p in params) or 'void'});"
         steps = int(spec.get("sequence") or (1 if spec["kind"] == "function_return" else self.opt.sequence_length))
         n = len(params)
-        lines = ["#include <stdio.h>", "#include <stdlib.h>", "#include <unistd.h>", "#include <sys/wait.h>", proto]
+        # 입력 벡터마다 전역 상태를 초기 상태로 되돌려야 한다.
+        #  POSIX: 한 프로세스가 벡터마다 fork한 자식에서 실행(빠름)
+        #  Windows(또는 VFIA_EXEC_PER_PROCESS=1): 벡터 하나를 실행하고 종료, 파이썬이 벡터마다 프로세스를 띄움
+        lines = ["#define __USE_MINGW_ANSI_STDIO 1   /* MinGW: printf/scanf의 %lld를 C99 방식으로 */",
+                 "#include <stdio.h>", "#include <stdlib.h>",
+                 "#if !defined(_WIN32) && !defined(VFIA_PER_PROCESS)",
+                 "#include <unistd.h>", "#include <sys/types.h>", "#include <sys/wait.h>", "#define VFIA_FORK 1",
+                 "#endif", proto]
         if gvar:
             lines.append(f"extern {gvar[1]} {gvar[0]};")
-        lines += ["int main(void) {", f"  long long v[{max(1, steps * n)}];", "  for (;;) {", "    int ok = 1;",
-                  f"    for (int i = 0; i < {steps * n}; i++) if (scanf(\"%lld\", &v[i]) != 1) {{ ok = 0; break; }}",
-                  "    if (!ok) break;", "    fflush(stdout);", "    pid_t pid = fork();", "    if (pid == 0) {"]
+        lines += [f"static long long v[{max(1, steps * n)}];", "static void vfia_run(void) {"]
         for k in range(steps):
             args = ", ".join(f"({(p.get('ty') or {}).get('cn', 'int')})v[{k * n + i}]" for i, p in enumerate(params))
             if spec["kind"] == "function_return":
-                lines.append(f"      printf(\"%lld \", (long long){spec['function']}({args}));")
+                lines.append(f"  printf(\"%lld \", (long long){spec['function']}({args}));")
             else:
-                lines.append(f"      {spec['function']}({args}); printf(\"%lld \", (long long){gvar[0]});")
-        lines += ["      printf(\"\\n\"); fflush(stdout); _exit(0);", "    }", "    int st; waitpid(pid, &st, 0);",
-                  "  }", "  return 0;", "}"]
-        with open(harness, "w") as f:
+                lines.append(f"  {spec['function']}({args}); printf(\"%lld \", (long long){gvar[0]});")
+        lines += ["  printf(\"\\n\"); fflush(stdout);", "}",
+                  "static int vfia_read(void) {",
+                  f"  for (int i = 0; i < {steps * n}; i++) if (scanf(\"%lld\", &v[i]) != 1) return 0;",
+                  "  return 1;", "}",
+                  "int main(void) {",
+                  "#ifdef VFIA_FORK",
+                  "  while (vfia_read()) {",
+                  "    fflush(stdout);",
+                  "    pid_t pid = fork();",
+                  "    if (pid == 0) { vfia_run(); _exit(0); }",
+                  "    int st; waitpid(pid, &st, 0);",
+                  "    if (!WIFEXITED(st) || WEXITSTATUS(st) != 0) { printf(\"CRASH\\n\"); fflush(stdout); }",
+                  "  }",
+                  "#else",
+                  "  if (vfia_read()) vfia_run();",
+                  "#endif",
+                  "  return 0;", "}"]
+        with open(harness, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
-        exe = os.path.join(objdir, "vfia_harness")
+        exe = os.path.join(objdir, "vfia_harness" + pt.EXE_SUFFIX)
         stubs: Set[str] = set()
         for attempt in range(3):
             extra = []
             if stubs:
                 sp = os.path.join(objdir, "vfia_stubs.c")
-                with open(sp, "w") as f:
+                with open(sp, "w", encoding="utf-8") as f:
                     for s in sorted(stubs):
                         f.write(f"long long {s}() {{ return 0; }}\n")
                 extra = [sp]
-            p = subprocess.run([gcc, "-w", "-O0", harness] + objs + extra + ["-o", exe], capture_output=True, text=True)
+            defs = ["-DVFIA_PER_PROCESS"] if exec_per_process() else []
+            p = pt.run_text([gcc, "-w", "-O0"] + defs + [harness] + objs + extra + ["-o", exe])
             if p.returncode == 0:
                 return exe, None, stubs
-            und = set(re.findall(r"undefined reference to [`']([\w]+)'", p.stderr))
+            und = set(re.findall(r"undefined reference to [`']_?([\w]+)'", p.stderr))
+            und |= set(re.findall(r"unresolved external symbol _?(\w+)", p.stderr))   # MSVC 링커(clang on Windows)
             if not und or und <= stubs:
                 return None, p.stderr.strip()[:300], None
             stubs |= und
         return None, "링크 실패", None
+
+
+def exec_per_process() -> bool:
+    """fork가 없는 Windows에서는 입력 벡터마다 하네스 프로세스를 새로 띄운다(시험용 강제: VFIA_EXEC_PER_PROCESS=1)."""
+    return pt.IS_WINDOWS or os.environ.get("VFIA_EXEC_PER_PROCESS") == "1"
+
+
+def host_compiler(opt) -> Optional[str]:
+    """전후 비교 실행에 쓸 호스트 C 컴파일러. analysis.exec_compiler로 지정 가능(auto: gcc -> cc -> clang)."""
+    want = getattr(opt, "exec_compiler", "auto") or "auto"
+    if want != "auto":
+        return shutil.which(want) or (want if os.path.isfile(want) else None)
+    for c in ("gcc", "cc", "clang"):
+        path = shutil.which(c)
+        if path:
+            return path
+    return None
+
+
+def run_harness(exe: str, lines_in: List[str], per_process: bool, timeout: float = 60.0) -> List[str]:
+    """하네스 실행 결과(입력 줄마다 출력 한 줄). Windows 텍스트 모드의 CRLF는 정규화한다."""
+    if not per_process:
+        p = pt.run_text([exe], input="\n".join(lines_in) + "\n", timeout=timeout)
+        return [ln.strip() for ln in p.stdout.splitlines() if ln.strip()]
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(line: str) -> str:
+        p = pt.run_text([exe], input=line + "\n", timeout=timeout)
+        out = [ln.strip() for ln in p.stdout.splitlines() if ln.strip()]
+        return out[0] if out and p.returncode == 0 else "CRASH"
+    with ThreadPoolExecutor(max_workers=max(1, min(8, os.cpu_count() or 1))) as ex:
+        return list(ex.map(one, lines_in))
 
 
 def rte_map(g: AnalysisGraph) -> Dict[str, dict]:

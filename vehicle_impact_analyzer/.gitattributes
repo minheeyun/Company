@@ -1,0 +1,5 @@
+# 예제·소스·설정은 운영체제와 관계없이 LF로 체크아웃한다(Windows의 core.autocrlf가 CRLF로 바꾸지 않도록).
+# 분석기는 CRLF 소스도 같은 결과를 내지만, 예제의 입력 지문(파일 해시)과 보고서를 OS 간에 같게 유지하기 위함.
+* text=auto eol=lf
+*.db binary
+*.png binary

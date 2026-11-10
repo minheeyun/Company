@@ -12,6 +12,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from vfia import portable as pt  # noqa: E402
 from vfia.build_env import parse_build_log, translate, write_compile_db  # noqa: E402
 
 
@@ -24,14 +25,14 @@ def main(argv=None) -> int:
     ap.add_argument("-o", "--out", default="compile_commands.json")
     ap.add_argument("--show-translation", action="store_true", help="Clang 변환 결과와 제거된 옵션 출력")
     a = ap.parse_args(argv)
-    with open(a.log, "r", encoding="utf-8", errors="replace") as f:
-        db = parse_build_log(f.read(), os.path.abspath(a.root), a.compiler, a.compiler_regex)
+    pt.setup_console()
+    db = parse_build_log(pt.read_text_any(a.log), os.path.abspath(a.root), a.compiler, a.compiler_regex)
     write_compile_db(db, a.out)
     print(f"컴파일 명령 {len(db)}개 -> {a.out}")
     if a.show_translation:
         for e in db:
             tr = translate(e["arguments"], e["directory"], e["file"], e["compiler_profile"])
-            print(f"- {os.path.relpath(e['file'], a.root)} [{e['compiler_profile']}]")
+            print(f"- {pt.rel_or_abs(e['file'], a.root)} [{e['compiler_profile']}]")
             print(f"    clang: {' '.join(tr.args)}")
             print(f"    제거: {' '.join(tr.dropped)}")
     return 0 if db else 1

@@ -15,6 +15,7 @@ import re
 from collections import defaultdict
 from typing import Dict, List, Optional, Set, Tuple
 
+from . import portable as pt
 from .ast_diff import Mapping, Tree, diff, similarity
 from .model import EK, NK, AnalysisGraph, walk_ast
 
@@ -93,7 +94,7 @@ class SourceView:
             return []
         if rel not in self.cache:
             try:
-                with open(os.path.join(self.root, rel), "r", encoding="utf-8", errors="replace") as f:
+                with open(pt.native(self.root, rel), "r", encoding="utf-8", errors="replace") as f:
                     self.cache[rel] = f.read().split("\n")
             except OSError:
                 self.cache[rel] = []
@@ -971,7 +972,7 @@ class ChangeDetector:
             out = set()
             for pat in ("**/*.c", "**/*.h"):
                 for f in glob.glob(os.path.join(root, pat), recursive=True):
-                    out.add(os.path.relpath(f, root))
+                    out.add(pt.rel_posix(f, root))
             return out
         olds, news = files(ro), files(rn)
         pairs = []

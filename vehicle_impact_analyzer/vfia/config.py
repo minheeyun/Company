@@ -11,11 +11,13 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from . import portable as pt
+
 
 def load_structured(path: str) -> Any:
-    with open(path, "r", encoding="utf-8") as f:
-        text = f.read()
-    if path.endswith((".yaml", ".yml")):
+    # Windows 메모장 등으로 저장한 파일(UTF-8 BOM, UTF-16, cp949)도 읽는다
+    text = pt.read_text_any(path)
+    if path.lower().endswith((".yaml", ".yml")):
         try:
             import yaml  # type: ignore
         except ImportError as e:  # pragma: no cover
@@ -70,6 +72,7 @@ class AnalysisOptions:
     max_witnesses: int = 3
     exec_compare: str = "auto"               # auto | on | off
     exec_max_vectors: int = 2000
+    exec_compiler: str = "auto"              # 전후 비교 실행용 호스트 컴파일러(auto: gcc -> cc -> clang)
     ppr_alpha: float = 0.25                  # 시드 전파 재시작 확률
     feature_score_threshold: float = 0.02
     shared_feature_count: int = 2            # 이 개수 이상의 기능에 연결되면 공용 역할

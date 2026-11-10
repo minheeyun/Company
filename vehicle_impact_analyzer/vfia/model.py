@@ -258,18 +258,23 @@ class AnalysisGraph:
         cur.execute("CREATE TABLE diags (data TEXT)")
         cur.executemany("INSERT INTO meta VALUES (?, ?)",
                         [(k, json.dumps(v, ensure_ascii=False)) for k, v in self.meta.items()])
+        # 정렬된 순서로 저장한다. 그래프의 노드·간선 순서는 Louvain·탐색 순서에 영향을 주므로,
+        # 실행마다(해시 무작위화) 또는 운영체제마다 달라지지 않도록 정규 순서로 고정한다.
         rows = []
         for nid, data in self.g.nodes(data=True):
             attrs = {k: v for k, v in data.items() if k != "kind"}
-            rows.append((nid, data.get("kind"), json.dumps(attrs, ensure_ascii=False)))
+            rows.append((nid, data.get("kind"), json.dumps(attrs, ensure_ascii=False, sort_keys=True, default=str)))
+        rows.sort()
         cur.executemany("INSERT INTO nodes VALUES (?, ?, ?)", rows)
         erows = []
         for s, d, data in self.g.edges(data=True):
             attrs = {k: v for k, v in data.items() if k not in ("kind", "label")}
-            erows.append((s, d, data["kind"], data.get("label", ""), json.dumps(attrs, ensure_ascii=False)))
+            erows.append((s, d, data["kind"], data.get("label", "") or "",
+                          json.dumps(attrs, ensure_ascii=False, sort_keys=True, default=str)))
+        erows.sort()
         cur.executemany("INSERT INTO edges VALUES (?, ?, ?, ?, ?)", erows)
         cur.executemany("INSERT INTO asts VALUES (?, ?)",
-                        [(k, json.dumps(v, ensure_ascii=False)) for k, v in self.asts.items()])
+                        [(k, json.dumps(v, ensure_ascii=False)) for k, v in sorted(self.asts.items())])
         cur.executemany("INSERT INTO diags VALUES (?)",
                         [(json.dumps(d, ensure_ascii=False),) for d in self.diagnostics])
         cur.execute("CREATE INDEX edges_src ON edges(src)")
@@ -284,12 +289,12 @@ class AnalysisGraph:
         g = cls()
         for k, v in cur.execute("SELECT k, v FROM meta"):
             g.meta[k] = json.loads(v)
-        for nid, kind, attrs in cur.execute("SELECT id, kind, attrs FROM nodes"):
+        for nid, kind, attrs in cur.execute("SELECT id, kind, attrs FROM nodes ORDER BY rowid"):
             g.g.add_node(nid, kind=kind, **json.loads(attrs))
             g._by_kind[kind].add(nid)
-        for s, d, kind, label, attrs in cur.execute("SELECT src, dst, kind, label, attrs FROM edges"):
+        for s, d, kind, label, attrs in cur.execute("SELECT src, dst, kind, label, attrs FROM edges ORDER BY rowid"):
             g.add_edge(s, d, kind, label, **json.loads(attrs))
-        for unit, data in cur.execute("SELECT unit, data FROM asts"):
+        for unit, data in cur.execute("SELECT unit, data FROM asts ORDER BY rowid"):
             g.asts[unit] = json.loads(data)
         for (data,) in cur.execute("SELECT data FROM diags"):
             g.diagnostics.append(json.loads(data))

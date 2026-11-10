@@ -130,9 +130,18 @@ def derive_boxes(base: List, region, vars_: Sequence[InputVar], max_boxes: int =
             "seconds": round(time.time() - t0, 2), "domains": {v.name: [v.lo, v.hi] for v in vars_}}
 
 
+def _natural_key(name: str):
+    """'x[단계10]'이 'x[단계2]' 뒤에 오도록 숫자는 수 크기로 비교(출력 순서를 실행·OS와 무관하게 고정)."""
+    import re
+    return [(0, int(t), "") if t.isdigit() else (1, 0, t) for t in re.split(r"(\d+)", name)]
+
+
 def box_text(box: Dict[str, List[int]], domains: Dict[str, List[int]]) -> str:
     parts = []
-    for k, (lo, hi) in box.items():
+    # 함수 인자는 선언 순서 그대로, 단계별 환경 입력('이름[단계k, ...]')은 이름·단계 순으로 정렬
+    order = {k: i for i, k in enumerate(box)}
+    for k, (lo, hi) in sorted(box.items(), key=lambda kv: (0, order[kv[0]], []) if "[" not in kv[0]
+                              else (1, 0, _natural_key(kv[0]))):
         dlo, dhi = domains.get(k, [None, None])
         if lo == dlo and hi == dhi:
             continue

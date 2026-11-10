@@ -14,9 +14,10 @@ from __future__ import annotations
 import json
 import os
 import re
-import shlex
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
+
+from . import portable as pt
 
 # 컴파일러 프로필: 실행 파일 이름, 미리 정의 매크로, 대리 target, 옵션 형식
 PROFILES: Dict[str, dict] = {
@@ -123,20 +124,26 @@ def detect_profile(argv: List[str], configured: Optional[str] = None) -> str:
         return configured
     if not argv:
         return "gcc"
-    exe = os.path.basename(argv[0]).lower()
+    exe = _exe_name(argv[0])
     for name, p in PROFILES.items():
-        if exe in p["exe"]:
+        if exe in {_exe_name(x) for x in p["exe"]}:
             return name
-    if exe.endswith(("gcc", "gcc.exe")):
+    if exe.endswith("gcc"):
         return "gcc"
     if exe.startswith("clang"):
         return "clang"
     return "gcc"
 
 
+def _exe_name(p: str) -> str:
+    """'C:\\Tools\\ctc.EXE' -> 'ctc' (경로·확장자·대소문자 무시)."""
+    exe = pt.basename_any(p.strip('"')).lower()
+    return exe[:-4] if exe.endswith(".exe") else exe
+
+
 def _abs(directory: str, p: str) -> str:
     p = p.strip('"')
-    return p if os.path.isabs(p) else os.path.normpath(os.path.join(directory, p))
+    return p if pt.is_abs_any(p) else os.path.normpath(os.path.join(directory, p))
 
 
 def translate(argv: List[str], directory: str, src: str, profile_name: str) -> TranslatedArgs:
@@ -284,7 +291,7 @@ def clang_args_for(profile_name: str, translated: List[str], build, cache_dir: O
 
 # ---------------------------------------------------------------------------
 _ENTER_DIR = re.compile(r"(?:make|ninja)(?:\[\d+\])?: Entering directory [`'\"](.+?)['\"`]")
-_CD = re.compile(r"^\s*cd\s+(?:/d\s+)?(\"[^\"]+\"|\S+)\s*(?:&&|;|$)")
+_CD = re.compile(r"^\s*cd\s+(?:/d\s+)?(\"[^\"]+\"|\S+)\s*(?:&&|;|$)", re.I)
 
 
 def parse_build_log(log_text: str, base_dir: str, profile: str = "auto",
@@ -297,7 +304,7 @@ def parse_build_log(log_text: str, base_dir: str, profile: str = "auto",
     exes = set()
     for name, p in PROFILES.items():
         if profile in ("auto", name):
-            exes.update(e.lower() for e in p["exe"])
+            exes.update(_exe_name(e) for e in p["exe"])
     rx = re.compile(compiler_regex) if compiler_regex else None
     cwd = base_dir
     out = []
@@ -315,13 +322,11 @@ def parse_build_log(log_text: str, base_dir: str, profile: str = "auto",
             line = line[m.end():].strip()
             if not line:
                 continue
-        try:
-            toks = shlex.split(line, posix=os.name != "nt")
-        except ValueError:
-            continue
+        windows = pt.IS_WINDOWS or pt.looks_windows_command(line)
+        toks = pt.split_command(line, windows)
         if not toks:
             continue
-        exe = os.path.basename(toks[0].strip('"')).lower()
+        exe = _exe_name(toks[0])
         if not ((rx and rx.search(toks[0])) or exe in exes):
             continue
         expanded: List[str] = []
@@ -329,11 +334,12 @@ def parse_build_log(log_text: str, base_dir: str, profile: str = "auto",
             if t.startswith("@"):
                 rp = _abs(cwd, t[1:])
                 try:
-                    with open(rp, "r", encoding="utf-8", errors="replace") as f:
-                        expanded += shlex.split(f.read())
-                    continue
+                    text = pt.read_text_any(rp)
                 except OSError:
-                    pass
+                    expanded.append(t)
+                    continue
+                expanded += pt.split_command(text, windows or pt.looks_windows_command(text))
+                continue
             expanded.append(t)
         srcs = [t for t in expanded[1:] if t.lower().endswith((".c", ".cc", ".cpp"))]
         if not srcs:

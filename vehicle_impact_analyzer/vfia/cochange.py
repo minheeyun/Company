@@ -17,6 +17,8 @@ import subprocess
 from collections import Counter, defaultdict
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
+from . import portable as pt
+
 
 class CoChange:
     def __init__(self, transactions: List[Set[str]], source: str):
@@ -58,12 +60,13 @@ class CoChange:
 
 def _git_transactions(repo: str, subdir: str = "", max_commits: int = 500, max_files: int = 30) -> List[Set[str]]:
     try:
-        out = subprocess.run(["git", "-C", repo, "log", f"-n{max_commits}", "--no-merges", "--name-only",
-                              "--pretty=format:@@%H"], capture_output=True, text=True, timeout=120).stdout
-    except (OSError, subprocess.TimeoutExpired):
+        out = pt.run_text(["git", "-c", "core.quotepath=off", "-C", repo, "log", f"-n{max_commits}", "--no-merges",
+                           "--name-only", "--pretty=format:@@%H"], timeout=120).stdout
+    except (OSError, subprocess.SubprocessError):
         return []
     txs: List[Set[str]] = []
     cur: Set[str] = set()
+    subdir = (subdir or "").replace("\\", "/")
     prefix = subdir.strip("/") + "/" if subdir else ""
     for line in out.splitlines():
         if line.startswith("@@"):
@@ -85,11 +88,10 @@ def load_cochange(history: Optional[dict]) -> Optional[CoChange]:
         return None
     max_files = int(history.get("max_files_per_commit", 30))
     if history.get("file") and os.path.isfile(history["file"]):
-        with open(history["file"], "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = json.loads(pt.read_text_any(history["file"]))
         txs = []
         for c in data:
-            t = set(c.get("files", []))
+            t = {str(x).replace("\\", "/") for x in c.get("files", [])}
             t |= {f"fn:{x}" for x in c.get("functions", [])}
             if len(t) <= max_files * 2:
                 txs.append(t)

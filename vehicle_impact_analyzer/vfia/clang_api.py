@@ -131,28 +131,122 @@ def is_macro_function_like(cursor: ci.Cursor) -> bool:
     return bool(ci.conf.lib.clang_Cursor_isMacroFunctionLike(cursor))
 
 
-@lru_cache(maxsize=1)
-def detect_resource_include() -> Optional[str]:
-    """stddef.h/stdbool.h 등 컴파일러 내장 헤더 경로를 찾는다.
+BUILTIN_FALLBACK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "builtin_include")
 
-    pip libclang 휠은 내장 헤더를 포함하지 않는 경우가 있어 시스템 clang의
-    resource-dir을 사용한다.
-    """
+
+def _clang_major(text: str) -> Optional[int]:
+    import re
+    m = re.search(r"clang version (\d+)", text or "")
+    return int(m.group(1)) if m else None
+
+
+def libclang_version() -> str:
+    """예: 'clang version 18.1.1'. 알 수 없으면 빈 문자열."""
+    try:
+        init_libclang()
+        f = ci.conf.lib.clang_getClangVersion
+        f.argtypes = []
+        f.restype = ci._CXString
+        return ci._CXString.from_result(f())
+    except Exception:
+        return ""
+
+
+def _libclang_path() -> Optional[str]:
+    p = os.environ.get("VFIA_LIBCLANG")
+    if p:
+        return p
+    try:
+        return getattr(ci.conf.lib, "_name", None)
+    except Exception:
+        return None
+
+
+def _resource_candidates() -> List[Tuple[str, str]]:
+    """(include 디렉터리, 출처) 후보. 앞쪽이 우선."""
+    import glob
+    out: List[Tuple[str, str]] = []
     env = os.environ.get("VFIA_CLANG_RESOURCE_DIR")
     if env:
-        return os.path.join(env, "include")
-    for exe in ("clang", "clang-18", "clang-17", "clang-16", "clang-15"):
+        out.append((os.path.join(env, "include"), "VFIA_CLANG_RESOURCE_DIR"))
+    # 1) libclang 라이브러리 위치 기준(LLVM 배포판: bin/libclang.dll, lib/libclang.so -> lib/clang/<ver>/include)
+    lib = _libclang_path()
+    if lib and os.path.isabs(lib):
+        d = os.path.dirname(lib)
+        for base in (d, os.path.dirname(d)):
+            for inc in sorted(glob.glob(os.path.join(base, "lib", "clang", "*", "include")), reverse=True):
+                out.append((inc, "libclang 위치"))
+            for inc in sorted(glob.glob(os.path.join(base, "clang", "*", "include")), reverse=True):
+                out.append((inc, "libclang 위치"))
+    # 2) PATH의 clang 실행 파일
+    for exe in ("clang", "clang-20", "clang-19", "clang-18", "clang-17", "clang-16", "clang-15"):
         path = shutil.which(exe)
         if not path:
             continue
         try:
-            out = subprocess.check_output([path, "-print-resource-dir"], text=True, timeout=10).strip()
+            r = subprocess.run([path, "-print-resource-dir"], capture_output=True, timeout=10)
+            res = r.stdout.decode("utf-8", errors="replace").strip()
         except Exception:
             continue
-        inc = os.path.join(out, "include")
-        if os.path.isfile(os.path.join(inc, "stdbool.h")):
-            return inc
-    return None
+        if res:
+            out.append((os.path.join(res, "include"), f"{exe} -print-resource-dir"))
+    # 3) 흔한 설치 위치(Windows LLVM 설치본, Visual Studio 동봉 Clang, Linux 배포판)
+    pats: List[str] = []
+    if os.name == "nt":
+        for var in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "LOCALAPPDATA"):
+            base = os.environ.get(var)
+            if base:
+                pats.append(os.path.join(base, "LLVM", "lib", "clang", "*", "include"))
+                pats.append(os.path.join(base, "Programs", "LLVM", "lib", "clang", "*", "include"))
+                pats.append(os.path.join(base, "Microsoft Visual Studio", "*", "*", "VC", "Tools", "Llvm", "x64",
+                                         "lib", "clang", "*", "include"))
+                pats.append(os.path.join(base, "Microsoft Visual Studio", "*", "*", "VC", "Tools", "Llvm",
+                                         "lib", "clang", "*", "include"))
+        for drive_root in ("C:\\msys64", "C:\\tools\\msys64"):
+            pats.append(os.path.join(drive_root, "*", "lib", "clang", "*", "include"))
+        scoop = os.path.join(os.path.expanduser("~"), "scoop", "apps", "llvm", "current", "lib", "clang", "*",
+                             "include")
+        pats.append(scoop)
+    else:
+        pats += ["/usr/lib/llvm-*/lib/clang/*/include", "/usr/lib/clang/*/include", "/usr/local/lib/clang/*/include",
+                 "/opt/homebrew/opt/llvm/lib/clang/*/include", "/usr/local/opt/llvm/lib/clang/*/include"]
+
+    def ver_key(p: str):
+        import re
+        m = re.search(r"[\\/]clang[\\/](\d+)", p)
+        return int(m.group(1)) if m else 0
+    found = []
+    for pat in pats:
+        found += glob.glob(pat)
+    for inc in sorted(set(found), key=ver_key, reverse=True):
+        out.append((inc, "설치 위치 탐색"))
+    return out
+
+
+@lru_cache(maxsize=1)
+def resource_include_info() -> dict:
+    """컴파일러 내장 헤더(stddef.h, stdbool.h, stdint.h 등) 위치와 출처.
+
+    pip libclang 휠에는 내장 헤더가 없으므로 시스템 Clang/LLVM의 resource-dir을 찾는다. libclang과
+    주 버전이 같은 것을 우선하고, 하나도 없으면 vfia/builtin_include(최소 freestanding 헤더)를 쓴다.
+    """
+    if os.environ.get("VFIA_CLANG_RESOURCE_DIR", "").lower() == "builtin":
+        return {"path": BUILTIN_FALLBACK, "source": "vfia 대체 헤더(VFIA_CLANG_RESOURCE_DIR=builtin)", "fallback": True}
+    want = _clang_major(libclang_version())
+    cands = [(inc, src) for inc, src in _resource_candidates() if os.path.isfile(os.path.join(inc, "stdbool.h"))]
+    if want:
+        same = [c for c in cands if f"{os.sep}{want}{os.sep}" in c[0] + os.sep or f"/{want}/" in c[0] + "/"]
+        if same:
+            cands = same + [c for c in cands if c not in same]
+    if cands:
+        inc, src = cands[0]
+        return {"path": inc, "source": src, "fallback": False}
+    return {"path": BUILTIN_FALLBACK, "source": "vfia 대체 헤더(시스템 Clang 내장 헤더를 찾지 못함)",
+            "fallback": True}
+
+
+def detect_resource_include() -> Optional[str]:
+    return resource_include_info()["path"]
 
 
 SIGNED_INT = {ci.TypeKind.CHAR_S, ci.TypeKind.SCHAR, ci.TypeKind.SHORT, ci.TypeKind.INT,

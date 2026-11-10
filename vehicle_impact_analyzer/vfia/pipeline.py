@@ -15,6 +15,7 @@ import json
 import os
 import time
 from . import __version__
+from . import portable as pt
 from .config import AnalysisConfig
 from .graph_builder import build_graph
 from .model import AnalysisGraph
@@ -34,7 +35,7 @@ def _input_fingerprint(cfg: AnalysisConfig, version: str) -> str:
     h.update(json.dumps({"sources": v.sources, "args": v.args, "exclude": v.exclude}, sort_keys=True).encode())
     for pat in ("**/*.c", "**/*.h"):
         for f in sorted(glob.glob(os.path.join(v.root, pat), recursive=True)):
-            h.update(os.path.relpath(f, v.root).encode())
+            h.update((pt.rel_posix(f, v.root) or f).encode())
             h.update((file_hash(f) or "").encode())
     paths = []
     if v.compile_commands:
@@ -43,10 +44,10 @@ def _input_fingerprint(cfg: AnalysisConfig, version: str) -> str:
     if vm:
         paths.extend(vm if isinstance(vm, list) else [vm])
     for p in paths:
-        h.update(p.encode())
+        h.update(pt.rel_or_abs(p, os.path.dirname(cfg.path)).encode())
         h.update((file_hash(p) or "missing").encode())
     # 차량 모델에서 참조한 ARXML도 지문에 포함
-    for p in glob.glob(os.path.join(os.path.dirname(cfg.path), "**/*.arxml"), recursive=True):
+    for p in sorted(glob.glob(os.path.join(os.path.dirname(cfg.path), "**/*.arxml"), recursive=True)):
         h.update((file_hash(p) or "").encode())
     return h.hexdigest()[:24]
 
@@ -81,4 +82,5 @@ def get_graph(cfg: AnalysisConfig, version: str, rebuild: bool = False, log=prin
     g.save(dbpath)
     log(f"[{version}] 그래프 저장: {dbpath} ({g.g.number_of_nodes()} 노드, {g.g.number_of_edges()} 간선, "
         f"{g.meta['build_seconds']}s)")
-    return g
+    # 저장본을 다시 읽어 노드·간선 순서를 정규화한다(처음 실행과 캐시 재사용 결과가 같도록)
+    return AnalysisGraph.load(dbpath)
