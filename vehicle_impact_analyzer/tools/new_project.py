@@ -17,11 +17,12 @@ import argparse
 import os
 import shutil
 import sys
+from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from vfia import portable as pt  # noqa: E402
-from vfia.build_env import PROFILES, parse_build_log, write_compile_db  # noqa: E402
+from vfia.build_env import PROFILES, diagnose_build_log, parse_build_log, scan_sources, write_compile_db  # noqa: E402
 
 ANALYSIS = """# 변경 영향 분석 설정 — tools/new_project.py로 생성
 # 경로는 / 로 적는다(윈도우도 동일). 상대 경로는 이 파일이 있는 폴더 기준.
@@ -79,15 +80,28 @@ def _p(path: str) -> str:
     return os.path.abspath(path).replace("\\", "/")
 
 
-def _make_db(log: str, root: str, compiler: str, out_dir: str) -> str:
-    db = parse_build_log(pt.read_text_any(log), os.path.abspath(root), compiler)
+def _make_db(log: Optional[str], root: str, compiler: str, out_dir: str, scan: bool, regex: Optional[str]) -> str:
+    db = []
+    if log:
+        text = pt.read_text_any(log)
+        db = parse_build_log(text, os.path.abspath(root), compiler, regex)
+        if not db:
+            msg = [f"빌드 로그에서 컴파일 명령을 찾지 못함: {log}"] + ["  " + x for x in diagnose_build_log(text)]
+            if not scan:
+                msg.append("  해결: 상세 출력으로 다시 빌드한 로그를 쓰거나, --compiler-regex로 컴파일러 이름을 지정하거나,"
+                           " --scan을 붙여 소스 폴더 검색 방식으로 만드세요.")
+                raise SystemExit("\n".join(msg))
+            print("\n".join(msg) + "\n  → --scan: 소스 폴더 검색 방식으로 대신 만듭니다.")
     if not db:
-        raise SystemExit(f"빌드 로그에서 컴파일 명령을 찾지 못함: {log}\n"
-                         "  로그에 컴파일러 호출 줄 전체가 있는지, --compiler가 맞는지 확인하세요.")
+        db = scan_sources(os.path.abspath(root), compiler)
+        if not db:
+            raise SystemExit(f"{root} 아래에 .c 파일이 없음: --*-root가 소스 최상위 폴더인지 확인하세요.")
+        print(f"소스 폴더 검색으로 compile DB 생성(근사: 실제 빌드의 매크로·헤더 우선순위는 반영되지 않음): {root}")
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, "compile_commands.json")
     write_compile_db(db, path)
-    print(f"compile DB 생성: {path} (컴파일 명령 {len(db)}개)")
+    outside = [e["file"] for e in db if pt.rel_posix(e["file"], root) is None]
+    print(f"compile DB 생성: {path} (컴파일 명령 {len(db)}개" + (f", root 밖 {len(outside)}개는 분석 제외" if outside else "") + ")")
     return path
 
 
@@ -112,14 +126,21 @@ def main(argv=None) -> int:
     ap.add_argument("--before-log", help="변경 전 빌드 로그(compile DB가 없을 때)")
     ap.add_argument("--after-log", help="변경 후 빌드 로그(compile DB가 없을 때)")
     ap.add_argument("--compiler", default="auto", choices=["auto"] + sorted(PROFILES))
+    ap.add_argument("--compiler-regex", default=None, help="로그에서 컴파일러를 찾는 정규식(사내 래퍼·특이한 이름)")
+    ap.add_argument("--scan", action="store_true",
+                    help="빌드 로그가 없거나 컴파일 명령을 못 찾으면 소스 폴더 검색으로 compile DB를 만듦(근사)")
     ap.add_argument("--project", default=None, help="보고서에 표시할 프로젝트 이름(기본: 폴더 이름)")
     ap.add_argument("--ecu", default="ECU")
     ap.add_argument("--force", action="store_true", help="기존 설정 파일 덮어쓰기(.bak 보관)")
     a = ap.parse_args(argv)
     pt.setup_console()
     for name in ("before_root", "after_root"):
-        if not os.path.isdir(getattr(a, name)):
-            raise SystemExit(f"--{name.replace('_', '-')} 폴더가 없음: {getattr(a, name)}")
+        r = getattr(a, name)
+        if not os.path.isdir(r):
+            raise SystemExit(f"--{name.replace('_', '-')} 폴더가 없음: {r}")
+        if os.path.basename(os.path.normpath(r)).lower() in (".log", "log", "logs", "out", "debug", "release"):
+            raise SystemExit(f"--{name.replace('_', '-')}가 소스 폴더가 아닌 것 같음: {r}\n"
+                             "  소스 최상위 폴더(그 아래에 .c·.h가 있는 폴더)를 주세요.")
     os.makedirs(a.dir, exist_ok=True)
     dbs = {}
     for side in ("before", "after"):
@@ -132,9 +153,11 @@ def main(argv=None) -> int:
         elif log:
             if not os.path.isfile(log):
                 raise SystemExit(f"--{side}-log 파일이 없음: {log}")
-            db = _make_db(log, root, a.compiler, os.path.join(a.dir, side))
+            db = _make_db(log, root, a.compiler, os.path.join(a.dir, side), a.scan, a.compiler_regex)
+        elif a.scan:
+            db = _make_db(None, root, a.compiler, os.path.join(a.dir, side), True, None)
         else:
-            raise SystemExit(f"--{side}-db 또는 --{side}-log 중 하나가 필요합니다.")
+            raise SystemExit(f"--{side}-db, --{side}-log 중 하나가 필요합니다(둘 다 없으면 --scan).")
         dbs[side] = db
     project = a.project or os.path.basename(os.path.abspath(a.dir))
     _write(os.path.join(a.dir, "analysis.yaml"), ANALYSIS.format(

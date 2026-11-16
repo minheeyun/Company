@@ -15,14 +15,15 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from . import portable as pt
 
 # 컴파일러 프로필: 실행 파일 이름, 미리 정의 매크로, 대리 target, 옵션 형식
 PROFILES: Dict[str, dict] = {
     "tasking": {
-        "exe": ["ctc", "cctc", "ctc.exe", "cctc.exe", "carc", "cptc"],
+        "exe": ["ctc", "cctc", "ctc.exe", "cctc.exe", "carc", "ccarc", "cptc", "carm", "cc51", "c51", "cc166", "c166",
+                "ccpcp", "cpcp", "ccmcs", "cmcs"],
         "predefined": {"__TASKING__": "1", "__CTC__": "1", "__TRICORE__": "1", "__CORE_TC162__": "1"},
         "target": "arm-none-eabi", "std_map": {"--iso=99": "-std=c99", "--iso=90": "-std=c89", "--iso=11": "-std=c11"},
         "include": ["-I", "--include-directory="], "define": ["-D", "--define="], "undef": ["-U", "--undefine="],
@@ -294,60 +295,234 @@ _ENTER_DIR = re.compile(r"(?:make|ninja)(?:\[\d+\])?: Entering directory [`'\"](
 _CD = re.compile(r"^\s*cd\s+(?:/d\s+)?(\"[^\"]+\"|\S+)\s*(?:&&|;|$)", re.I)
 
 
+_SRC_EXT = (".c", ".cc", ".cpp", ".cxx")
+_SKIP_DIRS = {"debug", "release", "build", "out", "output", "bin", "obj", "objs", "lst", "list", "doc", "docs", "test",
+              "tests", "__pycache__"}
+
+
+def _known_exes() -> Dict[str, str]:
+    """알려진 컴파일러 실행 파일 이름 -> 프로필."""
+    out: Dict[str, str] = {}
+    for name, p in PROFILES.items():
+        for e in p["exe"]:
+            out.setdefault(_exe_name(e), name)
+    return out
+
+
+def _join_continuations(lines: List[str]) -> List[str]:
+    """줄 끝의 '\\'(make·sh) 또는 '^'(cmd) 이어쓰기를 한 줄로."""
+    out: List[str] = []
+    buf = ""
+    for raw in lines:
+        line = raw.rstrip()
+        if line.endswith((" \\", " ^")) or line in ("\\", "^"):
+            buf += line[:-1] + " "
+            continue
+        out.append(buf + line)
+        buf = ""
+    if buf:
+        out.append(buf)
+    return out
+
+
+def _candidate_dirs(base_dir: str, limit: int = 300) -> List[str]:
+    """상대 경로 소스를 찾을 작업 디렉터리 후보: 기준 폴더와 그 아래 2단계까지(빌드 폴더 Debug 등 포함).
+
+    IDE(이클립스 기반 TASKING 등)는 '<프로젝트>/Debug' 같은 빌드 폴더에서 '../src/a.c'로 컴파일하지만 로그에
+    작업 디렉터리를 남기지 않는다. makefile이 있는 폴더를 먼저 본다.
+    """
+    cands, withmk = [base_dir], []
+    try:
+        for name in sorted(os.listdir(base_dir)):
+            d1 = os.path.join(base_dir, name)
+            if not os.path.isdir(d1) or name.startswith("."):
+                continue
+            sub = [d1]
+            try:
+                sub += [os.path.join(d1, n2) for n2 in sorted(os.listdir(d1))
+                        if os.path.isdir(os.path.join(d1, n2)) and not n2.startswith(".")]
+            except OSError:
+                pass
+            for d in sub:
+                try:
+                    has_mk = any(f.lower() in ("makefile", "subdir.mk") or f.lower().endswith(".mk") for f in os.listdir(d))
+                except OSError:
+                    has_mk = False
+                (withmk if has_mk else cands).append(d)
+                if len(cands) + len(withmk) > limit:
+                    break
+    except OSError:
+        pass
+    return [base_dir] + withmk + cands[1:]
+
+
+def _find_file(rel: str, dirs: List[str]) -> Optional[str]:
+    for d in dirs:
+        p = _abs(d, rel)
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def _expand_option_files(toks: List[str], cwd: str, windows: bool, profile: str,
+                         more_dirs: Optional[List[str]] = None) -> List[str]:
+    """응답 파일(@file)과 TASKING 옵션 파일(-f file, -ffile, --option-file=file)을 펼친다.
+
+    상대 경로면 작업 디렉터리, 그다음 빌드 폴더 후보(more_dirs)에서 찾는다.
+    """
+    dirs = [cwd] + list(more_dirs or [])
+    out: List[str] = []
+    i = 0
+    while i < len(toks):
+        t = toks[i]
+        path = None
+        tasking = profile in ("tasking", "auto")
+        if t.startswith("@") and len(t) > 1:
+            path = _find_file(t[1:], dirs)
+        elif t == "-f" and i + 1 < len(toks) and tasking:
+            path = _find_file(toks[i + 1], dirs)
+            if path:
+                i += 1
+        elif t.startswith("--option-file="):
+            path = _find_file(t.split("=", 1)[1], dirs)
+        elif t.startswith("-f") and len(t) > 2 and tasking and re.search(r"[\\/.]", t[2:]):
+            path = _find_file(t[2:], dirs)
+        if path is not None:
+            try:
+                text = pt.read_text_any(path)
+                out += pt.split_command(" ".join(text.splitlines()), windows or pt.looks_windows_command(text))
+                i += 1
+                continue
+            except OSError:
+                pass
+        out.append(t)
+        i += 1
+    return out
+
+
 def parse_build_log(log_text: str, base_dir: str, profile: str = "auto",
                     compiler_regex: Optional[str] = None) -> List[dict]:
     """빌드 로그에서 컴파일 명령을 추출해 compile DB 항목(arguments 형식)을 만든다.
 
-    Bear처럼 컴파일러 호출을 가로챌 수 없는 환경(Windows IDE 빌드 등)용. 'make: Entering directory'와
-    'cd dir &&' 형식의 작업 디렉터리 변경을 따라간다. 응답 파일(@file)은 펼친다.
+    Bear처럼 컴파일러 호출을 가로챌 수 없는 환경(Windows IDE 빌드 등)용.
+      * 'make: Entering directory', 'cd dir &&', 'cd /d dir &&'로 작업 디렉터리를 따라간다.
+      * 줄 앞에 시각·로그 수준·'Executing:' 같은 글자가 있어도 컴파일러 이름(경로 포함, .exe 무관)을 찾아 그 뒤를 쓴다.
+      * 응답 파일(@file)과 TASKING 옵션 파일(-f file)을 펼친다. 이어쓰기 줄(\\, ^)을 합친다.
+      * 소스의 상대 경로가 작업 디렉터리 기준으로 없으면 base_dir 아래 빌드 폴더(Debug 등) 기준으로 찾는다.
+    profile을 지정하면(auto가 아니면) 찾은 명령의 컴파일러 프로필을 그 값으로 둔다.
     """
-    exes = set()
-    for name, p in PROFILES.items():
-        if profile in ("auto", name):
-            exes.update(_exe_name(e) for e in p["exe"])
+    known = _known_exes()
     rx = re.compile(compiler_regex) if compiler_regex else None
     cwd = base_dir
+    guess_dir: Optional[str] = None
+    cand_dirs: Optional[List[str]] = None
     out = []
-    for raw in log_text.splitlines():
-        line = raw.strip()
+    for line in _join_continuations(log_text.splitlines()):
+        line = line.strip()
         if not line:
             continue
         m = _ENTER_DIR.search(line)
         if m:
             cwd = m.group(1)
             continue
-        m = _CD.match(line)
-        if m:
-            cwd = _abs(cwd, m.group(1).strip('"'))
-            line = line[m.end():].strip()
-            if not line:
-                continue
+        low = line.lower()
+        if not (any(e in low for e in _SRC_EXT) or "@" in line or " -f" in line or "--option-file" in low
+                or re.match(r"\s*cd\s", low)):
+            continue
         windows = pt.IS_WINDOWS or pt.looks_windows_command(line)
-        toks = pt.split_command(line, windows)
-        if not toks:
-            continue
-        exe = _exe_name(toks[0])
-        if not ((rx and rx.search(toks[0])) or exe in exes):
-            continue
-        expanded: List[str] = []
-        for t in toks:
-            if t.startswith("@"):
-                rp = _abs(cwd, t[1:])
-                try:
-                    text = pt.read_text_any(rp)
-                except OSError:
-                    expanded.append(t)
-                    continue
-                expanded += pt.split_command(text, windows or pt.looks_windows_command(text))
+        # 한 줄에 여러 명령(cd dir && cc ... && cc ...)이면 나눠서 차례로
+        segs: List[List[str]] = [[]]
+        for t in pt.split_command(line, windows):
+            if t in ("&&", "||", ";", "&", "|"):
+                segs.append([])
+            else:
+                segs[-1].append(t)
+        for toks in segs:
+            if not toks:
                 continue
-            expanded.append(t)
-        srcs = [t for t in expanded[1:] if t.lower().endswith((".c", ".cc", ".cpp"))]
-        if not srcs:
-            continue
-        for s in srcs:
-            out.append({"directory": cwd, "file": _abs(cwd, s), "arguments": expanded,
-                        "compiler_profile": detect_profile(expanded, profile)})
+            if toks[0].lower() == "cd" and len(toks) >= 2:
+                target = toks[2] if toks[1].lower() == "/d" and len(toks) >= 3 else toks[1]
+                cwd = _abs(cwd, target)
+                continue
+            start = None
+            for i, t in enumerate(toks):
+                if (rx and rx.search(t)) or _exe_name(t) in known:
+                    start = i
+                    break
+            if start is None:
+                continue
+            toks = toks[start:]
+            prof = profile if profile and profile != "auto" else known.get(_exe_name(toks[0]), "gcc")
+            if cand_dirs is None and any(t.startswith(("@", "-f", "--option-file=")) for t in toks):
+                cand_dirs = _candidate_dirs(base_dir)
+            expanded = _expand_option_files(toks, cwd, windows, prof, ([guess_dir] if guess_dir else []) + (cand_dirs or []))
+            srcs = [t for t in expanded[1:] if not t.startswith("-") and t.lower().endswith(_SRC_EXT)]
+            for s_ in srcs:
+                d = cwd
+                f = _abs(d, s_)
+                if not os.path.isfile(f) and not pt.is_abs_any(s_.strip('"')):
+                    # 작업 디렉터리를 모르는 IDE 로그: 앞서 찾은 빌드 폴더 → 후보 폴더 순으로 상대 경로를 맞춰 본다
+                    if guess_dir and os.path.isfile(_abs(guess_dir, s_)):
+                        d = guess_dir
+                    else:
+                        if cand_dirs is None:
+                            cand_dirs = _candidate_dirs(base_dir)
+                        for c in cand_dirs:
+                            if os.path.isfile(_abs(c, s_)):
+                                d = guess_dir = c
+                                break
+                    f = _abs(d, s_)
+                out.append({"directory": d, "file": f, "arguments": expanded, "compiler_profile": prof})
     return out
+
+
+def diagnose_build_log(log_text: str, limit: int = 6) -> List[str]:
+    """컴파일 명령을 못 찾았을 때 원인 파악용: 소스 파일(.c)이 나오는 줄과 그 줄의 앞쪽 단어."""
+    lines = [l.strip() for l in _join_continuations(log_text.splitlines()) if l.strip()]
+    hits = [l for l in lines if any(e in l.lower() for e in _SRC_EXT)]
+    out = [f"로그 {len(lines)}줄 중 소스 파일(.c 등)이 나오는 줄 {len(hits)}개"]
+    if not hits:
+        out.append("→ 컴파일 명령이 로그에 찍히지 않은 것 같음: 빌드 도구의 상세 출력(verbose) 옵션을 켜고 다시 빌드해 로그를 받거나, "
+                   "--scan(소스 폴더 검색)으로 대신 만드세요.")
+        return out
+    stop = {"compiling", "compile", "building", "build", "built", "info", "warning", "warn", "error", "note", "finished",
+            "invoking", "file", "linking", "done", "make", "ninja", "cd", "echo", "debug", "release", "src", "source"}
+    heads: Dict[str, int] = {}
+    for l in hits:
+        toks = pt.split_command(l, True)
+        for t in toks[:6]:
+            if t.startswith("-") or t.lower().endswith(_SRC_EXT):
+                break
+            n = _exe_name(t).strip(":[]()")
+            if n and n not in stop and re.fullmatch(r"[\w.+-]{2,40}", n) and not re.fullmatch(r"[\d:.\-]+", n):
+                heads[n] = heads.get(n, 0) + 1
+    if heads:
+        top = sorted(heads.items(), key=lambda x: -x[1])[:5]
+        out.append("그 줄들 앞부분에 자주 나오는 단어: " + ", ".join(f"{k}({v})" for k, v in top)
+                   + " → 이 중 컴파일러가 있으면 --compiler-regex로 지정(예: --compiler-regex \"" + top[0][0] + "\")")
+    out.append("예:")
+    out += ["  " + (l if len(l) <= 220 else l[:220] + " …") for l in hits[:limit]]
+    return out
+
+
+def scan_sources(root: str, profile: str = "auto", exclude_dirs: Optional[Set[str]] = None) -> List[dict]:
+    """빌드 로그가 없을 때의 대체: root 아래 .c 파일마다, 헤더(.h)가 있는 모든 폴더를 -I로 주는 compile DB 항목.
+
+    실제 빌드 옵션(매크로 정의, 헤더 우선순위)은 알 수 없으므로 근사다. 빌드 산출물 폴더(Debug, Release, out ...)와
+    숨김 폴더는 건너뛴다.
+    """
+    skip = {x.lower() for x in (exclude_dirs or _SKIP_DIRS)}
+    srcs, inc = [], []
+    for d, dirs, files in os.walk(root):
+        dirs[:] = sorted(x for x in dirs if not x.startswith(".") and x.lower() not in skip)
+        if any(f.lower().endswith((".h", ".hpp")) for f in files):
+            inc.append(d)
+        srcs += [os.path.join(d, f) for f in sorted(files) if f.lower().endswith(_SRC_EXT)]
+    inc.sort(key=lambda x: (x.count(os.sep), x))
+    exe = (PROFILES.get(profile) or PROFILES["gcc"])["exe"][0] if profile != "auto" else "cc"
+    args = [exe] + [f"-I{x}" for x in inc]
+    return [{"directory": root, "file": f, "arguments": args + ["-c", f], "compiler_profile": profile if profile != "auto"
+             else "gcc", "origin": "scan"} for f in srcs]
 
 
 def write_compile_db(entries: List[dict], path: str) -> None:

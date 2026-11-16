@@ -13,12 +13,14 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from vfia import portable as pt  # noqa: E402
-from vfia.build_env import parse_build_log, translate, write_compile_db  # noqa: E402
+from vfia.build_env import diagnose_build_log, parse_build_log, scan_sources, translate, write_compile_db  # noqa: E402
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--log", required=True)
+    ap.add_argument("--log", default=None, help="빌드 로그 파일(컴파일 명령이 찍힌 출력)")
+    ap.add_argument("--scan", action="store_true",
+                    help="빌드 로그 대신 --root 아래 .c를 찾고 헤더 폴더를 모두 -I로 주는 근사 compile DB를 만듦")
     ap.add_argument("--root", default=".", help="상대 경로 기준 디렉터리(로그에 디렉터리 정보가 없을 때)")
     ap.add_argument("--compiler", default="auto", help="auto|tasking|ghs|diab|hightec|gcc|clang")
     ap.add_argument("--compiler-regex", default=None, help="컴파일러 실행 파일을 찾는 정규식(사내 래퍼 등)")
@@ -26,19 +28,30 @@ def main(argv=None) -> int:
     ap.add_argument("--show-translation", action="store_true", help="Clang 변환 결과와 제거된 옵션 출력")
     a = ap.parse_args(argv)
     pt.setup_console()
-    if not os.path.isfile(a.log):
-        print(f"빌드 로그 파일이 없음: {a.log}", file=sys.stderr)
-        return 2
     root = os.path.abspath(a.root)
-    db = parse_build_log(pt.read_text_any(a.log), root, a.compiler, a.compiler_regex)
+    if a.scan:
+        if not os.path.isdir(root):
+            print(f"--root 폴더가 없음: {root}", file=sys.stderr)
+            return 2
+        db = scan_sources(root, a.compiler)
+        print("소스 폴더 검색으로 만듦(근사: 실제 빌드의 매크로·헤더 우선순위는 반영되지 않음)")
+        log_text = ""
+    else:
+        if not a.log or not os.path.isfile(a.log):
+            print(f"빌드 로그 파일이 없음: {a.log} (--log 로그파일 또는 --scan)", file=sys.stderr)
+            return 2
+        log_text = pt.read_text_any(a.log)
+        db = parse_build_log(log_text, root, a.compiler, a.compiler_regex)
     # -o에 폴더를 주면 그 안에 compile_commands.json을 만든다(없는 폴더는 새로 만듦)
     out = a.out
     if os.path.isdir(out) or out.endswith(("\\", "/")):
         out = os.path.join(out, "compile_commands.json")
     if not db:
-        print("컴파일 명령 0개 — 파일을 쓰지 않음(기존 파일 유지)\n  컴파일러 호출 줄을 찾지 못함: 로그에 컴파일 명령 전체"
-              "(예: ctc ... src\\a.c)가 찍혀 있는지(상세 출력 빌드), --compiler 값이 맞는지, 사내 래퍼를 쓰면 "
-              "--compiler-regex로 지정했는지 확인하세요.", file=sys.stderr)
+        print("컴파일 명령 0개 — 파일을 쓰지 않음(기존 파일 유지)", file=sys.stderr)
+        for line in (diagnose_build_log(log_text) if log_text else ["--root 아래에 .c 파일이 없음"]):
+            print("  " + line, file=sys.stderr)
+        print("  해결: 상세 출력으로 다시 빌드한 로그를 쓰거나, 컴파일러 이름을 --compiler-regex로 지정하거나, "
+              "--scan으로 소스 폴더 검색 방식을 쓰세요.", file=sys.stderr)
         return 1
     try:
         os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)

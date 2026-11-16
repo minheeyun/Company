@@ -125,6 +125,11 @@ Windows에서 달라지는 점과 처리 방식:
 python tools/new_project.py --dir my_project --compiler tasking --before-root S:/proj/26A10 --before-log S:/proj/26A10/.log/build.log --after-root S:/proj/26A11 --after-log S:/proj/26A11/.log/build.log
 ```
 
+빌드 로그는 make/ninja 출력, `cd /d … &&` 형식, 시각·로그 수준이 앞에 붙은 빌드 스크립트 출력, 이클립스 기반 TASKING
+IDE 콘솔 출력(`<프로젝트>/Debug`에서 `../src/a.c`로 컴파일, include 경로는 `-f 옵션파일`)을 읽는다. 컴파일 명령을 못 찾으면
+소스 파일이 나오는 줄을 보여 주고 원인을 알려 준다. 로그에 컴파일 명령이 아예 찍히지 않는 빌드는 상세 출력으로 다시 빌드하거나
+`--scan`(소스 폴더 검색: `.c`마다 헤더 폴더를 모두 `-I`로 주는 근사 compile DB)을 쓴다.
+
 compile DB가 이미 있으면 `--before-db`·`--after-db`에 파일(또는 그 파일이 있는 폴더)을 준다. 기존 설정은 `--force`일 때만
 덮어쓰고 `.bak`으로 남긴다. 만든 `vehicle_model.yaml`은 기능이 비어 있어도 실행된다(영향 범위·영향 그래프는 나오고, 기능 영향
 판정은 기능·관찰 대상을 적은 뒤부터).
