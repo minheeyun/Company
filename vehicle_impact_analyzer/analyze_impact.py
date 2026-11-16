@@ -90,6 +90,7 @@ def main(argv=None) -> int:
                     help="function: 2.5단계 MVP(호출 그래프+전역 읽기/쓰기+함수 요약)만 빠르게 실행")
     ap.add_argument("--strict", action="store_true",
                     help="파싱 성공률이 기준(analysis.min_parse_success_rate) 미만이면 종료 코드 2")
+    ap.add_argument("--no-graph", action="store_true", help="보고서 '영향 그래프' 탭과 graph_export 파일을 만들지 않음")
     ap.add_argument("--quiet", action="store_true")
     a = ap.parse_args(argv)
     pt.setup_console()
@@ -129,7 +130,8 @@ def main(argv=None) -> int:
     fmaps = {"old": FeatureMapper(go, cfg.options, cfg.review_file, cfg.traces, log, cochange).run(),
              "new": FeatureMapper(gn, cfg.options, cfg.review_file, cfg.traces, log, cochange).run()}
     log("영향 추적(전방 ∩ 후방 슬라이스)...")
-    results = ImpactAnalyzer(go, gn, cd, cres["changes"], fmaps, cfg.options.max_paths_per_feature).run()
+    ia = ImpactAnalyzer(go, gn, cd, cres["changes"], fmaps, cfg.options.max_paths_per_feature)
+    results = ia.run()
     behavior = []
     if not a.no_behavior:
         log("동작 차이 검증(기호 실행, 전후 비교 실행)...")
@@ -169,8 +171,18 @@ def main(argv=None) -> int:
     data["review"] = review_items(results, behavior, meta, scope, data)
     meta["seconds"] = round(time.time() - t0, 2)
     jp, hp = os.path.join(out, "impact.json"), os.path.join(out, "impact.html")
+    graph, exported = None, None
+    if not a.no_graph:
+        log("영향 그래프(변경 영향·함수 의존·모듈 의존) 생성...")
+        from vfia.impact_graph import build_graph_data, write_exports
+        graph = build_graph_data(go, gn, results, ia, cfg.options, a.before, a.after)
+        exported = write_exports(graph, os.path.join(out, "graph_export"))
+        write_json(os.path.join(out, "impact_graph.json"), graph)
+        data["graphs"] = {"data": "impact_graph.json", "export_dir": "graph_export", "files": exported,
+                          "program_nodes": len(graph["program"]["n"]),
+                          "impact_nodes": {cid: len(v["n"]) for cid, v in graph["impact"].items()}}
     write_json(jp, data)
-    impact_report_html(data, hp)
+    impact_report_html(data, hp, graph=graph, exported=exported)
     log(f"\n영향 분석 결과: {jp}\n검토 보고서:   {hp}  ({meta['seconds']}s)")
     if a.strict and not rate_ok:
         log("파싱 기준 미달(--strict): 종료 코드 2")

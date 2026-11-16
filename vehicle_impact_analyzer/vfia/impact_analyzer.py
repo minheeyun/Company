@@ -32,6 +32,9 @@ class ImpactAnalyzer:
         self._bs: Dict[Tuple[str, str], Optional[SliceResult]] = {}
         self.inv_map = {v: k for k, v in cd.node_map.items()}
         self.incomplete = {"old": self._incomplete(g_old), "new": self._incomplete(g_new)}
+        # 영향 그래프(impact_graph)가 다시 계산하지 않도록 변경별 전방 슬라이스·chop을 보관
+        self.slices: Dict[str, dict] = {}
+        self.chops: Dict[str, Dict[Tuple[str, str], object]] = {}
 
     @staticmethod
     def _incomplete(g: AnalysisGraph) -> Dict[str, List[Tuple[str, bool]]]:
@@ -175,6 +178,7 @@ class ImpactAnalyzer:
         so, sn, derived = self.seeds(ch)
         fs_o = forward_slice(self.go, so) if so else None
         fs_n = forward_slice(self.gn, sn) if sn else None
+        self.slices[ch["id"]] = {"old": fs_o, "new": fs_n, "seeds": {"old": so, "new": sn}}
         res = {
             "seeds": {"old": so, "new": sn}, "derived_seeds": derived,
             "slice": {"old": self.slice_summary(self.go, fs_o) if fs_o else None,
@@ -215,6 +219,7 @@ class ImpactAnalyzer:
             reached = c.reached_targets()
             if not reached:
                 continue
+            self.chops.setdefault(ch["id"], {})[(side, fd.get("fid"))] = c
             found = True
             bs = self.backward(side, feat)
             naive = (fs.nodes & bs.nodes) if bs else set()

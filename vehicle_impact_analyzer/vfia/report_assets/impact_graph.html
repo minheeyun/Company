@@ -1,0 +1,77 @@
+<style>
+body.ig-wide main{max-width:none}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--bd);margin:14px 0 0;position:sticky;top:0;background:var(--bg);z-index:5}
+.tabs a{padding:8px 16px;text-decoration:none;color:var(--mut);font-weight:600;border:1px solid transparent;border-bottom:none;
+  border-radius:8px 8px 0 0;margin-bottom:-1px}
+.tabs a.on{color:var(--fg);background:var(--card);border-color:var(--bd)}
+.flash{outline:3px solid var(--acc);outline-offset:2px;transition:outline-color 1.5s}
+.ig-link{font-size:12px;margin-left:8px}
+.ig-bar{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;margin:12px 0 8px;font-size:13px}
+.ig-bar label{display:inline-flex;gap:6px;align-items:center;white-space:nowrap}
+.ig-bar select,.ig-bar input[type=number]{font:inherit;background:var(--card);color:var(--fg);border:1px solid var(--bd);
+  border-radius:6px;padding:3px 6px}
+.ig-bar input[type=number]{width:64px}
+.ig-btns{display:inline-flex;gap:4px;flex-wrap:wrap}
+.ig-btns button,.ig-side button{font:inherit;font-size:12px;background:var(--card);color:var(--fg);border:1px solid var(--bd);
+  border-radius:6px;padding:3px 9px;cursor:pointer}
+.ig-btns button:hover,.ig-side button:hover{border-color:var(--acc)}
+.ig-main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:10px;height:calc(100vh - 230px);min-height:460px}
+@media(max-width:900px){.ig-main{grid-template-columns:1fr;height:auto}.ig-side{max-height:none}#ig-cy{height:70vh}}
+#ig-cy{border:1px solid var(--bd);border-radius:8px;background:var(--card);min-height:420px;position:relative}
+.ig-side{border:1px solid var(--bd);border-radius:8px;background:var(--card);padding:10px 12px;overflow:auto;font-size:13px}
+.ig-side h4{margin:4px 0 6px}.ig-side .kv{font-size:12.5px}
+.ig-side ul{padding-left:16px}.ig-side li{margin:3px 0}
+.ig-path{cursor:pointer;border-radius:6px;padding:4px 6px;border:1px solid transparent}
+.ig-path:hover,.ig-path.on{border-color:var(--acc)}
+.ig-legend{display:flex;flex-wrap:wrap;gap:4px 16px;font-size:12px;color:var(--mut);margin:8px 0;align-items:center}
+.ig-legend span{display:inline-flex;align-items:center;gap:5px}
+.ig-legend svg{flex:none}
+#ig-status{font-size:12px;margin:4px 0}
+.ig-files ul{columns:2;font-size:12.5px}@media(max-width:760px){.ig-files ul{columns:1}}
+.ig-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--mut)}
+</style>
+<div class="ig-bar" role="toolbar" aria-label="영향 그래프 설정">
+  <label>그래프 <select id="ig-type">
+    <option value="impact">1. 변경 영향(변경 → 변수 → 함수 → 출력)</option>
+    <option value="program">2. 함수 호출·데이터 의존(변경 주변 N단계)</option>
+    <option value="module">3. 모듈 의존(파일·폴더)</option></select></label>
+  <label id="ig-change-l">변경 <select id="ig-change"></select></label>
+  <label id="ig-steps-l" title="호출 1단계, 변수·신호를 거치는 연결은 함수→변수→함수가 1단계">단계
+    <input type="range" id="ig-steps" min="1" max="4" step="1" value="2"><output id="ig-steps-v">2</output></label>
+  <label>보기 <select id="ig-view"><option value="compare">변경 전·후 비교</option>
+    <option value="after">변경 후만</option><option value="before">변경 전만</option></select></label>
+  <label id="ig-pathonly-l" title="기능 관찰 대상(출력)까지 가는 근거 경로(chop) 위의 요소만">
+    <input type="checkbox" id="ig-pathonly"> 출력까지 가는 경로만</label>
+  <label id="ig-vars-l" title="끄면 함수 → 변수 → 함수를 함수 사이 점선 하나로 줄여 표시"><input type="checkbox" id="ig-vars" checked> 변수 노드</label>
+  <label id="ig-gran-l">단위 <select id="ig-gran"><option value="file">파일</option><option value="folder">폴더</option></select></label>
+  <label id="ig-minw-l" title="모듈 사이 호출 수 + 공유 변수 수가 이 값보다 작은 연결은 숨김">최소 연결 수 <input type="number" id="ig-minw" min="1" step="1" value="1"></label>
+  <label>배치 <select id="ig-layout"><option value="layered">단계별(왼쪽 → 오른쪽)</option>
+    <option value="concentric">동심원(가까울수록 안쪽)</option><option value="cose">힘 기반</option></select></label>
+  <label title="보이는 노드가 기준보다 많으면 핵심 노드(변경·위험 후보·경로) 외에는 파일별로 묶어 표시. 묶음을 누르면 펼침">
+    <input type="checkbox" id="ig-cluster" checked> 묶음 표시 <input type="number" id="ig-th" min="20" step="10"> 개 초과</label>
+  <span class="ig-btns">
+    <button id="ig-zin" title="확대">＋</button><button id="ig-zout" title="축소">－</button>
+    <button id="ig-fit" title="화면에 맞춤">맞춤</button><button id="ig-expand">묶음 모두 펼치기</button>
+    <button id="ig-dot" title="지금 보이는 그래프를 Graphviz DOT로 저장">DOT</button>
+    <button id="ig-gml" title="지금 보이는 그래프를 GraphML로 저장(yEd·Gephi)">GraphML</button>
+    <button id="ig-png" title="그림으로 저장">PNG</button></span>
+</div>
+<div class="ig-legend" id="ig-legend">
+  <span><svg width="34" height="10"><line x1="1" y1="5" x2="33" y2="5" stroke="#8a8a85" stroke-width="2"/></svg>호출·반환</span>
+  <span><svg width="34" height="10"><line x1="1" y1="5" x2="33" y2="5" stroke="#8a8a85" stroke-width="2" stroke-dasharray="5,4"/></svg>공유 변수·신호</span>
+  <span><svg width="34" height="10"><line x1="1" y1="5" x2="33" y2="5" stroke="#7b3fbf" stroke-width="3"/></svg><span id="ig-ctrl-text">제어 조건</span></span>
+  <span><svg width="34" height="10"><line x1="1" y1="5" x2="33" y2="5" stroke="#2e8b57" stroke-width="3"/></svg>추가된 연결</span>
+  <span><svg width="34" height="10"><line x1="1" y1="5" x2="33" y2="5" stroke="#c62828" stroke-width="3"/></svg>사라진 연결</span>
+  <span><svg width="18" height="14"><rect x="1" y="1" width="16" height="12" rx="2" fill="#ffd6d6" stroke="#c62828" stroke-width="2.5"/></svg>변경</span>
+  <span><svg width="18" height="14"><rect x="1" y="1" width="16" height="12" rx="2" fill="none" stroke="#e65100" stroke-width="3"/></svg>위험 후보(높음: 동작 차이 확인된 기능 경로)</span>
+  <span><svg width="18" height="14"><rect x="1" y="1" width="16" height="12" rx="2" fill="none" stroke="#f2a900" stroke-width="3"/></svg>위험 후보(보통: 정적 영향 후보)</span>
+  <span>모양: 함수 □ · 변수 ○ · 레지스터 ⬡ · 신호 ▷ · 출력(관찰) ◇ · 묶음 ▢(점선)</span>
+</div>
+<div class="ig-main">
+  <div id="ig-cy" aria-label="영향 그래프"></div>
+  <aside class="ig-side" id="ig-side" aria-live="polite"></aside>
+</div>
+<div id="ig-status" class="mut"></div>
+<p class="mut" style="font-size:12px">노드를 누르면 오른쪽에 근거가 나오고, 두 번 누르면 해당 변경 카드나 근거 상세로 이동한다.
+  마우스 휠·두 손가락으로 확대·축소, 끌어서 이동. 단계: 호출·반환 1, 변수·신호를 거치는 연결은 함수 → 변수 → 함수가 1단계.</p>
+<!--EXPORT_FILES-->

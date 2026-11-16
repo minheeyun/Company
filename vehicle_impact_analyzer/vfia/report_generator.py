@@ -233,9 +233,12 @@ def _behavior_html(checks: List[dict]) -> str:
     return "".join(out)
 
 
-def impact_report_html(data: dict, path: str) -> None:
+def impact_report_html(data: dict, path: str, graph: Optional[dict] = None, exported: Optional[List[str]] = None,
+                       export_dir_rel: str = "graph_export") -> None:
+    """검토 보고서. graph(impact_graph.build_graph_data 결과)가 있으면 '영향 그래프' 탭을 더한다."""
     meta = data["meta"]
     changes = data["changes"]
+    glink = (lambda cid: f" <a class='ig-link' href='#graph:{_e(cid)}:impact'>영향 그래프에서 보기</a>") if graph else (lambda cid: "")
     b = [f"<h1>변경 영향 분석 보고서</h1><p class='mut'>프로젝트 <b>{_e(meta.get('project'))}</b> · VFIA {__version__} · "
          f"{_e(meta.get('generated'))}</p>"]
     feats = data.get("features", [])
@@ -270,7 +273,7 @@ def impact_report_html(data: dict, path: str) -> None:
                  f"<td>{_e(c['summary'])}</td><td>{_e(lo)} → {_e(ln)}</td></tr>")
     b.append("</table>")
     for c in changes:
-        b.append(f"<div class='card' id='{c['id']}'><b>{c['id']} · {_e(c['type_label'])}</b> <code>{_e(c.get('unit_name'))}</code>"
+        b.append(f"<div class='card' id='{c['id']}'><b>{c['id']} · {_e(c['type_label'])}</b> <code>{_e(c.get('unit_name'))}</code>{glink(c['id'])}"
                  f"<div>{_e(c['summary'])}</div><div class='grid2'>"
                  f"<div><div class='mut'>변경 전 {_e(c['old'].get('file'))}:{_e(c['old'].get('line'))}</div><pre>{_e(c['old'].get('code') or '(없음)')}</pre></div>"
                  f"<div><div class='mut'>변경 후 {_e(c['new'].get('file'))}:{_e(c['new'].get('line'))}</div><pre>{_e(c['new'].get('code') or '(없음)')}</pre></div></div>")
@@ -404,7 +407,7 @@ def impact_report_html(data: dict, path: str) -> None:
         im = c["impact"]
         for fi in im["features"]:
             b.append(f"<div class='card' id='{c['id']}-{_e(fi['feature'])}'><b>{c['id']} → {_e(fi['feature'])} {_e(fi['feature_name'])}</b> "
-                     f"{badge(fi['status'])} <span class='mut'>({_e(c['type_label'])}, {_e(c.get('unit_name'))})</span>")
+                     f"{badge(fi['status'])} <span class='mut'>({_e(c['type_label'])}, {_e(c.get('unit_name'))})</span>{glink(c['id'])}")
             if fi.get("status_note"):
                 b.append(f"<div class='mut'>{_e(fi['status_note'])}</div>")
             for side in ("new", "old"):
@@ -456,8 +459,16 @@ def impact_report_html(data: dict, path: str) -> None:
     b.append("<h2>4. 검증자는 무엇을 추가로 확인해야 하는가?</h2>")
     for sec in data.get("review", []):
         b.append(f"<h3>{_e(sec['title'])}</h3><ul>" + "".join(f"<li>{_e(x)}</li>" for x in sec["items"]) + "</ul>")
+    if graph:
+        from .impact_graph import graph_tab_html
+        body = (b[0] + "<nav class='tabs' role='tablist'><a id='tabbtn-report' class='on' href='#report' role='tab'>보고서</a>"
+                "<a id='tabbtn-graph' href='#graph' role='tab'>영향 그래프</a></nav>"
+                "<section id='tab-report' role='tabpanel'>" + "".join(b[1:]) + "</section>"
+                "<section id='tab-graph' role='tabpanel' hidden>" + graph_tab_html(graph, export_dir_rel, exported) + "</section>")
+    else:
+        body = "".join(b)
     with open(path, "w", encoding="utf-8") as fh:
-        fh.write(_page("변경 영향 분석 보고서", "".join(b)))
+        fh.write(_page("변경 영향 분석 보고서", body))
 
 
 # ---------------------------------------------------------------------------

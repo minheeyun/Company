@@ -73,6 +73,11 @@ class AnalysisOptions:
     exec_compare: str = "auto"               # auto | on | off
     exec_max_vectors: int = 2000
     exec_compiler: str = "auto"              # 전후 비교 실행용 호스트 컴파일러(auto: gcc -> cc -> clang)
+    # 영향 그래프(보고서 '영향 그래프' 탭, out/graph_export)
+    graph_max_steps: float = 4               # 함수 의존 그래프에 담을 변경 주변 단계 수(보고서에서 줄여 볼 수 있음)
+    graph_node_limit: int = 600              # 변경 하나의 영향 그래프 노드 상한(변경·출력·근거 경로 위 노드는 항상 포함)
+    graph_program_limit: int = 1500          # 함수 의존 그래프 노드 상한(가까운 순)
+    graph_cluster_threshold: int = 150       # 보이는 노드가 이보다 많으면 파일별 묶음 표시(보고서에서 변경 가능)
     ppr_alpha: float = 0.25                  # 시드 전파 재시작 확률
     feature_score_threshold: float = 0.02
     shared_feature_count: int = 2            # 이 개수 이상의 기능에 연결되면 공용 역할
