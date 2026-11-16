@@ -17,8 +17,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from vfia import portable as pt  # noqa: E402
+from vfia.config_check import gate, load_config_checked, run_main  # noqa: E402
 from vfia.cochange import load_cochange  # noqa: E402
-from vfia.config import load_config                      # noqa: E402
 from vfia.feature_mapper import FeatureMapper, export_llm_prompts  # noqa: E402
 from vfia.pipeline import get_graph                      # noqa: E402
 from vfia.report_generator import feature_report_html, write_json  # noqa: E402
@@ -37,8 +37,10 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     pt.setup_console()
     log = (lambda *x: None) if a.quiet else print
-    cfg = load_config(a.config)
+    cfg = load_config_checked(a.config)
     version = a.version or list(cfg.versions)[-1]
+    if not gate(cfg, [version], quiet=a.quiet):
+        return 2
     out = a.out or cfg.output_dir
     os.makedirs(out, exist_ok=True)
     g = get_graph(cfg, version, rebuild=a.rebuild, log=log)
@@ -68,4 +70,4 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     pt.reexec_with_fixed_hash_seed()
-    sys.exit(main())
+    run_main(main)

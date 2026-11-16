@@ -17,7 +17,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 from vfia import portable as pt  # noqa: E402
-from vfia.config import load_config  # noqa: E402
+from vfia.config_check import ConfigError, gate, load_config_checked  # noqa: E402
 
 
 def main(argv=None) -> int:
@@ -34,7 +34,14 @@ def main(argv=None) -> int:
     ap.add_argument("--skip-eval", action="store_true", help="정답셋이 없으면 평가 단계를 건너뛴다(자동)")
     a = ap.parse_args(argv)
     pt.setup_console()
-    cfg = load_config(a.config)
+    try:
+        cfg = load_config_checked(a.config)
+    except ConfigError as e:
+        print(f"설정 오류: {e}")
+        return 2
+    if not gate(cfg, [a.before, a.after]):
+        print("\n설정을 고친 뒤 다시 실행하세요. 새 설정 만들기: python tools/new_project.py --help")
+        return 2
     out = a.out or cfg.output_dir
     common = ["--config", a.config] + (["--out", a.out] if a.out else [])
     impact = ["--before", a.before, "--after", a.after, "--level", a.level]
@@ -47,6 +54,7 @@ def main(argv=None) -> int:
                                              os.path.join(out, "impact.json")]))
     env = pt.subprocess_env_utf8()
     env["PYTHONHASHSEED"] = "0"
+    env["VFIA_CONFIG_CHECKED"] = "1"
     for i, (name, script, args) in enumerate(steps, 1):
         print(f"\n=== [{i}/{len(steps)}] {name}: {script} ===", flush=True)
         t0 = time.time()

@@ -27,7 +27,8 @@ from typing import Dict, List, Optional, Set
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from vfia import portable as pt  # noqa: E402
-from vfia.config import load_config, load_structured  # noqa: E402
+from vfia.config_check import gate, load_config_checked, run_main  # noqa: E402
+from vfia.config import load_structured  # noqa: E402
 from vfia.model import NK, Status  # noqa: E402
 
 NEG = {Status.MODEL_NO_DIFF, Status.EXEC_NO_DIFF}
@@ -162,7 +163,9 @@ def main(argv=None) -> int:
     ap.add_argument("--out", default=None)
     a = ap.parse_args(argv)
     pt.setup_console()
-    cfg = load_config(a.config)
+    cfg = load_config_checked(a.config)
+    if not gate(cfg, [a.before, a.after], quiet=False):
+        return 2
     out = a.out or cfg.output_dir
     os.makedirs(out, exist_ok=True)
     gt_path = a.ground_truth or cfg.ground_truth
@@ -293,4 +296,4 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     pt.reexec_with_fixed_hash_seed()
-    sys.exit(main())
+    run_main(main)

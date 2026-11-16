@@ -70,6 +70,11 @@ def get_graph(cfg: AnalysisConfig, version: str, rebuild: bool = False, log=prin
     idx = ProjectIndexer(v, cfg.build, cache_dir=os.path.join(cfg.output_dir, "cache", version), log=log).run()
     s = idx.summary()
     log(f"[{version}] 번역 단위 {s['translation_units']}개, 심벌 {s['units']}, 파싱 실패 {len(s['parse_failed_tus'])}개")
+    if not s["translation_units"]:
+        from .config_check import ConfigError
+        raise ConfigError(f"[{version}] 분석할 소스(번역 단위)가 0개입니다. root: {v.root}, compile DB: {v.compile_commands}\n"
+                          "    → versions.<버전>.root가 소스 최상위 폴더인지, compile DB의 소스가 그 폴더 아래 있는지 확인하세요."
+                          + "".join(f"\n    참고: {n}" for n in idx.notes[:3]))
     g = build_graph(idx, cfg.options, log)
     vm = load_vehicle_model(cfg.vehicle_model_for(version))
     notes = apply_vehicle_model(g, vm)

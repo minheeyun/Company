@@ -18,6 +18,7 @@
 | `tools/make_compile_db.py` | 빌드 로그(TASKING/GHS/Diab/HighTec/gcc) → compile_commands.json |
 | `run_all.py` | 기능 분류 → 영향 분석 → 평가를 한 번에 실행 |
 | `tools/check_env.py` | 실행 환경 점검(패키지·libclang·내장 헤더·C 컴파일러·CBMC·git)과 설치 안내 |
+| `tools/new_project.py` | 내 프로젝트용 `analysis.yaml`·`vehicle_model.yaml` 만들기(빌드 로그 → compile DB 포함)와 설정 점검 |
 
 ## 설치
 
@@ -115,6 +116,26 @@ Windows에서 달라지는 점과 처리 방식:
 | 줄바꿈 | CRLF 소스도 LF와 같은 그래프·결과(시험으로 확인). 저장소는 `.gitattributes`로 LF 고정 |
 | 전후 비교 실행 | fork가 없으므로 입력 벡터마다 하네스 프로세스를 새로 띄워 전역 상태를 초기화(병렬 실행). MinGW `%lld` 처리 |
 | 재현성 | 스크립트가 `PYTHONHASHSEED=0`으로 자신을 다시 실행하고 그래프 노드·간선 순서를 정규화해, 실행·OS가 달라도 같은 입력이면 같은 결과(시간 예산에 걸린 '부분' 조건은 기계 속도에 따라 달라질 수 있음) |
+
+## 내 프로젝트에 적용
+
+예제 설정을 복사하지 말고 `tools/new_project.py`로 새 설정을 만든다. 빌드 로그만 있으면 compile DB까지 만든다.
+
+```bash
+python tools/new_project.py --dir my_project --compiler tasking --before-root S:/proj/26A10 --before-log S:/proj/26A10/.log/build.log --after-root S:/proj/26A11 --after-log S:/proj/26A11/.log/build.log
+```
+
+compile DB가 이미 있으면 `--before-db`·`--after-db`에 파일(또는 그 파일이 있는 폴더)을 준다. 기존 설정은 `--force`일 때만
+덮어쓰고 `.bak`으로 남긴다. 만든 `vehicle_model.yaml`은 기능이 비어 있어도 실행된다(영향 범위·영향 그래프는 나오고, 기능 영향
+판정은 기능·관찰 대상을 적은 뒤부터).
+
+```bash
+python run_all.py --config my_project/analysis.yaml
+```
+
+모든 스크립트는 시작 전에 **설정을 점검**한다(`vfia/config_check.py`). 없는 소스 폴더, 없는 compile DB, compile DB의 소스가
+`root` 밖에 있는 경우, 없는 차량 모델·A2L·ARXML 파일, YAML 문법 오류를 한 번에 보여 주고 고치는 방법을 알려 준 뒤 종료 코드 2로
+끝난다. 분석할 번역 단위가 0개여도 같은 방식으로 멈춘다.
 
 ## 검토 의견 반영 내역
 

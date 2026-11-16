@@ -19,10 +19,10 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from vfia import portable as pt  # noqa: E402
+from vfia.config_check import gate, load_config_checked, run_main  # noqa: E402
 from vfia.behavior_checker import BehaviorChecker          # noqa: E402
 from vfia.change_detector import detect_changes             # noqa: E402
 from vfia.cochange import load_cochange  # noqa: E402
-from vfia.config import load_config                         # noqa: E402
 from vfia.feature_mapper import FeatureMapper               # noqa: E402
 from vfia.impact_analyzer import ImpactAnalyzer, feature_summary  # noqa: E402
 from vfia.model import DEPENDENCE_EDGES, AnalysisGraph  # noqa: E402
@@ -95,7 +95,9 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     pt.setup_console()
     log = (lambda *x: None) if a.quiet else print
-    cfg = load_config(a.config)
+    cfg = load_config_checked(a.config)
+    if not gate(cfg, [a.before, a.after], quiet=a.quiet):
+        return 2
     out = a.out or cfg.output_dir
     os.makedirs(out, exist_ok=True)
     t0 = time.time()
@@ -198,4 +200,4 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     pt.reexec_with_fixed_hash_seed()
-    sys.exit(main())
+    run_main(main)
