@@ -73,3 +73,23 @@ def test_tasking_project_parses_with_compat_and_reports_health():
     g = build_graph(idx)
     cs = [n for n in g.nodes_of(NK.CALL_SITE) if g.node(n).get("func") == "fn:Adc_Isr"]
     assert any("__mfcr" in " ".join(g.node(c).get("callees") or []) for c in cs)   # intrinsic은 외부 호출로 남김
+
+
+def test_make_compile_db_output_folder_and_messages(capsys):
+    """-o에 폴더를 주면 그 안에 compile_commands.json을 만들고(없으면 폴더 생성), 결과 요약을 출력한다."""
+    import importlib.util
+    root, log = _project()
+    spec = importlib.util.spec_from_file_location("mcd", os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "tools", "make_compile_db.py"))
+    mcd = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mcd)
+    out_dir = os.path.join(root, "before")
+    os.makedirs(out_dir)
+    assert mcd.main(["--log", log, "--root", root, "--compiler", "tasking", "-o", out_dir]) == 0
+    assert os.path.isfile(os.path.join(out_dir, "compile_commands.json"))
+    new_dir = os.path.join(root, "nested", "after") + os.sep
+    assert mcd.main(["--log", log, "--root", root, "-o", new_dir]) == 0
+    assert os.path.isfile(os.path.join(new_dir, "compile_commands.json"))
+    text = capsys.readouterr().out
+    assert "컴파일 명령 2개" in text and "소스 파일 2개" in text
+    assert mcd.main(["--log", os.path.join(root, "없음.log"), "--root", root]) == 2
